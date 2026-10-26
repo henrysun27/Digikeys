@@ -2,7 +2,12 @@ import { CONFIG } from "./config.ts";
 import type { OnsetMessage } from "./onset-worklet.ts";
 import workletUrl from "./onset-worklet.ts?worker&url";
 
-export type Onset = { time: number; level: number; threshold: number }; // time: performance.now() ms
+export type Onset = {
+  time: number; // performance.now() ms
+  ctxTime: number; // the onset block's audio-clock time, s
+  level: number;
+  threshold: number;
+};
 export type MicLevel = { level: number; floor: number; threshold: number };
 export type MicInfo = {
   outputRawMs: number; // baseLatency + outputLatency as reported
@@ -24,9 +29,14 @@ export type MicHandlers = {
 type AudioTrack = MediaStreamTrack & { stats?: { latency?: number } };
 type AudioSettings = MediaTrackSettings & { latency?: number };
 
-// Must be called from a user gesture so the AudioContext may start.
-export async function startMic(h: MicHandlers) {
-  const ctx = new AudioContext({ latencyHint: "interactive" });
+// baseLatency + outputLatency as reported, and clamped to 0..maxLatencyCorrectionMs for use.
+export function outputLatency(ctx: AudioContext): { rawMs: number; ms: number } {
+  const rawMs = (ctx.baseLatency + (ctx.outputLatency || 0)) * 1000;
+  return { rawMs, ms: Math.min(CONFIG.mic.maxLatencyCorrectionMs, Math.max(0, rawMs || 0)) };
+}
+
+// ctx must have been created in a user gesture so it may start.
+export async function startMic(ctx: AudioContext, h: MicHandlers) {
   // Browser voice processing smears or removes tap transients.
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
@@ -41,8 +51,6 @@ export async function startMic(h: MicHandlers) {
   // The node writes silence; connecting it to the destination keeps it pulled.
   node.connect(ctx.destination);
 
-  const clampCorrection = (ms: number) => Math.min(CONFIG.mic.maxLatencyCorrectionMs, Math.max(0, ms || 0));
-
   // Converts the worklet's audio-clock time for a block to performance.now() when it was
   // rendered. getOutputTimestamp pairs a context time with the moment it is heard, and a
   // block is rendered baseLatency + outputLatency before that. Input latency is taken as
@@ -50,8 +58,7 @@ export async function startMic(h: MicHandlers) {
   // mapping if the output timestamp is missing or disagrees by more than the clamp.
   const toPerf = (ctxTime: number): { time: number; info: MicInfo } => {
     const settings: AudioSettings = track.getSettings();
-    const outputRawMs = (ctx.baseLatency + (ctx.outputLatency || 0)) * 1000;
-    const outputMs = clampCorrection(outputRawMs);
+    const { rawMs: outputRawMs, ms: outputMs } = outputLatency(ctx);
     const byCurrentTime = performance.now() - (ctx.currentTime - ctxTime) * 1000;
     const ts = ctx.getOutputTimestamp();
     const byOutput =
@@ -82,6 +89,6 @@ export async function startMic(h: MicHandlers) {
     }
     const { time, info } = toPerf(msg.time);
     h.onInfo(info);
-    h.onOnset({ time, level: msg.level, threshold: msg.threshold });
+    h.onOnset({ time, ctxTime: msg.time, level: msg.level, threshold: msg.threshold });
   };
 }

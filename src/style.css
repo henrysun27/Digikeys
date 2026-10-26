@@ -74,7 +74,8 @@ body {
 }
 
 #reset,
-#mic {
+#mic,
+#layout {
   padding: 6px 12px;
   border: 1px solid rgba(255, 255, 255, 0.4);
   border-radius: 6px;
@@ -85,13 +86,20 @@ body {
   cursor: pointer;
 }
 
-#reset {
+#toolbar {
   position: absolute;
   top: 12px;
   right: 12px;
+  display: flex;
+  gap: 8px;
+}
+
+#layout option {
+  background: #222;
 }
 
 #reset:hover,
+#layout:hover,
 #mic:hover:enabled {
   background: rgba(40, 40, 40, 0.8);
 }

@@ -10,24 +10,36 @@ export type Sound =
 export type Zone = { id: string; label: string; shape: Shape; sound: Sound };
 export type Layout = { instrument: string; zones: Zone[] };
 
-function pianoRow(octave: number, y: number, h: number): Zone[] {
-  const names = ["C", "D", "E", "F", "G", "A", "B"];
-  return names.map((name, i) => {
-    const note = `${name}${octave}`;
-    return {
-      id: note,
-      label: note,
-      shape: { kind: "rect", x: i / names.length, y, w: 1 / names.length, h },
-      sound: { type: "note", note },
-    };
-  });
+type Cell = Omit<Zone, "shape">;
+
+// Equal-size rect zones, rows top to bottom.
+function grid(instrument: string, rows: Cell[][]): Layout {
+  const zones = rows.flatMap((row, r) =>
+    row.map((cell, c): Zone => ({
+      ...cell,
+      shape: { kind: "rect", x: c / row.length, y: r / rows.length, w: 1 / row.length, h: 1 / rows.length },
+    })),
+  );
+  return { instrument, zones };
 }
 
+const whiteKeys = (octave: number): Cell[] =>
+  ["C", "D", "E", "F", "G", "A", "B"].map((name) => {
+    const note = `${name}${octave}`;
+    return { id: note, label: note, sound: { type: "note", note } };
+  });
+
+const pad = (sample: string, label: string): Cell => ({ id: sample, label, sound: { type: "drum", sample } });
+
 // 2x7 white keys: the higher octave on the top row.
-export const PIANO_LAYOUT: Layout = {
-  instrument: "piano",
-  zones: [...pianoRow(5, 0, 0.5), ...pianoRow(4, 0.5, 0.5)],
-};
+export const PIANO_LAYOUT: Layout = grid("piano", [whiteKeys(5), whiteKeys(4)]);
+
+export const DRUM_LAYOUT: Layout = grid("drums", [
+  [pad("hihat", "Hi-hat"), pad("tom1", "Tom 1"), pad("tom2", "Tom 2")],
+  [pad("kick", "Kick"), pad("snare", "Snare"), pad("tom3", "Tom 3")],
+]);
+
+export const PRESETS: Layout[] = [PIANO_LAYOUT, DRUM_LAYOUT];
 
 export function shapeOutline(shape: Shape): Pt[] {
   if (shape.kind === "poly") return shape.pts.map(([x, y]) => ({ x, y }));

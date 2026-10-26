@@ -33,6 +33,12 @@ All code in this repo was written during the hackathon.
       clamped to 0-100 ms; input latency taken as 0), and the finger search is centered on
       `videoLagMs`, which absorbs any constant offset; tune it with the median stop offset
       shown in the panel. Onsets with no hand in frame are logged as ignored.
+- [x] Milestone 4: sound. Tone.js runs on the same AudioContext as the onset detector,
+      with lookahead 0: a sampled Salamander piano and an acoustic drum kit (samples from
+      tonejs.github.io), loaded and warmed up (muted) on "Enable mic". Each onset plays
+      immediately from a best-guess finger (the one that lifted to strike, with its
+      landing point predicted) without waiting for the stop; the later stopped-finger
+      check is logged next to it. A layout picker switches between piano and drums.
 
 ## Meta models
 
@@ -40,4 +46,5 @@ None yet (SAM 3.1 and Muse Spark arrive in milestones 5-7).
 
 ## Tap-to-sound latency
 
-Not measured yet (milestone 4).
+Measured per tap as audio onset (audio clock) to Tone trigger time, plus output latency;
+the median over the last 20 taps is shown in the debug panel. Not recorded here yet.

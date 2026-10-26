@@ -13,7 +13,10 @@
         <div id="status"></div>
         <div id="hint"></div>
       </div>
-      <button id="reset" type="button">Reset corners</button>
+      <div id="toolbar">
+        <select id="layout" aria-label="Instrument"></select>
+        <button id="reset" type="button">Reset corners</button>
+      </div>
       <div id="debug">
         <button id="mic" type="button">Enable mic</button>
         <div class="meter">
@@ -29,6 +32,10 @@
           <dd id="mic-threshold">–</dd>
           <dt>Chosen finger</dt>
           <dd id="chosen-finger">–</dd>
+          <dt>Tap → sound</dt>
+          <dd id="tap-latency">–</dd>
+          <dt>Median tap → sound</dt>
+          <dd id="median-latency">–</dd>
           <dt>Stop offset</dt>
           <dd id="stop-offset">–</dd>
           <dt>Median stop</dt>

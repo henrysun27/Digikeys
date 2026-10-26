@@ -2,10 +2,11 @@ import "./style.css";
 import { FilesetResolver, HandLandmarker, type HandLandmarkerResult } from "@mediapipe/tasks-vision";
 import { Calibration, CORNER_NAMES } from "./calibration.ts";
 import { CONFIG } from "./config.ts";
-import { logIgnored, showLevel, showMicInfo, showTap } from "./debug.ts";
+import { logIgnored, logPlayed, resolveTap, showLevel, showMicInfo } from "./debug.ts";
 import { applyH, type Pt } from "./geometry.ts";
-import { PIANO_LAYOUT, hitTest, shapeCenter, shapeOutline, type Layout, type Zone } from "./layout.ts";
+import { PRESETS, hitTest, shapeCenter, shapeOutline, type Layout, type Zone } from "./layout.ts";
 import { startMic, type Onset } from "./mic.ts";
+import { initSound, play } from "./sound.ts";
 import { FINGER_NAMES, FINGERTIPS, FingerHistory } from "./taps.ts";
 
 const video = document.querySelector<HTMLVideoElement>("#video")!;
@@ -14,10 +15,11 @@ const statusEl = document.querySelector<HTMLDivElement>("#status")!;
 const hintEl = document.querySelector<HTMLDivElement>("#hint")!;
 const resetBtn = document.querySelector<HTMLButtonElement>("#reset")!;
 const micBtn = document.querySelector<HTMLButtonElement>("#mic")!;
+const layoutSelect = document.querySelector<HTMLSelectElement>("#layout")!;
 const ctx = canvas.getContext("2d")!;
 
 const calibration = new Calibration();
-const layout: Layout = PIANO_LAYOUT;
+let layout: Layout = PRESETS[0];
 const history = new FingerHistory();
 const flashes = new Map<string, number>(); // zone id -> flash end, performance.now() ms
 let hintError: string | null = null;
@@ -73,11 +75,24 @@ resetBtn.addEventListener("click", () => {
   updateHint();
 });
 
+PRESETS.forEach((preset, i) => layoutSelect.add(new Option(preset.instrument, String(i))));
+layoutSelect.addEventListener("change", () => {
+  layout = PRESETS[Number(layoutSelect.value)];
+  flashes.clear();
+});
+
+// One AudioContext, created inside the click, for both the mic detector and Tone. Sounds
+// load and warm up here so the first tap isn't silent.
 micBtn.addEventListener("click", async () => {
   micBtn.disabled = true;
-  micBtn.textContent = "Starting mic…";
+  micBtn.textContent = "Starting mic, loading sounds…";
   try {
-    await startMic({ onOnset, onLevel: showLevel, onInfo: showMicInfo });
+    const audioCtx = new AudioContext({ latencyHint: "interactive" });
+    await audioCtx.resume();
+    await Promise.all([
+      startMic(audioCtx, { onOnset, onLevel: showLevel, onInfo: showMicInfo }),
+      initSound(audioCtx),
+    ]);
     micBtn.textContent = "Mic on";
   } catch (err) {
     console.error(err);
@@ -90,27 +105,29 @@ function zoneAt(p: Pt): Zone | null {
   return calibration.camToBoard ? hitTest(layout, applyH(calibration.camToBoard, p)) : null;
 }
 
-// The finger frames for the moment of the onset arrive videoLagMs later and the stop may
-// be up to stopToleranceMs after that, so the tap is resolved once those frames are in.
+// Plays right away from the best-guess finger. The finger frames for the moment of the
+// onset arrive videoLagMs later and the stop may be up to stopToleranceMs after that, so
+// the tap is checked against the stopped finger once those frames are in.
 function onOnset(onset: Onset) {
   const n = ++tapCount;
   if (handsInFrame === 0) {
     logIgnored(n, "no hand");
     return;
   }
-  const guess = history.pick(onset.time, false);
   const { videoLagMs, stopToleranceMs, settleMarginMs, flashMs } = CONFIG.taps;
+  const guess = history.guess(onset.time);
+  const zone = guess ? zoneAt(guess.at) : null;
+  const latencyMs = zone ? play(zone.sound, onset.ctxTime) : null;
+  if (zone) flashes.set(zone.id, performance.now() + flashMs);
+  const line = logPlayed({ n, finger: guess?.finger ?? null, zone: zone?.label ?? null, latencyMs });
+
   const resolveAt = onset.time + videoLagMs + stopToleranceMs + settleMarginMs;
   setTimeout(() => {
-    const pick = history.pick(onset.time, true);
-    const zone = pick ? zoneAt(pick.at) : null;
-    if (zone) flashes.set(zone.id, performance.now() + flashMs);
-    showTap({
-      n,
+    const pick = history.resolve(onset.time);
+    resolveTap(line, guess?.finger ?? null, {
       finger: pick?.finger ?? null,
-      zone: zone?.label ?? null,
+      zone: pick ? (zoneAt(pick.at)?.label ?? null) : null,
       stopOffset: pick?.stopOffset ?? null,
-      guess: guess?.finger ?? null,
     });
   }, Math.max(0, resolveAt - performance.now()));
 }

@@ -35,6 +35,13 @@ export const CONFIG = {
   mic: {
     maxLatencyCorrectionMs: 100, // any latency correction is clamped to 0..this
   },
+  sound: {
+    pianoBaseUrl: "https://tonejs.github.io/audio/salamander/",
+    drumBaseUrl: "https://tonejs.github.io/audio/drum-samples/acoustic-kit/",
+    noteSeconds: 1.5,
+    velocity: 0.8,
+    warmupMs: 200, // muted warm-up after loading
+  },
   // Fusing onsets with fingertip motion.
   taps: {
     // Finger frames are detected this long after the onset of the same moment. Tune it by
@@ -43,7 +50,9 @@ export const CONFIG = {
     stopToleranceMs: 150, // a stop counts within +-this of onset + videoLagMs
     historyMs: 200, // how long a down-stroke may take before it stops
     settleMarginMs: 40, // extra wait for late frames before resolving a tap
-    medianTaps: 20, // taps in the debug panel's median stop offset
+    minLift: 0.015, // best guess: min vertical travel (frame heights) to count as striking
+    maxExtrapolateMs: 80, // best guess: how far ahead a still-moving finger is projected
+    medianTaps: 20, // taps in the debug panel's medians (stop offset, tap-to-sound)
     keepMs: 1000,
     minDownSpeed: 0.3, // frame heights/s for a downward stroke
     stopSpeedRatio: 0.3, // stopped once speed falls below this fraction of the peak

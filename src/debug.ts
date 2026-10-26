@@ -8,25 +8,26 @@ const thresholdEl = el("mic-threshold");
 const meterLevel = el("meter-level");
 const meterThreshold = el("meter-threshold");
 const fingerEl = el("chosen-finger");
+const tapLatencyEl = el("tap-latency");
+const medianLatencyEl = el("median-latency");
 const offsetEl = el("stop-offset");
-const medianEl = el("median-offset");
-const latencyEl = el("audio-latency");
+const medianOffsetEl = el("median-offset");
+const audioLatencyEl = el("audio-latency");
 const logEl = el("tap-log");
 const recentOffsets: number[] = [];
+const recentLatencies: number[] = [];
 
-export type TapEntry = {
-  n: number;
-  finger: string | null;
-  zone: string | null;
-  stopOffset: number | null;
-  guess: string | null; // best-guess finger at onset time, before the stop was seen
-};
+// What was played at onset time from the best-guess finger.
+export type PlayedTap = { n: number; finger: string | null; zone: string | null; latencyMs: number | null };
+// The finger that moved down fastest and then stopped, known once late frames are in.
+export type ResolvedTap = { finger: string | null; zone: string | null; stopOffset: number | null };
 
 const db = (v: number) => (v > 0 ? 20 * Math.log10(v) : -Infinity);
 const fmtDb = (v: number) => `${Math.max(-99, db(v)).toFixed(0)} dB`;
 // Meter spans -80..0 dBFS.
 const meterPct = (v: number) => `${Math.min(100, Math.max(0, ((db(v) + 80) / 80) * 100))}%`;
 const fmtMs = (ms: number | null) => (ms === null ? "–" : `${ms >= 0 ? "+" : ""}${ms.toFixed(0)} ms`);
+const where = (finger: string, zone: string | null) => `${finger} → ${zone ?? "off board"}`;
 
 export function showLevel(l: MicLevel) {
   levelEl.textContent = fmtDb(l.level);
@@ -40,16 +41,17 @@ export function showLevel(l: MicLevel) {
 export function showMicInfo(i: MicInfo) {
   const rates = `${(i.ctxRate / 1000).toFixed(1)} kHz ctx / ${i.micRate ? `${(i.micRate / 1000).toFixed(1)} kHz` : "?"} mic`;
   const raw = (v: number | null) => (v === null ? "n/a" : String(v));
-  latencyEl.textContent =
+  audioLatencyEl.textContent =
     `out ${i.outputMs.toFixed(0)} ms applied (raw ${i.outputRawMs.toFixed(1)} ms, ${i.clock}) · ` +
     `in 0 ms applied (stats raw ${raw(i.inputStatsRaw)} ms, settings raw ${raw(i.inputSettingsRaw)} s) · ${rates}`;
 }
 
-function appendLog(text: string) {
+function appendLog(text: string): HTMLLIElement {
   const li = document.createElement("li");
   li.textContent = text;
   logEl.prepend(li);
   while (logEl.children.length > CONFIG.taps.logSize) logEl.lastElementChild!.remove();
+  return li;
 }
 
 export function logIgnored(n: number, reason: string) {
@@ -62,20 +64,33 @@ function median(xs: number[]): number {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
-export function showTap(t: TapEntry) {
-  const where = t.finger ? `${t.finger} → ${t.zone ?? "off board"}` : "no finger stopped";
-  fingerEl.textContent = where;
-  offsetEl.textContent = fmtMs(t.stopOffset);
-  if (t.stopOffset !== null) {
-    recentOffsets.push(t.stopOffset);
-    if (recentOffsets.length > CONFIG.taps.medianTaps) recentOffsets.shift();
-    medianEl.textContent = `${fmtMs(median(recentOffsets))} (last ${recentOffsets.length})`;
-  }
+function pushRecent(xs: number[], v: number) {
+  xs.push(v);
+  if (xs.length > CONFIG.taps.medianTaps) xs.shift();
+}
 
-  const parts = [`#${t.n} ${where}`];
-  if (t.finger) {
-    parts.push(`stop ${fmtMs(t.stopOffset)}`);
-    parts.push(t.guess === t.finger ? "guess ✓" : `guess ✗ ${t.guess ?? "none"}`);
+// Returns the log line so resolveTap can complete it.
+export function logPlayed(t: PlayedTap): HTMLLIElement {
+  fingerEl.textContent = t.finger ? where(t.finger, t.zone) : "no finger moving";
+  if (t.latencyMs !== null) {
+    pushRecent(recentLatencies, t.latencyMs);
+    tapLatencyEl.textContent = `${t.latencyMs.toFixed(0)} ms`;
+    medianLatencyEl.textContent = `${median(recentLatencies).toFixed(0)} ms (last ${recentLatencies.length})`;
   }
-  appendLog(parts.join(" · "));
+  const played = t.latencyMs !== null ? ` · ${t.latencyMs.toFixed(0)} ms` : t.finger ? " · silent" : "";
+  return appendLog(`#${t.n} ${t.finger ? where(t.finger, t.zone) : "no finger moving"}${played}`);
+}
+
+export function resolveTap(line: HTMLLIElement, playedFinger: string | null, r: ResolvedTap) {
+  offsetEl.textContent = fmtMs(r.stopOffset);
+  if (r.stopOffset !== null) {
+    pushRecent(recentOffsets, r.stopOffset);
+    medianOffsetEl.textContent = `${fmtMs(median(recentOffsets))} (last ${recentOffsets.length})`;
+  }
+  if (!r.finger) {
+    line.textContent += " · no finger stopped";
+    return;
+  }
+  const check = r.finger === playedFinger ? "check ✓" : `check ✗ ${where(r.finger, r.zone)}`;
+  line.textContent += ` · stop ${fmtMs(r.stopOffset)} · ${check}`;
 }
