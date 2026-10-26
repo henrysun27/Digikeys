@@ -28,13 +28,55 @@ body {
   max-height: 100%;
 }
 
-#status {
+#view.calibrating {
+  cursor: crosshair;
+}
+
+#hud {
   position: absolute;
   top: 12px;
   left: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  max-width: calc(100% - 180px);
+}
+
+#status,
+#hint {
   padding: 6px 10px;
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.6);
   font-size: 14px;
+}
+
+#status {
   font-variant-numeric: tabular-nums;
+}
+
+#hint:empty {
+  display: none;
+}
+
+#hint.error {
+  background: rgba(160, 20, 40, 0.85);
+}
+
+#reset {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  padding: 6px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.6);
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+#reset:hover {
+  background: rgba(40, 40, 40, 0.8);
 }

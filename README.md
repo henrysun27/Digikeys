@@ -20,6 +20,10 @@ All code in this repo was written during the hackathon.
 
 - [x] Milestone 1: webcam feed with hand landmarks (MediaPipe HandLandmarker) drawn on a
       mirrored canvas.
+- [x] Milestone 2: click 4 corners of the playing surface (with on-screen hints, rejecting
+      crossed/collinear clicks), compute a homography, draw the 2x7 piano layout warped onto
+      the desk with key labels, highlight the key under each fingertip. Calibration is saved
+      in localStorage.
 
 ## Meta models
 
