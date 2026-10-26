@@ -2,7 +2,7 @@ import "./style.css";
 import { FilesetResolver, HandLandmarker, type HandLandmarkerResult } from "@mediapipe/tasks-vision";
 import { Calibration, CORNER_NAMES } from "./calibration.ts";
 import { CONFIG } from "./config.ts";
-import { showLevel, showTap } from "./debug.ts";
+import { showLevel, showMicInfo, showTap } from "./debug.ts";
 import { applyH, type Pt } from "./geometry.ts";
 import { PIANO_LAYOUT, hitTest, shapeCenter, shapeOutline, type Layout, type Zone } from "./layout.ts";
 import { startMic, type Onset } from "./mic.ts";
@@ -76,7 +76,7 @@ micBtn.addEventListener("click", async () => {
   micBtn.disabled = true;
   micBtn.textContent = "Starting mic…";
   try {
-    await startMic(onOnset, showLevel);
+    await startMic({ onOnset, onLevel: showLevel, onInfo: showMicInfo });
     micBtn.textContent = "Mic on";
   } catch (err) {
     console.error(err);
@@ -89,12 +89,13 @@ function zoneAt(p: Pt): Zone | null {
   return calibration.camToBoard ? hitTest(layout, applyH(calibration.camToBoard, p)) : null;
 }
 
-// The finger frames for the moment of the onset arrive videoLagMs later, and the stop
-// may come up to stopAfterMs after it, so the tap is resolved after waiting for both.
+// The finger frames for the moment of the onset arrive videoLagMs later and the stop may
+// be up to stopToleranceMs after that, so the tap is resolved once those frames are in.
 function onOnset(onset: Onset) {
   const n = ++tapCount;
   const guess = history.pick(onset.time, false);
-  const { videoLagMs, stopAfterMs, settleMarginMs, flashMs } = CONFIG.taps;
+  const { videoLagMs, stopToleranceMs, settleMarginMs, flashMs } = CONFIG.taps;
+  const resolveAt = onset.time + videoLagMs + stopToleranceMs + settleMarginMs;
   setTimeout(() => {
     const pick = history.pick(onset.time, true);
     const zone = pick ? zoneAt(pick.at) : null;
@@ -106,16 +107,15 @@ function onOnset(onset: Onset) {
       stopOffset: pick?.stopOffset ?? null,
       guess: guess?.finger ?? null,
     });
-  }, videoLagMs + stopAfterMs + settleMarginMs);
+  }, Math.max(0, resolveAt - performance.now()));
 }
 
 // Handedness labels come straight from MediaPipe; they only need to be stable per hand.
 function recordFingers(result: HandLandmarkerResult, detectedAt: number) {
-  const t = detectedAt - CONFIG.taps.videoLagMs;
   result.landmarks.forEach((hand, h) => {
     const side = result.handedness[h]?.[0]?.categoryName ?? `Hand ${h + 1}`;
     FINGERTIPS.forEach((tip, f) => {
-      history.add(`${side} ${FINGER_NAMES[f]}`, { t, x: hand[tip].x, y: hand[tip].y });
+      history.add(`${side} ${FINGER_NAMES[f]}`, { t: detectedAt, x: hand[tip].x, y: hand[tip].y });
     });
   });
 }

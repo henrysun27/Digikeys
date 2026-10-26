@@ -34,10 +34,13 @@ export const CONFIG = {
   },
   // Fusing onsets with fingertip motion.
   taps: {
-    historyMs: 200, // finger history searched before the onset
-    stopAfterMs: 60, // how long after the onset a finger may still stop
-    videoLagMs: 50, // camera frames arrive this much later than the sound
+    // Finger frames are detected this long after the onset of the same moment. Tune it by
+    // adding the debug panel's median stop offset.
+    videoLagMs: 50,
+    stopToleranceMs: 150, // a stop counts within +-this of onset + videoLagMs
+    historyMs: 200, // how long a down-stroke may take before it stops
     settleMarginMs: 40, // extra wait for late frames before resolving a tap
+    medianTaps: 20, // taps in the debug panel's median stop offset
     keepMs: 1000,
     minDownSpeed: 0.3, // frame heights/s for a downward stroke
     stopSpeedRatio: 0.3, // stopped once speed falls below this fraction of the peak

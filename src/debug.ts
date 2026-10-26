@@ -1,5 +1,5 @@
 import { CONFIG } from "./config.ts";
-import type { MicLevel } from "./mic.ts";
+import type { MicInfo, MicLevel } from "./mic.ts";
 
 const el = (id: string) => document.querySelector<HTMLElement>(`#${id}`)!;
 const levelEl = el("mic-level");
@@ -9,7 +9,10 @@ const meterLevel = el("meter-level");
 const meterThreshold = el("meter-threshold");
 const fingerEl = el("chosen-finger");
 const offsetEl = el("stop-offset");
+const medianEl = el("median-offset");
+const latencyEl = el("audio-latency");
 const logEl = el("tap-log");
+const recentOffsets: number[] = [];
 
 export type TapEntry = {
   n: number;
@@ -33,10 +36,27 @@ export function showLevel(l: MicLevel) {
   meterThreshold.style.left = meterPct(l.threshold);
 }
 
+export function showMicInfo(i: MicInfo) {
+  const rates = `${(i.ctxRate / 1000).toFixed(1)} kHz ctx / ${i.micRate ? `${(i.micRate / 1000).toFixed(1)} kHz` : "?"} mic`;
+  latencyEl.textContent =
+    `in ${i.inputMs.toFixed(0)} ms (${i.inputSource}) · out ${(i.baseMs + i.outputMs).toFixed(0)} ms · ${rates}`;
+}
+
+function median(xs: number[]): number {
+  const s = [...xs].sort((a, b) => a - b);
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
 export function showTap(t: TapEntry) {
   const where = t.finger ? `${t.finger} → ${t.zone ?? "off board"}` : "no finger stopped";
   fingerEl.textContent = where;
   offsetEl.textContent = fmtMs(t.stopOffset);
+  if (t.stopOffset !== null) {
+    recentOffsets.push(t.stopOffset);
+    if (recentOffsets.length > CONFIG.taps.medianTaps) recentOffsets.shift();
+    medianEl.textContent = `${fmtMs(median(recentOffsets))} (last ${recentOffsets.length})`;
+  }
 
   const parts = [`#${t.n} ${where}`];
   if (t.finger) {
