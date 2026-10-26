@@ -32,6 +32,9 @@ export const CONFIG = {
     refractoryMs: 80,
     reportMs: 30, // how often the worklet posts levels for the debug panel
   },
+  mic: {
+    maxLatencyCorrectionMs: 100, // any latency correction is clamped to 0..this
+  },
   // Fusing onsets with fingertip motion.
   taps: {
     // Finger frames are detected this long after the onset of the same moment. Tune it by

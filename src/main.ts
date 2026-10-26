@@ -2,7 +2,7 @@ import "./style.css";
 import { FilesetResolver, HandLandmarker, type HandLandmarkerResult } from "@mediapipe/tasks-vision";
 import { Calibration, CORNER_NAMES } from "./calibration.ts";
 import { CONFIG } from "./config.ts";
-import { showLevel, showMicInfo, showTap } from "./debug.ts";
+import { logIgnored, showLevel, showMicInfo, showTap } from "./debug.ts";
 import { applyH, type Pt } from "./geometry.ts";
 import { PIANO_LAYOUT, hitTest, shapeCenter, shapeOutline, type Layout, type Zone } from "./layout.ts";
 import { startMic, type Onset } from "./mic.ts";
@@ -22,6 +22,7 @@ const history = new FingerHistory();
 const flashes = new Map<string, number>(); // zone id -> flash end, performance.now() ms
 let hintError: string | null = null;
 let tapCount = 0;
+let handsInFrame = 0; // hands in the latest detection
 
 // Coordinate spaces:
 //   cam    - raw camera coords normalized to 0-1, unmirrored (same as MediaPipe landmarks)
@@ -93,6 +94,10 @@ function zoneAt(p: Pt): Zone | null {
 // be up to stopToleranceMs after that, so the tap is resolved once those frames are in.
 function onOnset(onset: Onset) {
   const n = ++tapCount;
+  if (handsInFrame === 0) {
+    logIgnored(n, "no hand");
+    return;
+  }
   const guess = history.pick(onset.time, false);
   const { videoLagMs, stopToleranceMs, settleMarginMs, flashMs } = CONFIG.taps;
   const resolveAt = onset.time + videoLagMs + stopToleranceMs + settleMarginMs;
@@ -256,6 +261,7 @@ function loop(landmarker: HandLandmarker) {
       lastVideoTime = video.currentTime;
       result = landmarker.detectForVideo(video, now);
       recordFingers(result, now);
+      handsInFrame = result.landmarks.length;
       frames++;
     }
 

@@ -36,10 +36,24 @@ export function showLevel(l: MicLevel) {
   meterThreshold.style.left = meterPct(l.threshold);
 }
 
+// Raw track values are shown exactly as reported, in their spec units.
 export function showMicInfo(i: MicInfo) {
   const rates = `${(i.ctxRate / 1000).toFixed(1)} kHz ctx / ${i.micRate ? `${(i.micRate / 1000).toFixed(1)} kHz` : "?"} mic`;
+  const raw = (v: number | null) => (v === null ? "n/a" : String(v));
   latencyEl.textContent =
-    `in ${i.inputMs.toFixed(0)} ms (${i.inputSource}) · out ${(i.baseMs + i.outputMs).toFixed(0)} ms · ${rates}`;
+    `out ${i.outputMs.toFixed(0)} ms applied (raw ${i.outputRawMs.toFixed(1)} ms, ${i.clock}) · ` +
+    `in 0 ms applied (stats raw ${raw(i.inputStatsRaw)} ms, settings raw ${raw(i.inputSettingsRaw)} s) · ${rates}`;
+}
+
+function appendLog(text: string) {
+  const li = document.createElement("li");
+  li.textContent = text;
+  logEl.prepend(li);
+  while (logEl.children.length > CONFIG.taps.logSize) logEl.lastElementChild!.remove();
+}
+
+export function logIgnored(n: number, reason: string) {
+  appendLog(`#${n} ignored (${reason})`);
 }
 
 function median(xs: number[]): number {
@@ -63,8 +77,5 @@ export function showTap(t: TapEntry) {
     parts.push(`stop ${fmtMs(t.stopOffset)}`);
     parts.push(t.guess === t.finger ? "guess ✓" : `guess ✗ ${t.guess ?? "none"}`);
   }
-  const li = document.createElement("li");
-  li.textContent = parts.join(" · ");
-  logEl.prepend(li);
-  while (logEl.children.length > CONFIG.taps.logSize) logEl.lastElementChild!.remove();
+  appendLog(parts.join(" · "));
 }

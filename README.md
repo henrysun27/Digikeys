@@ -29,9 +29,10 @@ All code in this repo was written during the hackathon.
       auto gain are off). Each onset is fused with ~200 ms of fingertip history: the finger
       that moved down fastest and then stopped is chosen, and its key flashes. The debug
       panel shows mic level, floor, threshold, chosen finger, stop offset and a tap log.
-      Onset times come from the audio clock (`getOutputTimestamp`, minus output and
-      reported input latency), and the finger search is centered on `videoLagMs`; tune it
-      with the median stop offset shown in the panel.
+      Onset times come from the audio clock (`getOutputTimestamp`, minus output latency
+      clamped to 0-100 ms; input latency taken as 0), and the finger search is centered on
+      `videoLagMs`, which absorbs any constant offset; tune it with the median stop offset
+      shown in the panel. Onsets with no hand in frame are logged as ignored.
 
 ## Meta models
 

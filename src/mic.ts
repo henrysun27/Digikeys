@@ -2,13 +2,15 @@ import { CONFIG } from "./config.ts";
 import type { OnsetMessage } from "./onset-worklet.ts";
 import workletUrl from "./onset-worklet.ts?worker&url";
 
-export type Onset = { time: number; level: number; threshold: number }; // time: sound reached the mic, performance.now() ms
+export type Onset = { time: number; level: number; threshold: number }; // time: performance.now() ms
 export type MicLevel = { level: number; floor: number; threshold: number };
 export type MicInfo = {
-  baseMs: number;
-  outputMs: number;
-  inputMs: number;
-  inputSource: string;
+  outputRawMs: number; // baseLatency + outputLatency as reported
+  outputMs: number; // the clamped correction actually applied
+  clock: "output timestamp" | "currentTime";
+  // Reported by the track for reference only; not used for correction.
+  inputStatsRaw: number | null; // track.stats.latency (spec unit: ms)
+  inputSettingsRaw: number | null; // getSettings().latency (spec unit: s)
   ctxRate: number;
   micRate: number | null;
 };
@@ -39,46 +41,47 @@ export async function startMic(h: MicHandlers) {
   // The node writes silence; connecting it to the destination keeps it pulled.
   node.connect(ctx.destination);
 
-  const info = (): MicInfo => {
+  const clampCorrection = (ms: number) => Math.min(CONFIG.mic.maxLatencyCorrectionMs, Math.max(0, ms || 0));
+
+  // Converts the worklet's audio-clock time for a block to performance.now() when it was
+  // rendered. getOutputTimestamp pairs a context time with the moment it is heard, and a
+  // block is rendered baseLatency + outputLatency before that. Input latency is taken as
+  // 0; config.taps.videoLagMs absorbs any constant offset. Falls back to the currentTime
+  // mapping if the output timestamp is missing or disagrees by more than the clamp.
+  const toPerf = (ctxTime: number): { time: number; info: MicInfo } => {
     const settings: AudioSettings = track.getSettings();
-    const measured = track.stats?.latency;
-    const [inputMs, inputSource] =
-      measured !== undefined
-        ? [measured * 1000, "track stats"]
-        : settings.latency !== undefined
-          ? [settings.latency * 1000, "track settings"]
-          : [0, "not reported"];
+    const outputRawMs = (ctx.baseLatency + (ctx.outputLatency || 0)) * 1000;
+    const outputMs = clampCorrection(outputRawMs);
+    const byCurrentTime = performance.now() - (ctx.currentTime - ctxTime) * 1000;
+    const ts = ctx.getOutputTimestamp();
+    const byOutput =
+      ts.performanceTime && ts.contextTime !== undefined
+        ? ts.performanceTime + (ctxTime - ts.contextTime) * 1000 - outputMs
+        : null;
+    const useOutput = byOutput !== null && Math.abs(byOutput - byCurrentTime) <= CONFIG.mic.maxLatencyCorrectionMs;
     return {
-      baseMs: ctx.baseLatency * 1000,
-      outputMs: (ctx.outputLatency || 0) * 1000,
-      inputMs,
-      inputSource,
-      ctxRate: ctx.sampleRate,
-      micRate: settings.sampleRate ?? null,
+      time: useOutput ? byOutput : byCurrentTime,
+      info: {
+        outputRawMs,
+        outputMs,
+        clock: useOutput ? "output timestamp" : "currentTime",
+        inputStatsRaw: track.stats?.latency ?? null,
+        inputSettingsRaw: settings.latency ?? null,
+        ctxRate: ctx.sampleRate,
+        micRate: settings.sampleRate ?? null,
+      },
     };
   };
 
-  // getOutputTimestamp pairs a context time with the performance.now() moment it is heard.
-  // A block is rendered baseLatency + outputLatency before it is heard, and the mic input
-  // in it was captured inputLatency before it was rendered.
-  const toPerf = (ctxTime: number, i: MicInfo): number => {
-    const ts = ctx.getOutputTimestamp();
-    const rendered =
-      ts.performanceTime && ts.contextTime !== undefined
-        ? ts.performanceTime + (ctxTime - ts.contextTime) * 1000 - i.baseMs - i.outputMs
-        : performance.now() - (ctx.currentTime - ctxTime) * 1000; // output not running yet
-    return rendered - i.inputMs;
-  };
-
-  h.onInfo(info());
+  h.onInfo(toPerf(ctx.currentTime).info);
   node.port.onmessage = (e: MessageEvent<OnsetMessage>) => {
     const msg = e.data;
     if (msg.type === "level") {
       h.onLevel(msg);
       return;
     }
-    const i = info();
-    h.onInfo(i);
-    h.onOnset({ time: toPerf(msg.time, i), level: msg.level, threshold: msg.threshold });
+    const { time, info } = toPerf(msg.time);
+    h.onInfo(info);
+    h.onOnset({ time, level: msg.level, threshold: msg.threshold });
   };
 }
