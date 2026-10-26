@@ -32,6 +32,16 @@ body {
   cursor: crosshair;
 }
 
+/* Overlays let clicks through to the canvas, except on their buttons. */
+#hud,
+#debug {
+  pointer-events: none;
+}
+
+#debug button {
+  pointer-events: auto;
+}
+
 #hud {
   position: absolute;
   top: 12px;
@@ -63,10 +73,8 @@ body {
   background: rgba(160, 20, 40, 0.85);
 }
 
-#reset {
-  position: absolute;
-  top: 12px;
-  right: 12px;
+#reset,
+#mic {
   padding: 6px 12px;
   border: 1px solid rgba(255, 255, 255, 0.4);
   border-radius: 6px;
@@ -77,6 +85,85 @@ body {
   cursor: pointer;
 }
 
-#reset:hover {
+#reset {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+}
+
+#reset:hover,
+#mic:hover:enabled {
   background: rgba(40, 40, 40, 0.8);
+}
+
+#mic:disabled {
+  cursor: default;
+  opacity: 0.8;
+}
+
+#debug {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  width: 300px;
+  max-width: calc(100% - 24px);
+  padding: 10px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.65);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.meter {
+  position: relative;
+  height: 8px;
+  margin: 10px 0 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.15);
+  overflow: hidden;
+}
+
+#meter-level {
+  width: 0;
+  height: 100%;
+  background: #00dcff;
+}
+
+#meter-threshold {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 2px;
+  height: 100%;
+  background: #ff3b6b;
+}
+
+#debug dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 10px;
+  margin: 0;
+}
+
+#debug dt {
+  color: #aaa;
+}
+
+#debug dd {
+  margin: 0;
+}
+
+#tap-log {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+#tap-log:empty {
+  display: none;
+}
+
+#tap-log li {
+  padding: 2px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
 }

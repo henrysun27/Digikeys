@@ -24,6 +24,11 @@ All code in this repo was written during the hackathon.
       crossed/collinear clicks), compute a homography, draw the 2x7 piano layout warped onto
       the desk with key labels, highlight the key under each fingertip. Calibration is saved
       in localStorage.
+- [x] Milestone 3: tap detection. An AudioWorklet finds mic onsets (adaptive noise floor,
+      sudden-rise check, 80 ms refractory; browser echo cancellation, noise suppression and
+      auto gain are off). Each onset is fused with ~200 ms of fingertip history: the finger
+      that moved down fastest and then stopped is chosen, and its key flashes. The debug
+      panel shows mic level, floor, threshold, chosen finger, stop offset and a tap log.
 
 ## Meta models
 

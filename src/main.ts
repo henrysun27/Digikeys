@@ -2,21 +2,26 @@ import "./style.css";
 import { FilesetResolver, HandLandmarker, type HandLandmarkerResult } from "@mediapipe/tasks-vision";
 import { Calibration, CORNER_NAMES } from "./calibration.ts";
 import { CONFIG } from "./config.ts";
+import { showLevel, showTap } from "./debug.ts";
 import { applyH, type Pt } from "./geometry.ts";
 import { PIANO_LAYOUT, hitTest, shapeCenter, shapeOutline, type Layout, type Zone } from "./layout.ts";
-
-const FINGERTIPS = [4, 8, 12, 16, 20];
+import { startMic, type Onset } from "./mic.ts";
+import { FINGER_NAMES, FINGERTIPS, FingerHistory } from "./taps.ts";
 
 const video = document.querySelector<HTMLVideoElement>("#video")!;
 const canvas = document.querySelector<HTMLCanvasElement>("#view")!;
 const statusEl = document.querySelector<HTMLDivElement>("#status")!;
 const hintEl = document.querySelector<HTMLDivElement>("#hint")!;
 const resetBtn = document.querySelector<HTMLButtonElement>("#reset")!;
+const micBtn = document.querySelector<HTMLButtonElement>("#mic")!;
 const ctx = canvas.getContext("2d")!;
 
 const calibration = new Calibration();
 const layout: Layout = PIANO_LAYOUT;
+const history = new FingerHistory();
+const flashes = new Map<string, number>(); // zone id -> flash end, performance.now() ms
 let hintError: string | null = null;
+let tapCount = 0;
 
 // Coordinate spaces:
 //   cam    - raw camera coords normalized to 0-1, unmirrored (same as MediaPipe landmarks)
@@ -67,6 +72,54 @@ resetBtn.addEventListener("click", () => {
   updateHint();
 });
 
+micBtn.addEventListener("click", async () => {
+  micBtn.disabled = true;
+  micBtn.textContent = "Starting mic…";
+  try {
+    await startMic(onOnset, showLevel);
+    micBtn.textContent = "Mic on";
+  } catch (err) {
+    console.error(err);
+    micBtn.disabled = false;
+    micBtn.textContent = `Enable mic (${err instanceof Error ? err.message : String(err)})`;
+  }
+});
+
+function zoneAt(p: Pt): Zone | null {
+  return calibration.camToBoard ? hitTest(layout, applyH(calibration.camToBoard, p)) : null;
+}
+
+// The finger frames for the moment of the onset arrive videoLagMs later, and the stop
+// may come up to stopAfterMs after it, so the tap is resolved after waiting for both.
+function onOnset(onset: Onset) {
+  const n = ++tapCount;
+  const guess = history.pick(onset.time, false);
+  const { videoLagMs, stopAfterMs, settleMarginMs, flashMs } = CONFIG.taps;
+  setTimeout(() => {
+    const pick = history.pick(onset.time, true);
+    const zone = pick ? zoneAt(pick.at) : null;
+    if (zone) flashes.set(zone.id, performance.now() + flashMs);
+    showTap({
+      n,
+      finger: pick?.finger ?? null,
+      zone: zone?.label ?? null,
+      stopOffset: pick?.stopOffset ?? null,
+      guess: guess?.finger ?? null,
+    });
+  }, videoLagMs + stopAfterMs + settleMarginMs);
+}
+
+// Handedness labels come straight from MediaPipe; they only need to be stable per hand.
+function recordFingers(result: HandLandmarkerResult, detectedAt: number) {
+  const t = detectedAt - CONFIG.taps.videoLagMs;
+  result.landmarks.forEach((hand, h) => {
+    const side = result.handedness[h]?.[0]?.categoryName ?? `Hand ${h + 1}`;
+    FINGERTIPS.forEach((tip, f) => {
+      history.add(`${side} ${FINGER_NAMES[f]}`, { t, x: hand[tip].x, y: hand[tip].y });
+    });
+  });
+}
+
 async function startCamera() {
   const { width, height, frameRate } = CONFIG.camera;
   const stream = await navigator.mediaDevices.getUserMedia({
@@ -110,13 +163,18 @@ function tracePath(pts: Pt[], close: boolean) {
   if (close) ctx.closePath();
 }
 
-function drawLayout(active: Set<string>) {
+function drawLayout(active: Set<string>, now: number) {
   if (!calibration.done) return;
   for (const zone of layout.zones) {
     const outline = shapeOutline(zone.shape).map(boardToScreen);
     tracePath(outline, true);
     ctx.fillStyle = active.has(zone.id) ? "rgba(255, 196, 0, 0.55)" : "rgba(255, 255, 255, 0.12)";
     ctx.fill();
+    const flashLeft = (flashes.get(zone.id) ?? 0) - now;
+    if (flashLeft > 0) {
+      ctx.fillStyle = `rgba(0, 220, 255, ${(0.85 * flashLeft) / CONFIG.taps.flashMs})`;
+      ctx.fill();
+    }
     ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
     ctx.lineWidth = 2;
     ctx.stroke();
@@ -197,6 +255,7 @@ function loop(landmarker: HandLandmarker) {
     if (video.currentTime !== lastVideoTime) {
       lastVideoTime = video.currentTime;
       result = landmarker.detectForVideo(video, now);
+      recordFingers(result, now);
       frames++;
     }
 
@@ -205,7 +264,7 @@ function loop(landmarker: HandLandmarker) {
     ctx.setTransform(-1, 0, 0, 1, canvas.width, 0);
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    drawLayout(zonesUnderFingertips(result));
+    drawLayout(zonesUnderFingertips(result), now);
     drawCorners();
     if (result) drawHands(result);
 

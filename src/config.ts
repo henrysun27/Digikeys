@@ -21,4 +21,29 @@ export const CONFIG = {
     minCornerDist: 0.03,
     minCornerCross: 0.002,
   },
+  // Mic onset detection (runs in the audio worklet). Levels are block RMS, 0-1.
+  onset: {
+    thresholdRatio: 4, // level must exceed floor * this (~12 dB)
+    minLevel: 0.002, // absolute minimum threshold (~-54 dBFS)
+    riseRatio: 3, // level must jump this much over the mean of the last riseLookbackMs
+    riseLookbackMs: 12,
+    floorFallMs: 150, // floor time constant when the level drops below it
+    floorRiseMs: 2000, // ...and when it rises above it
+    refractoryMs: 80,
+    reportMs: 30, // how often the worklet posts levels for the debug panel
+  },
+  // Fusing onsets with fingertip motion.
+  taps: {
+    historyMs: 200, // finger history searched before the onset
+    stopAfterMs: 60, // how long after the onset a finger may still stop
+    videoLagMs: 50, // camera frames arrive this much later than the sound
+    settleMarginMs: 40, // extra wait for late frames before resolving a tap
+    keepMs: 1000,
+    minDownSpeed: 0.3, // frame heights/s for a downward stroke
+    stopSpeedRatio: 0.3, // stopped once speed falls below this fraction of the peak
+    flashMs: 300,
+    logSize: 8,
+  },
 };
+
+export type OnsetParams = typeof CONFIG.onset;

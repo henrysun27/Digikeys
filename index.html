@@ -14,6 +14,26 @@
         <div id="hint"></div>
       </div>
       <button id="reset" type="button">Reset corners</button>
+      <div id="debug">
+        <button id="mic" type="button">Enable mic</button>
+        <div class="meter">
+          <div id="meter-level"></div>
+          <div id="meter-threshold"></div>
+        </div>
+        <dl>
+          <dt>Mic level</dt>
+          <dd id="mic-level">–</dd>
+          <dt>Floor</dt>
+          <dd id="mic-floor">–</dd>
+          <dt>Threshold</dt>
+          <dd id="mic-threshold">–</dd>
+          <dt>Chosen finger</dt>
+          <dd id="chosen-finger">–</dd>
+          <dt>Stop offset</dt>
+          <dd id="stop-offset">–</dd>
+        </dl>
+        <ol id="tap-log"></ol>
+      </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
