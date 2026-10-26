@@ -1,60 +1,109 @@
-import './style.css'
-import heroImg from './assets/hero.png'
-import typescriptLogo from './assets/typescript.svg'
-import viteLogo from './assets/vite.svg'
-import { setupCounter } from './counter.ts'
+import "./style.css";
+import { FilesetResolver, HandLandmarker, type HandLandmarkerResult } from "@mediapipe/tasks-vision";
+import { CONFIG } from "./config.ts";
 
-document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
-<section id="center">
-  <div class="hero">
-    <img src="${heroImg}" class="base" width="170" height="179">
-    <img src="${typescriptLogo}" class="framework" alt="TypeScript logo"/>
-    <img src="${viteLogo}" class="vite" alt="Vite logo" />
-  </div>
-  <div>
-    <h1>Get started</h1>
-    <p>Edit <code>src/main.ts</code> and save to test <code>HMR</code></p>
-  </div>
-  <button id="counter" type="button" class="counter"></button>
-</section>
+const FINGERTIPS = [4, 8, 12, 16, 20];
 
-<div class="ticks"></div>
+const video = document.querySelector<HTMLVideoElement>("#video")!;
+const canvas = document.querySelector<HTMLCanvasElement>("#view")!;
+const statusEl = document.querySelector<HTMLDivElement>("#status")!;
+const ctx = canvas.getContext("2d")!;
 
-<section id="next-steps">
-  <div id="docs">
-    <svg class="icon" role="presentation" aria-hidden="true"><use href="/icons.svg#documentation-icon"></use></svg>
-    <h2>Documentation</h2>
-    <p>Your questions, answered</p>
-    <ul>
-      <li>
-        <a href="https://vite.dev/" target="_blank">
-          <img class="logo" src="${viteLogo}" alt="" />
-          Explore Vite
-        </a>
-      </li>
-      <li>
-        <a href="https://www.typescriptlang.org" target="_blank">
-          <img class="button-icon" src="${typescriptLogo}" alt="">
-          Learn more
-        </a>
-      </li>
-    </ul>
-  </div>
-  <div id="social">
-    <svg class="icon" role="presentation" aria-hidden="true"><use href="/icons.svg#social-icon"></use></svg>
-    <h2>Connect with us</h2>
-    <p>Join the Vite community</p>
-    <ul>
-      <li><a href="https://github.com/vitejs/vite" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#github-icon"></use></svg>GitHub</a></li>
-      <li><a href="https://chat.vite.dev/" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#discord-icon"></use></svg>Discord</a></li>
-      <li><a href="https://x.com/vite_js" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#x-icon"></use></svg>X.com</a></li>
-      <li><a href="https://bsky.app/profile/vite.dev" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#bluesky-icon"></use></svg>Bluesky</a></li>
-    </ul>
-  </div>
-</section>
+function setStatus(text: string) {
+  statusEl.textContent = text;
+}
 
-<div class="ticks"></div>
-<section id="spacer"></section>
-`
+async function startCamera() {
+  const { width, height, frameRate } = CONFIG.camera;
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { width: { ideal: width }, height: { ideal: height }, frameRate: { ideal: frameRate } },
+    audio: false,
+  });
+  video.srcObject = stream;
+  await video.play();
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+}
 
-setupCounter(document.querySelector<HTMLButtonElement>('#counter')!)
+async function createLandmarker() {
+  const h = CONFIG.hands;
+  const fileset = await FilesetResolver.forVisionTasks(h.wasmPath);
+  return HandLandmarker.createFromOptions(fileset, {
+    baseOptions: { modelAssetPath: h.modelPath, delegate: "GPU" },
+    runningMode: "VIDEO",
+    numHands: h.numHands,
+    minHandDetectionConfidence: h.minHandDetectionConfidence,
+    minHandPresenceConfidence: h.minHandPresenceConfidence,
+    minTrackingConfidence: h.minTrackingConfidence,
+  });
+}
+
+// Landmarks are in raw camera coordinates; the canvas transform does the mirroring.
+function drawHands(result: HandLandmarkerResult) {
+  const w = canvas.width;
+  const h = canvas.height;
+  for (const hand of result.landmarks) {
+    ctx.strokeStyle = "rgba(0, 255, 180, 0.8)";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    for (const { start, end } of HandLandmarker.HAND_CONNECTIONS) {
+      ctx.moveTo(hand[start].x * w, hand[start].y * h);
+      ctx.lineTo(hand[end].x * w, hand[end].y * h);
+    }
+    ctx.stroke();
+
+    hand.forEach((p, i) => {
+      const tip = FINGERTIPS.includes(i);
+      ctx.fillStyle = tip ? "#ff3b6b" : "#ffffff";
+      ctx.beginPath();
+      ctx.arc(p.x * w, p.y * h, tip ? 7 : 4, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+}
+
+function loop(landmarker: HandLandmarker) {
+  let lastVideoTime = -1;
+  let result: HandLandmarkerResult | null = null;
+  let frames = 0;
+  let fpsStart = performance.now();
+
+  const tick = () => {
+    const now = performance.now();
+    if (video.currentTime !== lastVideoTime) {
+      lastVideoTime = video.currentTime;
+      result = landmarker.detectForVideo(video, now);
+      frames++;
+    }
+
+    ctx.setTransform(-1, 0, 0, 1, canvas.width, 0);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    if (result) drawHands(result);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+    if (now - fpsStart >= 1000) {
+      const fps = (frames * 1000) / (now - fpsStart);
+      setStatus(`${result?.landmarks.length ?? 0} hand(s) · ${fps.toFixed(0)} fps`);
+      frames = 0;
+      fpsStart = now;
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+async function main() {
+  try {
+    setStatus("Starting camera…");
+    await startCamera();
+    setStatus("Loading hand model…");
+    const landmarker = await createLandmarker();
+    setStatus("Running");
+    loop(landmarker);
+  } catch (err) {
+    console.error(err);
+    setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+main();

@@ -4,7 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "predev": "node scripts/fetch-mediapipe.mjs",
     "dev": "vite",
+    "prebuild": "node scripts/fetch-mediapipe.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },

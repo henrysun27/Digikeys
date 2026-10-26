@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# MediaPipe wasm + model (fetched by scripts/fetch-mediapipe.mjs)
+public/mediapipe
