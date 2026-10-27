@@ -26,32 +26,61 @@ const shifted = (s: Sample, t: number, dx: number, dy: number): Sample => ({
   fy: s.fy + dy,
 });
 
-// score: what fingers are ranked by (weighted travel for the guess, peak speed for the
-// check), so chord members can be compared with the best.
+// Board coords of a camera point, or null without a calibrated board.
+export type ToBoard = (p: Pt) => Pt | null;
+
+// A finger's down-stroke judged as a strike. It counts only if it went down the board at
+// least CONFIG.taps.minStrokeDepth (board units, start to end) at a mean speed of at least
+// minStrikeSpeed (board units/s) and stopped. at: where it stopped, or for the instant
+// guess, where a still-moving stroke should land (the onset stands in for the stop, whose
+// frames haven't arrived yet). why: null for a strike, else the reason with the measured
+// value. score ranks strikes for chords: weighted depth for the guess, speed for the check.
 export type FingerPick = {
   finger: string;
+  depth: number;
+  speed: number;
+  at: Sample;
+  stopped: boolean;
+  why: string | null;
   score: number;
-  peakSpeed: number; // frame heights per second, downward
-  at: Sample; // where the finger stopped, or where it should land if still moving
   stopOffset: number | null; // stop time minus expected stop time (onset + videoLagMs), ms
 };
 
-// What the guess knows besides finger motion: whether a camera point is on the board, and
-// the hand of the last tap if it was recent.
-export type GuessContext = { onBoard: (p: Pt) => boolean; lastHand: string | null };
+// What the guess knows besides finger motion: board mapping, whether a camera point is on
+// the board, and the hand of the last tap if it was recent.
+export type GuessContext = { toBoard: ToBoard; onBoard: (p: Pt) => boolean; lastHand: string | null };
 
 // start: the frame the stroke started from. prev is the frame before last, for
 // extrapolating a stroke that is still moving.
 type Stroke = { peak: number; start: Sample; stop: Sample | null; last: Sample; prev: Sample | null };
 
-// A down-stroke of one finger for the hybrid gate, vision taps and miss logging. end is
-// where it stopped, or its latest frame if still moving; travel is in frame heights.
-export type Motion = { finger: string; peak: number; travel: number; end: Sample; stopped: boolean };
+const raw = (s: Sample): Pt => ({ x: s.x, y: s.y });
 
-function toMotion(finger: string, k: Stroke): Motion {
-  const end = k.stop ?? k.last;
-  return { finger, peak: k.peak, travel: end.y - k.start.y, end, stopped: k.stop !== null };
+// Depth and mean speed of a stroke from start to `at`, in board units, and whether that
+// makes a strike.
+function judge(finger: string, start: Sample, at: Sample, stopped: boolean, toBoard: ToBoard): FingerPick {
+  const { minStrokeDepth, minStrikeSpeed } = CONFIG.taps;
+  const a = toBoard(raw(start));
+  const b = toBoard(raw(at));
+  const depth = a && b ? b.y - a.y : 0;
+  const dt = at.t - start.t;
+  const speed = dt > 0 ? (depth / dt) * 1000 : 0;
+  // A still-moving stroke is measured to its extrapolated landing: say so in the reason.
+  const est = stopped ? "" : " predicted";
+  const why =
+    !a || !b
+      ? "no board"
+      : depth < minStrokeDepth
+        ? `too shallow (${depth.toFixed(3)}${est} < ${minStrokeDepth})`
+        : speed < minStrikeSpeed
+          ? `too slow (${speed.toFixed(2)}/s${est} < ${minStrikeSpeed}/s)`
+          : null;
+  return { finger, depth, speed, at, stopped, why, score: 0, stopOffset: null };
 }
+
+// Strikes first, best score first; then the rest.
+const ranked = (picks: FingerPick[]) =>
+  picks.sort((a, b) => Number(a.why !== null) - Number(b.why !== null) || b.score - a.score);
 
 export class FingerHistory {
   private tracks = new Map<string, Sample[]>();
@@ -73,50 +102,30 @@ export class FingerHistory {
     }
   }
 
-  // Allowed fingers' down-strokes in frames since `from` that descended at least
-  // CONFIG.motion.minTravel and end (stopped or still moving) inside the board.
-  motionSince(from: number, onBoard: (p: Pt) => boolean): Motion[] {
-    const { minDownSpeed, minTravel } = CONFIG.motion;
-    const out: Motion[] = [];
-    for (const [finger, track] of this.tracks) {
-      if (!isAllowed(finger)) continue;
-      for (const k of downStrokes(track.filter((s) => s.t >= from), minDownSpeed)) {
-        const m = toMotion(finger, k);
-        if (m.travel >= minTravel && onBoard(landing(m.end))) out.push(m);
-      }
-    }
-    return out;
-  }
-
-  // Down-strokes that stopped inside the board since the last call: a down-then-stop of an
-  // allowed finger, each reported once. Call after every frame's samples are added.
-  newStops(onBoard: (p: Pt) => boolean): Motion[] {
-    const { minDownSpeed, minTravel } = CONFIG.motion;
-    const out: Motion[] = [];
+  // Strikes that stopped inside the board since the last call, each stroke reported once.
+  // Call after every frame's samples are added.
+  newStops(toBoard: ToBoard, onBoard: (p: Pt) => boolean): FingerPick[] {
+    const out: FingerPick[] = [];
     for (const [finger, track] of this.tracks) {
       if (!isAllowed(finger) || track.length < 2) continue;
       const from = track[track.length - 1].t - CONFIG.taps.historyMs;
       const after = this.reported.get(finger) ?? -Infinity;
-      for (const k of downStrokes(track.filter((s) => s.t >= from), minDownSpeed)) {
+      for (const k of downStrokes(track.filter((s) => s.t >= from))) {
         if (!k.stop || k.stop.t <= after) continue;
         this.reported.set(finger, k.stop.t);
-        const m = toMotion(finger, k);
-        if (m.travel >= minTravel && onBoard(landing(m.end))) out.push(m);
+        const m = judge(finger, k.start, k.stop, true, toBoard);
+        if (!m.why && onBoard(landing(m.at))) out.push(m);
       }
     }
     return out;
   }
 
-  // The finger that moved down fastest and then stopped around the onset. A finger
-  // landing at the onset shows up in frames videoLagMs later, so the search is centered
-  // there: the stop must be within stopToleranceMs of it (per finger, the stroke
-  // stopping closest to it). Needs frames up to that time, so call it after they're in.
-  resolve(onset: number): FingerPick | null {
-    return this.resolveAll(onset)[0] ?? null;
-  }
-
-  // Every allowed finger with a stop in the window, fastest stroke first.
-  resolveAll(onset: number): FingerPick[] {
+  // Every allowed finger with a stop around the onset, judged as a strike and scored by
+  // speed (the fastest strike first). A finger landing at the onset shows up in frames
+  // videoLagMs later, so the search is centered there: the stop must be within
+  // stopToleranceMs of it (per finger, the stroke stopping closest to it). Needs frames up
+  // to that time, so call it after they're in.
+  resolveAll(onset: number, toBoard: ToBoard): FingerPick[] {
     const { historyMs, stopToleranceMs, videoLagMs } = CONFIG.taps;
     const expected = onset + videoLagMs;
     const from = expected - stopToleranceMs - historyMs;
@@ -130,26 +139,20 @@ export class FingerHistory {
         expected,
       );
       if (!stroke) continue;
-      const at = stroke.stop!;
-      picks.push({ finger, score: stroke.peak, peakSpeed: stroke.peak, at, stopOffset: at.t - expected });
+      const m = judge(finger, stroke.start, stroke.stop!, true, toBoard);
+      picks.push({ ...m, score: m.speed, stopOffset: m.at.t - expected });
     }
-    return picks.sort((a, b) => b.score - a.score);
+    return ranked(picks);
   }
 
-  // Best guess at onset time, from the frames so far. With webcam lag the latest frames
-  // often still show the finger raised, before any down-stroke, so fingers are scored by
-  // vertical travel in the window (the one that lifted to strike), weighted by
-  // CONFIG.guess: thumbs count less unless they travel far, and fingers already on the
-  // board or on the hand that tapped last count more. The winner's landing is predicted:
-  // its stop if already seen, the extrapolated stroke if it is coming down, or its
-  // resting height (lowest point in the window) if still raised.
-  guess(onset: number, c: GuessContext): FingerPick | null {
-    return this.guessAll(onset, c)[0] ?? null;
-  }
-
-  // Every allowed finger that lifted at least minLift, scored as in guess, best first.
+  // Best guess at onset time, from the frames so far: every allowed finger with a
+  // down-stroke in the window, judged on its latest stroke. That is its stop if already
+  // seen (not older than stopToleranceMs before the expected stop), or, with webcam lag
+  // usually, the stroke still coming down, extrapolated to where it should land. Strikes
+  // are scored by depth weighted by CONFIG.guess: thumbs count less unless they strike
+  // deep, and fingers already on the board or on the hand that tapped last count more.
   guessAll(onset: number, c: GuessContext): FingerPick[] {
-    const { historyMs, stopToleranceMs, videoLagMs, minLift } = CONFIG.taps;
+    const { historyMs, stopToleranceMs, videoLagMs } = CONFIG.taps;
     const g = CONFIG.guess;
     const expected = onset + videoLagMs;
     const from = expected - stopToleranceMs - historyMs;
@@ -157,29 +160,29 @@ export class FingerHistory {
     for (const [finger, track] of this.tracks) {
       if (!isAllowed(finger)) continue;
       const s = track.filter((p) => p.t >= from);
-      if (s.length < 2) continue;
-      const restY = Math.max(...s.map((p) => p.y));
-      const travel = restY - Math.min(...s.map((p) => p.y));
-      if (travel < minLift) continue;
-      let score = travel;
-      if (fingerOf(finger) === "thumb" && travel < g.thumbStrikeLift) score *= g.thumbWeight;
+      const stroke = downStrokes(s).at(-1);
+      if (!stroke) continue;
+      const at = stroke.stop ?? extrapolate(stroke, expected);
+      const m = judge(finger, stroke.start, at, !!stroke.stop, c.toBoard);
+      if (!m.why && stroke.stop && stroke.stop.t < expected - stopToleranceMs) {
+        m.why = `stopped too early (${(stroke.stop.t - expected).toFixed(0)} ms)`;
+      }
+      let score = m.depth;
+      if (fingerOf(finger) === "thumb" && m.depth < g.thumbStrikeDepth) score *= g.thumbWeight;
       if (c.onBoard(landing(s[s.length - 1]))) score *= g.onBoardWeight;
       if (c.lastHand !== null && handOf(finger) === c.lastHand) score *= g.lastHandWeight;
-      const stroke = downStrokes(s).at(-1);
-      let at: Sample;
-      if (stroke?.stop && stroke.stop.t >= expected - stopToleranceMs) at = stroke.stop;
-      else if (stroke && !stroke.stop) at = extrapolate(stroke, expected);
-      else at = shifted(s[s.length - 1], s[s.length - 1].t, 0, restY - s[s.length - 1].y);
-      picks.push({ finger, score, peakSpeed: stroke?.peak ?? 0, at, stopOffset: null });
+      picks.push({ ...m, score });
     }
-    return picks.sort((a, b) => b.score - a.score);
+    return ranked(picks);
   }
 }
 
-// Downward (increasing y) strokes in order. A stroke starts when speed reaches
-// minDownSpeed and stops at the last frame before speed falls below stopSpeedRatio of
-// its peak. The final stroke may still be moving (stop null).
-function downStrokes(s: Sample[], minDownSpeed = CONFIG.taps.minDownSpeed): Stroke[] {
+// Downward (increasing y) strokes in order, in camera coords. A stroke starts when speed
+// reaches motion.minDownSpeed (low on purpose: judge decides in board units whether it is
+// a strike) and stops at the last frame before speed falls below stopSpeedRatio of its
+// peak. The final stroke may still be moving (stop null).
+function downStrokes(s: Sample[]): Stroke[] {
+  const { minDownSpeed } = CONFIG.motion;
   const { stopSpeedRatio } = CONFIG.taps;
   const strokes: Stroke[] = [];
   let peak = 0;

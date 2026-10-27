@@ -163,6 +163,23 @@ All code in this repo was written during the hackathon.
       toward the same attempt, and it is a hit only if both zones played (guess) or were
       found by the stop check. Chord scores are listed separately, and zones that played
       without being targeted are counted as extra notes.
+- [x] Stricter strikes, against false presses from slight finger movement: a finger
+      strikes only if its down-stroke went at least `CONFIG.taps.minStrokeDepth` (0.03)
+      down the board, measured in board units through the homography, at a mean speed of
+      at least `minStrikeSpeed` (0.25 board units/s), and stopped. Every played note must
+      pass this on its own before the chord ratio (now 0.8) applies; the stop check,
+      vision-only taps and the miss log use the same test. For the instant guess the stop
+      usually isn't in the frames yet, so a stroke still coming down is measured to its
+      extrapolated landing (up to `maxExtrapolateMs`) and marked "predicted" in the log.
+      The onset threshold is now the floor + 8 dB, with the 5 dB sudden-rise check kept.
+      The tap log lists every moving finger that didn't play and why, with the measured
+      value: "too shallow (0.021 < 0.03)", "too slow (0.18/s < 0.25/s)", "below ratio
+      (0.71 < 0.8)", "stopped too early", or "in refractory"; the check lists the same.
+      An onset with no striking finger is logged as "rejected (no strike: ...)".
+      In simulation a slight wiggle (0.8% of the frame height, 0.02 board) fails the check
+      as too shallow, but the instant guess, extrapolating, can measure it at 0.03 and
+      play it; lowering `maxExtrapolateMs` trades that against cutting short real taps
+      whose last frames haven't arrived.
 
 ## Meta models
 

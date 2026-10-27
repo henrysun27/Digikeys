@@ -33,8 +33,9 @@ const recentWaits: number[] = [];
 const recentVision: number[] = [];
 const visionLatencyEl = el("vision-latency");
 
-// What was played at onset time from the best-guess finger. waitMs: onset to the main
-// thread getting the message; handlerMs: from then to the trigger.
+// What was played at onset time from the best-guess fingers. waitMs: onset to the main
+// thread getting the message; handlerMs: from then to the trigger. rejected: each other
+// moving finger and why it didn't play, with the measured value.
 export type PlayedTap = {
   n: number;
   finger: string | null;
@@ -42,10 +43,19 @@ export type PlayedTap = {
   latencyMs: number | null;
   waitMs: number;
   handlerMs: number;
+  rejected: string[];
 };
-// The finger that moved down fastest and then stopped, known once late frames are in.
-// late: the stop was past lateStopMs, so zone comes from the guess position.
-export type ResolvedTap = { finger: string | null; zone: string | null; stopOffset: number | null; late: boolean };
+// The fingers that struck and stopped, known once late frames are in. late: the stop was
+// past lateStopMs, so zone comes from the guess position. rejected: as for PlayedTap.
+export type ResolvedTap = {
+  finger: string | null;
+  zone: string | null;
+  stopOffset: number | null;
+  late: boolean;
+  rejected: string[];
+};
+
+const notPlayed = (rejected: string[]) => (rejected.length ? ` · not played: ${rejected.join("; ")}` : "");
 
 const db = (v: number) => (v > 0 ? 20 * Math.log10(v) : -Infinity);
 const fmtDb = (v: number) => `${Math.max(-99, db(v)).toFixed(0)} dB`;
@@ -88,9 +98,11 @@ export function logIgnored(n: number, reason: string) {
   appendLog(`#${n} ignored (${reason})`);
 }
 
-// Hybrid mode: an onset with no allowed finger moving down or just stopped on the board.
-export function logRejected(n: number, level: number, threshold: number) {
-  appendLog(`#${n} rejected (no finger motion) · ${fmtDb(level)} vs threshold ${fmtDb(threshold)}`);
+// Hybrid mode: an onset with no striking finger; rejected says why each moving one
+// fell short.
+export function logRejected(n: number, level: number, threshold: number, rejected: string[]) {
+  const why = rejected.length ? rejected.join("; ") : "no finger moving down";
+  appendLog(`#${n} rejected (no strike: ${why}) · ${fmtDb(level)} vs threshold ${fmtDb(threshold)}`);
 }
 
 // Test mode: a finger came down and stopped on the board but no onset was accepted
@@ -147,7 +159,7 @@ export function logPlayed(t: PlayedTap): HTMLLIElement {
       `(last ${recentLatencies.length})`;
   }
   const played = t.latencyMs !== null ? ` · ${t.latencyMs.toFixed(0)} ms` : t.finger ? " · silent" : "";
-  return appendLog(`#${t.n} ${t.finger ? where(t.finger, t.zone) : "no finger moving"}${played}`);
+  return appendLog(`#${t.n} ${t.finger ? where(t.finger, t.zone) : "no finger moving"}${played}${notPlayed(t.rejected)}`);
 }
 
 // Session accuracy of the instant guess and the stop-based check, one line per finger
@@ -253,11 +265,12 @@ export function resolveTap(line: HTMLLIElement, playedFinger: string | null, r: 
     pushRecent(recentOffsets, r.stopOffset);
     medianOffsetEl.textContent = `${fmtMs(median(recentOffsets))} (last ${recentOffsets.length})`;
   }
+  const skipped = r.rejected.length ? ` (not counted: ${r.rejected.join("; ")})` : "";
   if (!r.finger) {
-    line.textContent += " · no finger stopped";
+    line.textContent += ` · check: no strike stopped${skipped}`;
     return;
   }
   const check = r.finger === playedFinger ? "check ✓" : `check ✗ ${where(r.finger, r.zone)}`;
   const late = r.late ? " (late: guess position)" : "";
-  line.textContent += ` · stop ${fmtMs(r.stopOffset)}${late} · ${check}`;
+  line.textContent += ` · stop ${fmtMs(r.stopOffset)}${late} · ${check}${skipped}`;
 }

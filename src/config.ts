@@ -46,13 +46,12 @@ export const CONFIG = {
     minCornerCross: 0.002,
   },
   // Mic onset detection (runs in the audio worklet). Levels are block RMS, 0-1.
-  // Low enough for light fingertip contact: in hybrid mode the finger-motion gate, not the
-  // level, rejects other sounds.
+  // In hybrid mode an onset also needs a finger strike (taps.minStrokeDepth/minStrikeSpeed).
   onset: {
-    thresholdDb: 5, // level must exceed the floor by this
+    thresholdDb: 8, // level must exceed the floor by this
     minLevelDb: -66, // absolute minimum threshold, dBFS
-    // Level must jump this much over the mean of the last riseLookbackMs. Kept at
-    // thresholdDb: from a quiet floor a larger rise would be the real threshold.
+    // Sudden-rise check: level must also jump this much over the mean of the last
+    // riseLookbackMs, so a slow swell over the threshold isn't an onset.
     riseDb: 5,
     riseLookbackMs: 12,
     floorFallMs: 150, // floor time constant when the level drops below it
@@ -76,8 +75,7 @@ export const CONFIG = {
   },
   // Fusing onsets with fingertip motion.
   taps: {
-    // "hybrid": mic onsets, kept only if an allowed finger is moving down or just stopped
-    // on the board. "vision": a down-stroke that stops on the board is the tap, no mic.
+    // "hybrid": mic onsets, kept only if an allowed finger strikes (below). "vision": a down-stroke that stops on the board is the tap, no mic.
     // The toolbar toggle switches it.
     mode: "hybrid" as "hybrid" | "vision",
     // Finger frames are detected this long after the onset of the same moment. Tune it by
@@ -89,27 +87,29 @@ export const CONFIG = {
     // A stop later than this past onset + videoLagMs is likely the finger settling after
     // contact, not the contact: the check then uses the guess position instead.
     lateStopMs: 25,
-    minLift: 0.015, // best guess: min vertical travel (frame heights) to count as striking
     maxExtrapolateMs: 80, // best guess: how far ahead a still-moving finger is projected
     medianTaps: 20, // taps in the debug panel's medians (stop offset, tap-to-sound)
     keepMs: 1000,
-    minDownSpeed: 0.3, // frame heights/s for a downward stroke
     stopSpeedRatio: 0.3, // stopped once speed falls below this fraction of the peak
-    // Chords: an accepted onset plays every allowed finger whose strike score is at least
-    // this fraction of the best one's (one note per zone). Lower catches more of a chord,
-    // and more sympathetic finger motion.
-    chordRatio: 0.6,
+    // A finger strikes only if it went down at least minStrokeDepth (board units, start to
+    // end of the stroke) at a mean speed of at least minStrikeSpeed (board units/s), then
+    // stopped. Applies to every played note, the check, vision taps and the miss log; the
+    // tap log shows the measured values of fingers that fall short.
+    minStrokeDepth: 0.03,
+    minStrikeSpeed: 0.25,
+    // Chords: an accepted onset plays every striking finger whose score is at least this
+    // fraction of the best one's (one note per zone). Lower catches more of a chord, and
+    // more sympathetic finger motion.
+    chordRatio: 0.8,
     zoneRefractoryMs: 80, // a zone can't play again sooner than this; other zones can
     flashMs: 300,
     logSize: 8,
     dotTaps: 30, // taps with a target whose guess/check positions are drawn on the board
   },
-  // Down-strokes for the hybrid gate, vision-only taps and missed-tap logging. Speed is
-  // well below taps.minDownSpeed so light, slow contact counts (a 7 mm press over ~130 ms
-  // is ~0.12 frame heights/s); minTravel is what keeps landmark jitter out.
   motion: {
-    minDownSpeed: 0.1, // frame heights/s
-    minTravel: 0.01, // frame heights a stroke must descend
+    // Where down-strokes start and end (camera frame heights/s). Low on purpose: whether a
+    // stroke is a strike is judged in board units by taps.minStrokeDepth/minStrikeSpeed.
+    minDownSpeed: 0.1,
     missWindowMs: 150, // test mode: a stop with no accepted onset within this is a miss
     keepMs: 2000, // how long onset times and mic levels are kept for miss checks
   },
@@ -134,7 +134,7 @@ export const CONFIG = {
   // Best-guess finger scoring: vertical travel times these weights.
   guess: {
     thumbWeight: 0.4, // thumbs, unless clearly striking...
-    thumbStrikeLift: 0.04, // ...i.e. travelling at least this far (frame heights)
+    thumbStrikeDepth: 0.06, // ...i.e. striking at least this deep (board units)
     onBoardWeight: 1.5, // fingers whose latest frame is inside the board
     lastHandWeight: 1.3, // fingers on the hand of the last tap...
     lastHandMs: 1500, // ...if it was at most this long ago
