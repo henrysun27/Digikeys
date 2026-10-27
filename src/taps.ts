@@ -7,6 +7,7 @@ export const FINGER_NAMES = ["thumb", "index", "middle", "ring", "pinky"];
 export const fingerKey = (hand: string, finger: string) => `${hand} ${finger}`;
 export const handOf = (key: string) => key.slice(0, key.lastIndexOf(" "));
 const fingerOf = (key: string) => key.slice(key.lastIndexOf(" ") + 1);
+export const isAllowed = (key: string) => CONFIG.fingers.allowed.includes(fingerOf(key));
 
 // t is when the frame's landmarks were detected, performance.now() ms. x, y are raw
 // camera coords (0-1).
@@ -47,6 +48,7 @@ export class FingerHistory {
     const to = expected + stopToleranceMs;
     let best: FingerPick | null = null;
     for (const [finger, track] of this.tracks) {
+      if (!isAllowed(finger)) continue;
       const strokes = downStrokes(track.filter((s) => s.t >= from && s.t <= to));
       const stroke = nearestStop(
         strokes.filter((k) => k.stop && Math.abs(k.stop.t - expected) <= stopToleranceMs),
@@ -73,6 +75,7 @@ export class FingerHistory {
     let best: FingerPick | null = null;
     let bestScore = 0;
     for (const [finger, track] of this.tracks) {
+      if (!isAllowed(finger)) continue;
       const s = track.filter((p) => p.t >= from);
       if (s.length < 2) continue;
       const restY = Math.max(...s.map((p) => p.y));

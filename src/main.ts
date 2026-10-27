@@ -19,6 +19,7 @@ const resetBtn = document.querySelector<HTMLButtonElement>("#reset")!;
 const testBtn = document.querySelector<HTMLButtonElement>("#test")!;
 const micBtn = document.querySelector<HTMLButtonElement>("#mic")!;
 const layoutSelect = document.querySelector<HTMLSelectElement>("#layout")!;
+const fingersSelect = document.querySelector<HTMLSelectElement>("#fingers")!;
 const detectBtn = document.querySelector<HTMLButtonElement>("#detect")!;
 const samPromptInput = document.querySelector<HTMLInputElement>("#sam-prompt")!;
 const samStatusEl = document.querySelector<HTMLDivElement>("#sam-status")!;
@@ -109,16 +110,30 @@ layoutSelect.addEventListener("change", () => {
   flashes.clear();
   if (test.active) {
     test.next(layout);
-    showTest(test.target?.label ?? null, test.score);
+    updateTest();
   }
 });
+
+// The finger toggle writes CONFIG.fingers.allowed; its option label names the setting
+// that test scores are kept under.
+const FINGER_SETS: Record<string, string[]> = { index: ["index"], all: FINGER_NAMES };
+const fingerSetting = () => fingersSelect.selectedOptions[0].text;
+fingersSelect.value = CONFIG.fingers.allowed.length === 1 && CONFIG.fingers.allowed[0] === "index" ? "index" : "all";
+fingersSelect.addEventListener("change", () => {
+  CONFIG.fingers.allowed = FINGER_SETS[fingersSelect.value];
+  updateTest();
+});
+
+function updateTest() {
+  showTest(test.active ? (test.target?.label ?? null) : null, fingerSetting(), test.scores);
+}
 
 function setTesting(on: boolean) {
   if (on) test.start(layout);
   else test.stop();
   testBtn.textContent = on ? "Stop test" : "Test";
   testBtn.classList.toggle("on", on);
-  showTest(test.target?.label ?? null, test.score);
+  updateTest();
 }
 
 testBtn.addEventListener("click", () => setTesting(!test.active));
@@ -263,15 +278,24 @@ function onOnset(onset: Onset) {
   const { videoLagMs, stopToleranceMs, settleMarginMs, flashMs } = CONFIG.taps;
   const recent = lastTap && onset.time - lastTap.t <= CONFIG.guess.lastHandMs;
   const guess = history.guess(onset.time, { onBoard, lastHand: recent ? lastTap!.hand : null });
-  if (guess) setLastTap(guess.finger, onset.time);
   const zone = guess ? zoneAt(guess.at) : null;
   const latencyMs = zone ? play(zone.sound, onset.ctxTime) : null;
+  const handlerMs = performance.now() - onset.receivedAt;
+  if (guess) setLastTap(guess.finger, onset.time);
   if (zone) flashes.set(zone.id, performance.now() + flashMs);
-  const line = logPlayed({ n, finger: guess?.finger ?? null, zone: zone?.label ?? null, latencyMs });
+  const line = logPlayed({
+    n,
+    finger: guess?.finger ?? null,
+    zone: zone?.label ?? null,
+    latencyMs,
+    waitMs: onset.receivedAt - onset.time,
+    handlerMs,
+  });
   const target = test.active ? test.target : null;
+  const setting = fingerSetting();
   if (target) {
     test.next(layout);
-    showTest(test.target?.label ?? null, test.score);
+    updateTest();
   }
 
   const resolveAt = onset.time + videoLagMs + stopToleranceMs + settleMarginMs;
@@ -285,8 +309,8 @@ function onOnset(onset: Onset) {
       stopOffset: pick?.stopOffset ?? null,
     });
     if (target) {
-      logTest(line, target.label, test.record(target, zone, checkZone));
-      showTest(test.active ? (test.target?.label ?? null) : null, test.score);
+      logTest(line, target.label, test.record(setting, target, zone, checkZone));
+      updateTest();
     }
   }, Math.max(0, resolveAt - performance.now()));
 }
@@ -330,10 +354,11 @@ function zonesUnderFingertips(result: HandLandmarkerResult | null): Set<string> 
   const hits = new Set<string>();
   if (!result || !calibration.camToBoard) return hits;
   for (const hand of result.landmarks) {
-    for (const i of FINGERTIPS) {
-      const zone = hitTest(layout, applyH(calibration.camToBoard, hand[i]));
+    FINGERTIPS.forEach((i, f) => {
+      if (!CONFIG.fingers.allowed.includes(FINGER_NAMES[f])) return;
+      const zone = hitTest(layout, applyH(calibration.camToBoard!, hand[i]));
       if (zone) hits.add(zone.id);
-    }
+    });
   }
   return hits;
 }
@@ -435,7 +460,8 @@ function drawHands(result: HandLandmarkerResult) {
     ctx.stroke();
 
     pts.forEach((p, i) => {
-      const tip = FINGERTIPS.includes(i);
+      const f = FINGERTIPS.indexOf(i);
+      const tip = f >= 0 && CONFIG.fingers.allowed.includes(FINGER_NAMES[f]);
       ctx.fillStyle = tip ? "#ff3b6b" : "#ffffff";
       ctx.beginPath();
       ctx.arc(p.x, p.y, tip ? 7 : 4, 0, Math.PI * 2);

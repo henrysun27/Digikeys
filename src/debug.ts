@@ -19,9 +19,18 @@ const testStatsEl = el("test-stats");
 const logEl = el("tap-log");
 const recentOffsets: number[] = [];
 const recentLatencies: number[] = [];
+const recentWaits: number[] = [];
 
-// What was played at onset time from the best-guess finger.
-export type PlayedTap = { n: number; finger: string | null; zone: string | null; latencyMs: number | null };
+// What was played at onset time from the best-guess finger. waitMs: onset to the main
+// thread getting the message; handlerMs: from then to the trigger.
+export type PlayedTap = {
+  n: number;
+  finger: string | null;
+  zone: string | null;
+  latencyMs: number | null;
+  waitMs: number;
+  handlerMs: number;
+};
 // The finger that moved down fastest and then stopped, known once late frames are in.
 export type ResolvedTap = { finger: string | null; zone: string | null; stopOffset: number | null };
 
@@ -82,21 +91,38 @@ export function logPlayed(t: PlayedTap): HTMLLIElement {
   fingerEl.textContent = t.finger ? where(t.finger, t.zone) : "no finger moving";
   if (t.latencyMs !== null) {
     pushRecent(recentLatencies, t.latencyMs);
-    tapLatencyEl.textContent = `${t.latencyMs.toFixed(0)} ms`;
-    medianLatencyEl.textContent = `${median(recentLatencies).toFixed(0)} ms (last ${recentLatencies.length})`;
+    pushRecent(recentWaits, t.waitMs);
+    tapLatencyEl.textContent =
+      `${t.latencyMs.toFixed(0)} ms (main-thread wait ${t.waitMs.toFixed(0)}, ` +
+      `guess+trigger ${t.handlerMs.toFixed(1)})`;
+    medianLatencyEl.textContent =
+      `${median(recentLatencies).toFixed(0)} ms, wait ${median(recentWaits).toFixed(0)} ms ` +
+      `(last ${recentLatencies.length})`;
   }
   const played = t.latencyMs !== null ? ` · ${t.latencyMs.toFixed(0)} ms` : t.finger ? " · silent" : "";
   return appendLog(`#${t.n} ${t.finger ? where(t.finger, t.zone) : "no finger moving"}${played}`);
 }
 
-// Session accuracy of the instant guess and the stop-based check; target null when the
-// test isn't running.
-export function showTest(target: string | null, s: TestScore) {
-  testStatsEl.hidden = target === null && s.taps === 0;
-  const pct = (hits: number) => (s.taps ? ` (${((hits / s.taps) * 100).toFixed(0)}%)` : "");
-  const tap = target !== null ? `Tap ${target} · ` : "";
-  testStatsEl.textContent =
-    `${tap}guess ${s.guessHits}/${s.taps}${pct(s.guessHits)} · check ${s.checkHits}/${s.taps}${pct(s.checkHits)}`;
+// Session accuracy of the instant guess and the stop-based check, one line per finger
+// setting, the current one first; target null when the test isn't running.
+export function showTest(target: string | null, setting: string, scores: Map<string, TestScore>) {
+  testStatsEl.hidden = target === null && scores.size === 0;
+  const line = (name: string, s: TestScore) => {
+    const pct = (hits: number) => (s.taps ? ` (${((hits / s.taps) * 100).toFixed(0)}%)` : "");
+    const div = document.createElement("div");
+    div.textContent =
+      `${name}: guess ${s.guessHits}/${s.taps}${pct(s.guessHits)} · ` +
+      `check ${s.checkHits}/${s.taps}${pct(s.checkHits)}`;
+    return div;
+  };
+  const lines = [line(setting, scores.get(setting) ?? { taps: 0, guessHits: 0, checkHits: 0 })];
+  for (const [name, s] of scores) if (name !== setting) lines.push(line(name, s));
+  if (target !== null) {
+    const tap = document.createElement("div");
+    tap.textContent = `Tap ${target}`;
+    lines.unshift(tap);
+  }
+  testStatsEl.replaceChildren(...lines);
 }
 
 export function logTest(line: HTMLLIElement, target: string, hit: { guess: boolean; check: boolean }) {

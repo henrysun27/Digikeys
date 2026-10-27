@@ -60,6 +60,11 @@ export const CONFIG = {
     flashMs: 300,
     logSize: 8,
   },
+  // Which fingers (FINGER_NAMES) are tap candidates, for both the guess and the check.
+  // The toolbar toggle switches this between ["index"] and all fingers.
+  fingers: {
+    allowed: ["index"] as string[],
+  },
   // Best-guess finger scoring: vertical travel times these weights.
   guess: {
     thumbWeight: 0.4, // thumbs, unless clearly striking...

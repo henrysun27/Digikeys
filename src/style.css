@@ -91,7 +91,8 @@ body {
 #detect,
 #sam-actions button,
 #mic,
-#layout {
+#layout,
+#fingers {
   padding: 6px 12px;
   border: 1px solid rgba(255, 255, 255, 0.4);
   border-radius: 6px;
@@ -115,13 +116,15 @@ body {
   cursor: text;
 }
 
-#layout option {
+#layout option,
+#fingers option {
   background: #222;
 }
 
 #reset:hover,
 #test:hover:enabled,
 #layout:hover,
+#fingers:hover,
 #detect:hover:enabled,
 #sam-actions button:hover:enabled,
 #mic:hover:enabled {

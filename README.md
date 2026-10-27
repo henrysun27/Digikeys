@@ -60,6 +60,11 @@ All code in this repo was written during the hackathon.
       accuracy for both in the debug panel and per-tap ✓/✗ in the log. The guess scores
       fingers by lift weighted by `CONFIG.guess`: thumbs count less unless they travel far,
       and fingers already on the board or on the hand that tapped last count more.
+- [x] Finger toggle: "Index fingers only" (default) or "All fingers" sets
+      `CONFIG.fingers.allowed`; only those fingers are tap candidates for the guess and
+      the check. Test accuracy is kept separately per setting. The debug panel splits
+      tap-to-sound into the main-thread wait for the onset message and the guess+trigger
+      time.
 
 ## Meta models
 

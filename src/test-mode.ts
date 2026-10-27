@@ -3,12 +3,12 @@ import type { Layout, Zone } from "./layout.ts";
 export type TestScore = { taps: number; guessHits: number; checkHits: number };
 
 // One random target zone at a time. Each tap is scored against the target shown at its
-// onset, twice: the instant guess (what played) and the stop-based check. The score
-// covers the whole page session, across starts and stops.
+// onset, twice: the instant guess (what played) and the stop-based check. Scores cover
+// the whole page session, across starts and stops, kept separately per finger setting.
 export class TestMode {
   active = false;
   target: Zone | null = null;
-  readonly score: TestScore = { taps: 0, guessHits: 0, checkHits: 0 };
+  readonly scores = new Map<string, TestScore>(); // finger setting -> score
 
   start(layout: Layout) {
     this.active = true;
@@ -26,11 +26,18 @@ export class TestMode {
     this.target = pool.length ? pool[Math.floor(Math.random() * pool.length)] : null;
   }
 
-  record(target: Zone, guessZone: Zone | null, checkZone: Zone | null): { guess: boolean; check: boolean } {
+  record(
+    setting: string,
+    target: Zone,
+    guessZone: Zone | null,
+    checkZone: Zone | null,
+  ): { guess: boolean; check: boolean } {
     const hit = { guess: guessZone?.id === target.id, check: checkZone?.id === target.id };
-    this.score.taps++;
-    if (hit.guess) this.score.guessHits++;
-    if (hit.check) this.score.checkHits++;
+    let score = this.scores.get(setting);
+    if (!score) this.scores.set(setting, (score = { taps: 0, guessHits: 0, checkHits: 0 }));
+    score.taps++;
+    if (hit.guess) score.guessHits++;
+    if (hit.check) score.checkHits++;
     return hit;
   }
 }

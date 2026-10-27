@@ -5,6 +5,7 @@ import workletUrl from "./onset-worklet.ts?worker&url";
 export type Onset = {
   time: number; // performance.now() ms
   ctxTime: number; // the onset block's audio-clock time, s
+  receivedAt: number; // performance.now() when the main thread got the onset message
   level: number;
   threshold: number;
 };
@@ -81,14 +82,16 @@ export async function startMic(ctx: AudioContext, h: MicHandlers) {
   };
 
   h.onInfo(toPerf(ctx.currentTime).info);
+  // Onsets are handled before the debug-panel info: the sound can't wait, the panel can.
   node.port.onmessage = (e: MessageEvent<OnsetMessage>) => {
+    const receivedAt = performance.now();
     const msg = e.data;
     if (msg.type === "level") {
       h.onLevel(msg);
       return;
     }
     const { time, info } = toPerf(msg.time);
+    h.onOnset({ time, ctxTime: msg.time, receivedAt, level: msg.level, threshold: msg.threshold });
     h.onInfo(info);
-    h.onOnset({ time, ctxTime: msg.time, level: msg.level, threshold: msg.threshold });
   };
 }
