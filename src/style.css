@@ -185,8 +185,35 @@ body {
   background: #ff3b6b;
 }
 
-#test-stats {
+#test-panel {
   margin-top: 10px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+#test-panel[hidden] {
+  display: none;
+}
+
+#reset-stats {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.6);
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+#reset-stats:hover {
+  background: rgba(40, 40, 40, 0.8);
+}
+
+#test-stats {
   font-size: 15px;
   font-weight: 600;
 }

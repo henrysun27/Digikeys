@@ -16,6 +16,7 @@ const offsetEl = el("stop-offset");
 const medianOffsetEl = el("median-offset");
 const audioLatencyEl = el("audio-latency");
 const outputLatencyEl = el("output-latency");
+const testPanelEl = el("test-panel");
 const testStatsEl = el("test-stats");
 const tapCorrectionEl = el("tap-correction");
 const logEl = el("tap-log");
@@ -34,7 +35,8 @@ export type PlayedTap = {
   handlerMs: number;
 };
 // The finger that moved down fastest and then stopped, known once late frames are in.
-export type ResolvedTap = { finger: string | null; zone: string | null; stopOffset: number | null };
+// late: the stop was past lateStopMs, so zone comes from the guess position.
+export type ResolvedTap = { finger: string | null; zone: string | null; stopOffset: number | null; late: boolean };
 
 const db = (v: number) => (v > 0 ? 20 * Math.log10(v) : -Infinity);
 const fmtDb = (v: number) => `${Math.max(-99, db(v)).toFixed(0)} dB`;
@@ -108,7 +110,7 @@ export function logPlayed(t: PlayedTap): HTMLLIElement {
 // Session accuracy of the instant guess and the stop-based check, one line per finger
 // setting, the current one first; target null when the test isn't running.
 export function showTest(target: string | null, setting: string, scores: Map<string, TestScore>) {
-  testStatsEl.hidden = target === null && scores.size === 0;
+  testPanelEl.hidden = target === null && scores.size === 0;
   const line = (name: string, s: TestScore) => {
     const pct = (hits: number) => (s.taps ? ` (${((hits / s.taps) * 100).toFixed(0)}%)` : "");
     const div = document.createElement("div");
@@ -151,5 +153,6 @@ export function resolveTap(line: HTMLLIElement, playedFinger: string | null, r: 
     return;
   }
   const check = r.finger === playedFinger ? "check ✓" : `check ✗ ${where(r.finger, r.zone)}`;
-  line.textContent += ` · stop ${fmtMs(r.stopOffset)} · ${check}`;
+  const late = r.late ? " (late: guess position)" : "";
+  line.textContent += ` · stop ${fmtMs(r.stopOffset)}${late} · ${check}`;
 }

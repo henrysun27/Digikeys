@@ -26,6 +26,10 @@ export class TestMode {
     this.target = pool.length ? pool[Math.floor(Math.random() * pool.length)] : null;
   }
 
+  resetScores() {
+    this.scores.clear();
+  }
+
   record(
     setting: string,
     target: Zone,

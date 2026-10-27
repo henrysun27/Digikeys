@@ -77,6 +77,10 @@ All code in this repo was written during the hackathon.
       rms error by more than 25%; "Clear correction" removes it. The piano is now one row
       of 8 white keys, C4 to C5, spanning the whole board, since most spatial misses were
       confusion between the two rows of the old 2x7 layout.
+- [x] "Reset stats" clears Test-mode scores and the tap dots. When the stop comes more than
+      `lateStopMs` (25 ms) after onset + `videoLagMs`, it is taken as the finger settling
+      after contact, and the check uses the guess position instead; such taps are left out
+      of the check fit in tap calibration.
 
 ## Meta models
 

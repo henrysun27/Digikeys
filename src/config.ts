@@ -51,6 +51,9 @@ export const CONFIG = {
     stopToleranceMs: 150, // a stop counts within +-this of onset + videoLagMs
     historyMs: 200, // how long a down-stroke may take before it stops
     settleMarginMs: 40, // extra wait for late frames before resolving a tap
+    // A stop later than this past onset + videoLagMs is likely the finger settling after
+    // contact, not the contact: the check then uses the guess position instead.
+    lateStopMs: 25,
     minLift: 0.015, // best guess: min vertical travel (frame heights) to count as striking
     maxExtrapolateMs: 80, // best guess: how far ahead a still-moving finger is projected
     medianTaps: 20, // taps in the debug panel's medians (stop offset, tap-to-sound)

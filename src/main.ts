@@ -36,6 +36,7 @@ const resetBtn = document.querySelector<HTMLButtonElement>("#reset")!;
 const testBtn = document.querySelector<HTMLButtonElement>("#test")!;
 const calTapsBtn = document.querySelector<HTMLButtonElement>("#cal-taps")!;
 const clearCorrectionBtn = document.querySelector<HTMLButtonElement>("#clear-correction")!;
+const resetStatsBtn = document.querySelector<HTMLButtonElement>("#reset-stats")!;
 const tapCalStatusEl = document.querySelector<HTMLDivElement>("#tap-cal-status")!;
 const micBtn = document.querySelector<HTMLButtonElement>("#mic")!;
 const layoutSelect = document.querySelector<HTMLSelectElement>("#layout")!;
@@ -172,6 +173,11 @@ function setTesting(on: boolean) {
 }
 
 testBtn.addEventListener("click", () => setTesting(!test.active));
+resetStatsBtn.addEventListener("click", () => {
+  test.resetScores();
+  dots.length = 0;
+  updateTest();
+});
 
 // Corrections belong to the board they were fitted on: new corners clear them.
 function setCorrections(c: TapCorrections | null) {
@@ -411,17 +417,22 @@ function onOnset(onset: Onset) {
   const resolveAt = onset.time + videoLagMs + stopToleranceMs + settleMarginMs;
   setTimeout(() => {
     const pick = history.resolve(onset.time);
-    const checkAt = pick ? tapPoint("check", pick.at) : null;
+    const stopAt = pick ? tapPoint("check", pick.at) : null;
+    // A late stop is the finger settling after contact; the guess position is better.
+    const late = !!pick && pick.stopOffset! > CONFIG.taps.lateStopMs && guessAt !== null;
+    const checkAt = late ? guessAt : stopAt;
     const checkZone = checkAt ? hitTest(layout, checkAt) : null;
     if (pick) setLastTap(pick.finger, onset.time);
     resolveTap(line, guess?.finger ?? null, {
       finger: pick?.finger ?? null,
       zone: checkZone?.label ?? null,
       stopOffset: pick?.stopOffset ?? null,
+      late,
     });
     if (target && checkAt) dot.check = { p: checkAt, hit: checkZone?.id === target.id };
     if (cal) {
-      cal.add("check", target!, checkAt);
+      // Only on-time stops go into the check fit; late ones aren't check positions.
+      cal.add("check", target!, late ? null : stopAt);
       cal.settle();
       if (cal === tapCal && cal.finished) finishTapCal();
     } else if (testTarget) {
