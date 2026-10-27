@@ -537,12 +537,12 @@ function onOnset(onset: Onset) {
   }, Math.max(0, resolveAt - performance.now()));
 }
 
-// Handedness labels come straight from MediaPipe; they only need to be stable per hand.
+// Fingers are keyed by the hand's tracking ID, which follows the physical hand.
 // Motion comes from the raw landmarks, the landing position from the filtered tips.
 function recordFingers(hands: TrackedHand[], detectedAt: number) {
-  for (const { side, raw, tips } of hands) {
+  for (const { id, raw, tips } of hands) {
     FINGERTIPS.forEach((tip, f) => {
-      history.add(fingerKey(side, FINGER_NAMES[f]), {
+      history.add(fingerKey(id, FINGER_NAMES[f]), {
         t: detectedAt,
         x: raw[tip].x,
         y: raw[tip].y,
@@ -649,7 +649,11 @@ function useDetector(d: Detector) {
     if (detector !== d) return;
     counts.detections++;
     counts.detectMs += ms;
-    const tracked = tracking.update(frame, t);
+    const tracked = tracking.update(frame, t, video.videoWidth / video.videoHeight);
+    for (const id of tracked.started) {
+      history.dropHand(id);
+      if (lastTap?.hand === id) lastTap = null;
+    }
     hands = tracked.hands;
     recordFingers(hands, t);
     countDropouts(hands, tracked.lost);
@@ -851,7 +855,24 @@ function drawHands(hands: TrackedHand[]) {
       ctx.arc(p.x, p.y, tip ? 7 : 4, 0, Math.PI * 2);
       ctx.fill();
     });
+    drawHandId(hand.id, pts[0]);
   }
+}
+
+const HAND_ID_COLORS: Record<string, string> = { A: "#00dcff", B: "#ffb300" };
+
+// The hand's tracking ID in a badge just past the wrist, so it stays clear of the fingers.
+function drawHandId(id: string, wrist: Pt) {
+  const c = { x: wrist.x, y: wrist.y + 26 };
+  ctx.fillStyle = HAND_ID_COLORS[id] ?? "#ffffff";
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, 14, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.font = "700 16px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#000000";
+  ctx.fillText(id, c.x, c.y);
 }
 
 // Every new video frame goes to the detector, stamped with when it was grabbed, so finger

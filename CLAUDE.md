@@ -142,6 +142,8 @@ and the measured tap-to-sound latency.
 
 - Two hands in frame destabilize tracking (likely hand order/handedness swaps between
 
-  frames mixing finger histories). Fix after milestone 6: match hands frame-to-frame by
+  frames mixing finger histories). Fixed in code: hands are matched frame-to-frame by
 
-  wrist position, not MediaPipe index or label.
+  wrist position (`HandTracking`, `CONFIG.hands.maxWristJump` / `lostGraceMs`) and shown as
+
+  A/B. Still to verify on camera with two hands tapping; remove this entry once it holds.

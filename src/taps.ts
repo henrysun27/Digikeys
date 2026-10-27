@@ -4,7 +4,7 @@ import type { Pt } from "./geometry.ts";
 export const FINGERTIPS = [4, 8, 12, 16, 20];
 export const FINGER_NAMES = ["thumb", "index", "middle", "ring", "pinky"];
 
-// Fingers are keyed "<hand> <finger>", e.g. "Left index". Hand labels may contain spaces.
+// Fingers are keyed "<hand> <finger>", e.g. "A index", where the hand is its tracking ID.
 export const fingerKey = (hand: string, finger: string) => `${hand} ${finger}`;
 export const handOf = (key: string) => key.slice(0, key.lastIndexOf(" "));
 const fingerOf = (key: string) => key.slice(key.lastIndexOf(" ") + 1);
@@ -48,6 +48,11 @@ export class FingerHistory {
     if (!track) this.tracks.set(finger, (track = []));
     track.push(s);
     while (track.length && track[0].t < s.t - CONFIG.taps.keepMs) track.shift();
+  }
+
+  // Forgets a hand's fingers, when its ID passes to a different hand.
+  dropHand(hand: string) {
+    for (const finger of this.tracks.keys()) if (handOf(finger) === hand) this.tracks.delete(finger);
   }
 
   // The finger that moved down fastest and then stopped around the onset. A finger

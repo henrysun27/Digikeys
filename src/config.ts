@@ -18,6 +18,10 @@ export const CONFIG = {
     minHandPresenceConfidence: 0.3,
     minTrackingConfidence: 0.3,
     dropoutColumns: 8, // board columns that tracking dropouts are counted in
+    // Hands are matched frame to frame by wrist position (nearest first), not by
+    // MediaPipe's index or handedness label, which can swap between frames.
+    maxWristJump: 0.25, // frame heights a wrist may move between matched detections
+    lostGraceMs: 200, // a vanished hand keeps its ID and history this long, to rematch
     // Where detection runs. "worker" keeps mic onsets from waiting behind it; "main" skips
     // the per-frame copy to the worker. "auto" starts in the worker and moves to the main
     // thread if the worker can't keep up with the camera and the main thread does better.

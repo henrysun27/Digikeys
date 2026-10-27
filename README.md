@@ -121,6 +121,14 @@ All code in this repo was written during the hackathon.
       `anyOf` of rect and poly: the API writes keys in alphabetical order, so with `anyOf`
       the first key picked the branch and a model starting with `kind` was forced into a
       polygon with made-up points (2 of 4 piano requests came back that way).
+- [x] Two-hand tracking: hands are followed frame to frame by wrist position instead of
+      MediaPipe's hand index or handedness label, which could swap between frames and mix
+      the two hands' finger histories. Each detection pairs with the nearest tracked wrist
+      (closest pairs first) within `maxWristJump` (0.25 frame heights); a hand that vanishes
+      keeps its ID, smoothing filters and finger history for `lostGraceMs` (200 ms) so a
+      brief dropout reattaches, and a hand that matches nothing gets the lowest free ID
+      with its history cleared. Finger histories are keyed by that ID, and each hand shows
+      its ID (A or B) in a badge below the wrist.
 
 ## Meta models
 
