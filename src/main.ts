@@ -1,5 +1,5 @@
 import "./style.css";
-import { FilesetResolver, HandLandmarker, type HandLandmarkerResult } from "@mediapipe/tasks-vision";
+import { FilesetResolver, HandLandmarker } from "@mediapipe/tasks-vision";
 import { Calibration, CORNER_NAMES, checkCorners, orderCorners } from "./calibration.ts";
 import { CONFIG } from "./config.ts";
 import {
@@ -7,17 +7,20 @@ import {
   logPlayed,
   logTest,
   resolveTap,
+  showCamera,
   showCorrections,
+  showDropouts,
   showLevel,
   showMicInfo,
   showTest,
 } from "./debug.ts";
 import { applyH, convexHull, fitQuad, polygonArea, type Pt } from "./geometry.ts";
+import { HandTracking, type TrackedHand } from "./hand-tracking.ts";
 import { PRESETS, hitTest, shapeCenter, shapeOutline, type Layout, type Zone } from "./layout.ts";
 import { startMic, type Onset } from "./mic.ts";
 import { maskArea, maskImage, maskOutline, maskPixels, segmentFrame, type SamObject, type Segmentation } from "./sam.ts";
 import { initSound, play } from "./sound.ts";
-import { FINGER_NAMES, FINGERTIPS, FingerHistory, fingerKey, handOf, type Sample } from "./taps.ts";
+import { FINGER_NAMES, FINGERTIPS, FingerHistory, fingerKey, handOf, landing } from "./taps.ts";
 import {
   applyCorrection,
   loadCorrections,
@@ -57,6 +60,15 @@ const flashes = new Map<string, number>(); // zone id -> flash end, performance.
 let hintError: string | null = null;
 let tapCount = 0;
 let handsInFrame = 0; // hands in the latest detection
+const tracking = new HandTracking();
+// Hands that vanished between frames, by board column of their last index tip, against
+// frames with a hand in that column; off board (or no board) counted separately.
+const dropouts = {
+  lost: new Array<number>(CONFIG.hands.dropoutColumns).fill(0),
+  frames: new Array<number>(CONFIG.hands.dropoutColumns).fill(0),
+  offLost: 0,
+  offFrames: 0,
+};
 let lastTap: { hand: string; t: number } | null = null; // onset time, performance.now() ms
 const test = new TestMode();
 let corrections: TapCorrections | null = loadCorrections();
@@ -176,6 +188,10 @@ testBtn.addEventListener("click", () => setTesting(!test.active));
 resetStatsBtn.addEventListener("click", () => {
   test.resetScores();
   dots.length = 0;
+  dropouts.lost.fill(0);
+  dropouts.frames.fill(0);
+  dropouts.offLost = dropouts.offFrames = 0;
+  showDropouts(dropouts);
   updateTest();
 });
 
@@ -354,7 +370,7 @@ function pushDot(dot: (typeof dots)[number]) {
   while (dots.length > CONFIG.taps.dotTaps) dots.shift();
 }
 
-function onBoard(p: Sample): boolean {
+function onBoard(p: Pt): boolean {
   if (!calibration.camToBoard) return false;
   const b = applyH(calibration.camToBoard, p);
   return b.x >= 0 && b.x <= 1 && b.y >= 0 && b.y <= 1;
@@ -380,7 +396,7 @@ function onOnset(onset: Onset) {
   const { videoLagMs, stopToleranceMs, settleMarginMs, flashMs } = CONFIG.taps;
   const recent = lastTap && onset.time - lastTap.t <= CONFIG.guess.lastHandMs;
   const guess = history.guess(onset.time, { onBoard, lastHand: recent ? lastTap!.hand : null });
-  const guessAt = guess ? tapPoint("guess", guess.at) : null;
+  const guessAt = guess ? tapPoint("guess", landing(guess.at)) : null;
   const zone = guessAt ? hitTest(layout, guessAt) : null;
   const latencyMs = zone ? play(zone.sound, onset.ctxTime) : null;
   const handlerMs = performance.now() - onset.receivedAt;
@@ -417,7 +433,7 @@ function onOnset(onset: Onset) {
   const resolveAt = onset.time + videoLagMs + stopToleranceMs + settleMarginMs;
   setTimeout(() => {
     const pick = history.resolve(onset.time);
-    const stopAt = pick ? tapPoint("check", pick.at) : null;
+    const stopAt = pick ? tapPoint("check", landing(pick.at)) : null;
     // A late stop is the finger settling after contact; the guess position is better.
     const late = !!pick && pick.stopOffset! > CONFIG.taps.lateStopMs && guessAt !== null;
     const checkAt = late ? guessAt : stopAt;
@@ -443,13 +459,41 @@ function onOnset(onset: Onset) {
 }
 
 // Handedness labels come straight from MediaPipe; they only need to be stable per hand.
-function recordFingers(result: HandLandmarkerResult, detectedAt: number) {
-  result.landmarks.forEach((hand, h) => {
-    const side = result.handedness[h]?.[0]?.categoryName ?? `Hand ${h + 1}`;
+// Motion comes from the raw landmarks, the landing position from the filtered tips.
+function recordFingers(hands: TrackedHand[], detectedAt: number) {
+  for (const { side, raw, tips } of hands) {
     FINGERTIPS.forEach((tip, f) => {
-      history.add(fingerKey(side, FINGER_NAMES[f]), { t: detectedAt, x: hand[tip].x, y: hand[tip].y });
+      history.add(fingerKey(side, FINGER_NAMES[f]), {
+        t: detectedAt,
+        x: raw[tip].x,
+        y: raw[tip].y,
+        fx: tips[f].x,
+        fy: tips[f].y,
+      });
     });
-  });
+  }
+}
+
+// Board column of a camera point, or -1 if off the board or there is no board.
+function boardColumn(p: Pt): number {
+  if (!calibration.camToBoard) return -1;
+  const b = applyH(calibration.camToBoard, p);
+  if (!(b.x >= 0 && b.x < 1 && b.y >= 0 && b.y <= 1)) return -1;
+  return Math.floor(b.x * CONFIG.hands.dropoutColumns);
+}
+
+function countDropouts(hands: TrackedHand[], lost: Pt[]) {
+  const index = FINGERTIPS.indexOf(8);
+  for (const hand of hands) {
+    const c = boardColumn(hand.tips[index]);
+    if (c < 0) dropouts.offFrames++;
+    else dropouts.frames[c]++;
+  }
+  for (const p of lost) {
+    const c = boardColumn(p);
+    if (c < 0) dropouts.offLost++;
+    else dropouts.lost[c]++;
+  }
 }
 
 async function startCamera() {
@@ -462,6 +506,7 @@ async function startCamera() {
   await video.play();
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
+  return stream.getVideoTracks()[0].getSettings();
 }
 
 async function createLandmarker() {
@@ -477,14 +522,13 @@ async function createLandmarker() {
   });
 }
 
-// Fingertips are hit-tested like a stopped finger, through the check correction.
-function zonesUnderFingertips(result: HandLandmarkerResult | null): Set<string> {
+// Filtered fingertips are hit-tested like a stopped finger, through the check correction.
+function zonesUnderFingertips(hands: TrackedHand[]): Set<string> {
   const hits = new Set<string>();
-  if (!result) return hits;
-  for (const hand of result.landmarks) {
-    FINGERTIPS.forEach((i, f) => {
+  for (const hand of hands) {
+    FINGERTIPS.forEach((_, f) => {
       if (!CONFIG.fingers.allowed.includes(FINGER_NAMES[f])) return;
-      const p = tapPoint("check", hand[i]);
+      const p = tapPoint("check", hand.tips[f]);
       const zone = p ? hitTest(layout, p) : null;
       if (zone) hits.add(zone.id);
     });
@@ -615,9 +659,10 @@ function drawCorners(corners: Pt[], closed: boolean, color: string) {
   });
 }
 
-function drawHands(result: HandLandmarkerResult) {
-  for (const hand of result.landmarks) {
-    const pts = hand.map(camToScreen);
+// Raw skeleton with the fingertips at their filtered positions.
+function drawHands(hands: TrackedHand[]) {
+  for (const hand of hands) {
+    const pts = hand.raw.map((p, i) => camToScreen(FINGERTIPS.includes(i) ? hand.tips[FINGERTIPS.indexOf(i)] : p));
     ctx.strokeStyle = "rgba(0, 255, 180, 0.8)";
     ctx.lineWidth = 3;
     ctx.beginPath();
@@ -638,9 +683,9 @@ function drawHands(result: HandLandmarkerResult) {
   }
 }
 
-function loop(landmarker: HandLandmarker) {
+function loop(landmarker: HandLandmarker, camera: MediaTrackSettings) {
   let lastVideoTime = -1;
-  let result: HandLandmarkerResult | null = null;
+  let hands: TrackedHand[] = [];
   let frames = 0;
   let fpsStart = performance.now();
 
@@ -648,9 +693,11 @@ function loop(landmarker: HandLandmarker) {
     const now = performance.now();
     if (video.currentTime !== lastVideoTime) {
       lastVideoTime = video.currentTime;
-      result = landmarker.detectForVideo(video, now);
-      recordFingers(result, now);
-      handsInFrame = result.landmarks.length;
+      const tracked = tracking.update(landmarker.detectForVideo(video, now), now);
+      hands = tracked.hands;
+      recordFingers(hands, now);
+      countDropouts(hands, tracked.lost);
+      handsInFrame = hands.length;
       frames++;
     }
 
@@ -659,15 +706,17 @@ function loop(landmarker: HandLandmarker) {
     ctx.setTransform(-1, 0, 0, 1, canvas.width, 0);
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    drawLayout(zonesUnderFingertips(result), now);
+    drawLayout(zonesUnderFingertips(hands), now);
     drawDots();
     drawCorners(calibration.corners, calibration.done, "#ffd400");
     drawProposal();
-    if (result) drawHands(result);
+    drawHands(hands);
 
     if (now - fpsStart >= 1000) {
       const fps = (frames * 1000) / (now - fpsStart);
-      setStatus(`${result?.landmarks.length ?? 0} hand(s) · ${fps.toFixed(0)} fps`);
+      setStatus(`${hands.length} hand(s) · ${fps.toFixed(0)} fps`);
+      showCamera(camera, fps);
+      showDropouts(dropouts);
       frames = 0;
       fpsStart = now;
     }
@@ -682,12 +731,13 @@ async function main() {
   setCorrections(calibration.done ? corrections : null);
   try {
     setStatus("Starting camera…");
-    await startCamera();
+    const camera = await startCamera();
+    showCamera(camera, null);
     updateHint();
     setStatus("Loading hand model…");
     const landmarker = await createLandmarker();
     setStatus("Running");
-    loop(landmarker);
+    loop(landmarker, camera);
   } catch (err) {
     console.error(err);
     setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);

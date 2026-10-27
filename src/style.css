@@ -257,6 +257,26 @@ body {
   margin: 0;
 }
 
+#dropouts {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 2px;
+  font-size: 11px;
+  text-align: center;
+}
+
+#dropouts .col {
+  padding: 1px 0;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+#dropouts .col span {
+  display: block;
+  color: #aaa;
+}
+
 #tap-log {
   margin: 8px 0 0;
   padding: 0;

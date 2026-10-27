@@ -10,9 +10,18 @@ export const CONFIG = {
     wasmPath: "/mediapipe/wasm",
     modelPath: "/mediapipe/hand_landmarker.task",
     numHands: 2,
-    minHandDetectionConfidence: 0.5,
-    minHandPresenceConfidence: 0.5,
-    minTrackingConfidence: 0.5,
+    // Low, to keep hard-to-see hands (e.g. at the board's edges) tracked.
+    minHandDetectionConfidence: 0.3,
+    minHandPresenceConfidence: 0.3,
+    minTrackingConfidence: 0.3,
+    dropoutColumns: 8, // board columns that tracking dropouts are counted in
+  },
+  // One Euro filter on fingertip positions for display and hit-testing; tap detection's
+  // motion history stays raw. Positions are 0-1 camera coords.
+  smoothing: {
+    minCutoff: 1.5, // Hz when still: lower is smoother but lags more
+    beta: 10, // cutoff rise per (frame width/s) of speed: higher lags less when moving
+    dCutoff: 1, // Hz, for the speed estimate
   },
   calibration: {
     storageKey: "desk-instrument.calibration",

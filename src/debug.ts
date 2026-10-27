@@ -19,6 +19,8 @@ const outputLatencyEl = el("output-latency");
 const testPanelEl = el("test-panel");
 const testStatsEl = el("test-stats");
 const tapCorrectionEl = el("tap-correction");
+const cameraEl = el("camera-info");
+const dropoutsEl = el("dropouts");
 const logEl = el("tap-log");
 const recentOffsets: number[] = [];
 const recentLatencies: number[] = [];
@@ -127,6 +129,37 @@ export function showTest(target: string | null, setting: string, scores: Map<str
     lines.unshift(tap);
   }
   testStatsEl.replaceChildren(...lines);
+}
+
+// What the camera actually delivers vs what was asked for; measuredFps counts new video
+// frames (null until the first second has passed).
+export function showCamera(s: MediaTrackSettings, measuredFps: number | null) {
+  const { width, height, frameRate } = CONFIG.camera;
+  const fps = s.frameRate ? `${s.frameRate.toFixed(0)} fps` : "? fps";
+  const measured = measuredFps === null ? "" : `, measured ${measuredFps.toFixed(0)}`;
+  cameraEl.textContent =
+    `${s.width ?? "?"}×${s.height ?? "?"} @ ${fps}${measured} (asked ${width}×${height} @ ${frameRate})`;
+}
+
+export type Dropouts = { lost: number[]; frames: number[]; offLost: number; offFrames: number };
+
+// One cell per board column, left to right as the board is defined (C4 first on the
+// piano), plus off board: dropouts, and below them dropouts per 1000 frames with a hand
+// in that column.
+export function showDropouts(d: Dropouts) {
+  const cell = (name: string, lost: number, frames: number) => {
+    const div = document.createElement("div");
+    div.className = "col";
+    div.title = `${name}: ${lost} dropouts in ${frames} hand frames`;
+    const rate = document.createElement("span");
+    rate.textContent = frames ? ((lost / frames) * 1000).toFixed(1) : "–";
+    div.append(String(lost), rate);
+    return div;
+  };
+  dropoutsEl.replaceChildren(
+    ...d.lost.map((lost, i) => cell(`column ${i + 1}`, lost, d.frames[i])),
+    cell("off board", d.offLost, d.offFrames),
+  );
 }
 
 // Offsets in board coords.

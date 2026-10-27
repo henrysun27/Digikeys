@@ -1,4 +1,5 @@
 import { CONFIG } from "./config.ts";
+import type { Pt } from "./geometry.ts";
 
 export const FINGERTIPS = [4, 8, 12, 16, 20];
 export const FINGER_NAMES = ["thumb", "index", "middle", "ring", "pinky"];
@@ -10,8 +11,20 @@ const fingerOf = (key: string) => key.slice(key.lastIndexOf(" ") + 1);
 export const isAllowed = (key: string) => CONFIG.fingers.allowed.includes(fingerOf(key));
 
 // t is when the frame's landmarks were detected, performance.now() ms. x, y are raw
-// camera coords (0-1).
-export type Sample = { t: number; x: number; y: number };
+// camera coords (0-1), for motion: smoothing would blunt down-strokes. fx, fy are the One
+// Euro filtered position, for where a tap lands.
+export type Sample = { t: number; x: number; y: number; fx: number; fy: number };
+
+export const landing = (s: Sample): Pt => ({ x: s.fx, y: s.fy });
+
+// s moved by (dx, dy), raw and filtered alike.
+const shifted = (s: Sample, t: number, dx: number, dy: number): Sample => ({
+  t,
+  x: s.x + dx,
+  y: s.y + dy,
+  fx: s.fx + dx,
+  fy: s.fy + dy,
+});
 
 export type FingerPick = {
   finger: string;
@@ -22,7 +35,7 @@ export type FingerPick = {
 
 // What the guess knows besides finger motion: whether a camera point is on the board, and
 // the hand of the last tap if it was recent.
-export type GuessContext = { onBoard: (p: Sample) => boolean; lastHand: string | null };
+export type GuessContext = { onBoard: (p: Pt) => boolean; lastHand: string | null };
 
 // prev is the frame before last, for extrapolating a stroke that is still moving.
 type Stroke = { peak: number; stop: Sample | null; last: Sample; prev: Sample | null };
@@ -83,7 +96,7 @@ export class FingerHistory {
       if (travel < minLift) continue;
       let score = travel;
       if (fingerOf(finger) === "thumb" && travel < g.thumbStrikeLift) score *= g.thumbWeight;
-      if (c.onBoard(s[s.length - 1])) score *= g.onBoardWeight;
+      if (c.onBoard(landing(s[s.length - 1]))) score *= g.onBoardWeight;
       if (c.lastHand !== null && handOf(finger) === c.lastHand) score *= g.lastHandWeight;
       if (score <= bestScore) continue;
       bestScore = score;
@@ -91,7 +104,7 @@ export class FingerHistory {
       let at: Sample;
       if (stroke?.stop && stroke.stop.t >= expected - stopToleranceMs) at = stroke.stop;
       else if (stroke && !stroke.stop) at = extrapolate(stroke, expected);
-      else at = { ...s[s.length - 1], y: restY };
+      else at = shifted(s[s.length - 1], s[s.length - 1].t, 0, restY - s[s.length - 1].y);
       best = { finger, peakSpeed: stroke?.peak ?? 0, at, stopOffset: null };
     }
     return best;
@@ -127,7 +140,7 @@ function extrapolate(k: Stroke, t: number): Sample {
   if (!prev || last.t <= prev.t) return last;
   const dt = Math.min(Math.max(0, t - last.t), CONFIG.taps.maxExtrapolateMs);
   const f = dt / (last.t - prev.t);
-  return { t: last.t + dt, x: last.x + (last.x - prev.x) * f, y: last.y + (last.y - prev.y) * f };
+  return shifted(last, last.t + dt, (last.x - prev.x) * f, (last.y - prev.y) * f);
 }
 
 function nearestStop(strokes: Stroke[], expected: number): Stroke | undefined {
