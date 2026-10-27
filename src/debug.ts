@@ -2,7 +2,7 @@ import { CONFIG } from "./config.ts";
 import type { DetectorKind } from "./detectors.ts";
 import type { DetectorInfo } from "./hand-detector.ts";
 import type { CameraInfo, CameraProbe } from "./main.ts";
-import type { MicInfo, MicLevel } from "./mic.ts";
+import type { MicInfo, MicLevel, Onset } from "./mic.ts";
 import type { Correction, TapCorrections } from "./tap-correction.ts";
 import type { TestScore } from "./test-mode.ts";
 
@@ -100,9 +100,10 @@ export function logIgnored(n: number, reason: string) {
 
 // Hybrid mode: an onset with no striking finger; rejected says why each moving one
 // fell short.
-export function logRejected(n: number, level: number, threshold: number, rejected: string[]) {
+export function logRejected(n: number, o: Onset, rejected: string[]) {
   const why = rejected.length ? rejected.join("; ") : "no finger moving down";
-  appendLog(`#${n} rejected (no strike: ${why}) · ${fmtDb(level)} vs threshold ${fmtDb(threshold)}`);
+  const rise = `rise ${(20 * Math.log10(o.rise)).toFixed(0)} dB`;
+  appendLog(`#${n} rejected (no strike: ${why}) · ${fmtDb(o.level)} vs threshold ${fmtDb(o.threshold)}, ${rise}`);
 }
 
 // Test mode: a finger came down and stopped on the board but no onset was accepted

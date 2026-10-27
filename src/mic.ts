@@ -8,6 +8,7 @@ export type Onset = {
   receivedAt: number; // performance.now() when the main thread got the onset message
   level: number;
   threshold: number;
+  rise: number; // level over the baseline before it, linear
 };
 // time: performance.now() ms of the report; level is the peak since the previous one.
 export type MicLevel = { time: number; level: number; floor: number; threshold: number };
@@ -92,7 +93,7 @@ export async function startMic(ctx: AudioContext, h: MicHandlers) {
       return;
     }
     const { time, info } = toPerf(msg.time);
-    h.onOnset({ time, ctxTime: msg.time, receivedAt, level: msg.level, threshold: msg.threshold });
+    h.onOnset({ time, ctxTime: msg.time, receivedAt, level: msg.level, threshold: msg.threshold, rise: msg.rise });
     h.onInfo(info);
   };
 }

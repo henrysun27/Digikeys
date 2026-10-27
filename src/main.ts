@@ -676,7 +676,7 @@ function onOnset(onset: Onset) {
   const { chord, rejected } = chordOf(guesses);
   if (chord.length === 0) {
     keepRecent(rejectedOnsets, onset.time);
-    logRejected(n, onset.level, onset.threshold, rejected);
+    logRejected(n, onset, rejected);
     return;
   }
   keepRecent(acceptedOnsets, onset.time);
@@ -866,15 +866,20 @@ probeBtn.addEventListener("click", async () => {
 });
 
 // Hand detection, in the worker or on the main thread (see CONFIG.hands.detectOn). Counts
-// are totals since startup; the panel and the auto choice take differences.
+// are totals since startup; the panel and the auto choice take differences. handleMs: the
+// main thread's own work per result (tracking, finger history, strikes); draws and drawMs:
+// canvas redraws.
 let detector: Detector | null = null;
 let hands: TrackedHand[] = [];
-const counts = { videoFrames: 0, detections: 0, detectMs: 0 };
+const counts = { videoFrames: 0, detections: 0, detectMs: 0, handleMs: 0, draws: 0, drawMs: 0 };
+// Something to show since the last redraw: a new video frame or new hand results.
+let dirty = true;
 let detectorChoice: string | null = null;
 
 function useDetector(d: Detector) {
   d.onHands = (t: number, frame: HandFrame, ms: number) => {
     if (detector !== d) return;
+    const start = performance.now();
     counts.detections++;
     counts.detectMs += ms;
     const tracked = tracking.update(frame, t, video.videoWidth / video.videoHeight);
@@ -887,6 +892,8 @@ function useDetector(d: Detector) {
     for (const m of history.newStops(toBoard, onBoard)) onStop(m);
     countDropouts(hands, tracked.lost);
     handsInFrame = hands.length;
+    dirty = true;
+    counts.handleMs += performance.now() - start;
   };
   detector = d;
 }
@@ -1105,13 +1112,17 @@ function drawHandId(id: string, wrist: Pt) {
 }
 
 // Every new video frame goes to the detector, stamped with when it was grabbed, so finger
-// samples are timed as before. Drawing runs on animation frames with the latest hands.
+// samples are timed as before. Drawing runs on animation frames with the latest hands, but
+// only when there is a new video frame or new hands: animation frames come at the display's
+// rate (240 Hz on some laptops), and redrawing the full video that often takes GPU time
+// from hand detection on the same GPU.
 function loop() {
   let fpsStart = performance.now();
   let last = { ...counts };
 
   const onFrame = () => {
     counts.videoFrames++;
+    dirty = true;
     detector?.frame(performance.now());
     video.requestVideoFrameCallback(onFrame);
   };
@@ -1120,22 +1131,33 @@ function loop() {
   const tick = () => {
     const now = performance.now();
 
-    // Only the video is drawn through a mirror transform; overlays use screen coords so
-    // text stays readable.
-    ctx.setTransform(-1, 0, 0, 1, canvas.width, 0);
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    drawLayout(zonesUnderFingertips(hands), now);
-    drawDots();
-    drawCorners(calibration.corners, calibration.done, "#ffd400");
-    drawProposal();
-    drawHands(hands);
+    if (dirty) {
+      dirty = false;
+      counts.draws++;
+      // Only the video is drawn through a mirror transform; overlays use screen coords so
+      // text stays readable.
+      ctx.setTransform(-1, 0, 0, 1, canvas.width, 0);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      drawLayout(zonesUnderFingertips(hands), now);
+      drawDots();
+      drawCorners(calibration.corners, calibration.done, "#ffd400");
+      drawProposal();
+      drawHands(hands);
+      counts.drawMs += performance.now() - now;
+    }
 
     if (now - fpsStart >= 1000) {
       const secs = (now - fpsStart) / 1000;
       const fps = (counts.videoFrames - last.videoFrames) / secs;
       const n = counts.detections - last.detections;
-      setStatus(`${hands.length} hand(s) · ${fps.toFixed(0)} fps`);
+      const draws = counts.draws - last.draws;
+      const per = (ms: number, k: number) => (k ? (ms / k).toFixed(2) : "–");
+      setStatus(
+        `${hands.length} hand(s) · ${fps.toFixed(0)} fps · ` +
+          `main ${per(counts.handleMs - last.handleMs, n)} ms/result · ` +
+          `draw ${(draws / secs).toFixed(0)}/s, ${per(counts.drawMs - last.drawMs, draws)} ms`,
+      );
       if (camera) showCamera(camera, fps);
       if (detector) {
         const meanMs = n ? (counts.detectMs - last.detectMs) / n : null;

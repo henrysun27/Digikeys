@@ -48,14 +48,15 @@ export const CONFIG = {
   // Mic onset detection (runs in the audio worklet). Levels are block RMS, 0-1.
   // In hybrid mode an onset also needs a finger strike (taps.minStrokeDepth/minStrikeSpeed).
   onset: {
+    floorWindowMs: 1000, // the floor is the running median level over this long
     thresholdDb: 8, // level must exceed the floor by this
     minLevelDb: -66, // absolute minimum threshold, dBFS
-    // Sudden-rise check: level must also jump this much over the mean of the last
-    // riseLookbackMs, so a slow swell over the threshold isn't an onset.
-    riseDb: 5,
-    riseLookbackMs: 12,
-    floorFallMs: 150, // floor time constant when the level drops below it
-    floorRiseMs: 2000, // ...and when it rises above it
+    // Transient check: the level must also be at least minRiseDb over the RMS of the
+    // riseBaselineMs before the last riseWithinMs, i.e. have jumped within riseWithinMs.
+    // Background noise that wanders, however loud, doesn't jump like a tap.
+    minRiseDb: 8,
+    riseBaselineMs: 50,
+    riseWithinMs: 10,
     // Not a refractory (that is per zone, taps.zoneRefractoryMs): one tap's transient can
     // pass the rise check in several consecutive blocks, and this merges them into one
     // onset. Short, so a second finger landing just after the first still gets its own.
@@ -95,7 +96,7 @@ export const CONFIG = {
     // end of the stroke) at a mean speed of at least minStrikeSpeed (board units/s), then
     // stopped. Applies to every played note, the check, vision taps and the miss log; the
     // tap log shows the measured values of fingers that fall short.
-    minStrokeDepth: 0.03,
+    minStrokeDepth: 0.02, // real presses measured ~0.025
     minStrikeSpeed: 0.25,
     // Chords: an accepted onset plays every striking finger whose score is at least this
     // fraction of the best one's (one note per zone). Lower catches more of a chord, and

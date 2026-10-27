@@ -164,7 +164,7 @@ All code in this repo was written during the hackathon.
       found by the stop check. Chord scores are listed separately, and zones that played
       without being targeted are counted as extra notes.
 - [x] Stricter strikes, against false presses from slight finger movement: a finger
-      strikes only if its down-stroke went at least `CONFIG.taps.minStrokeDepth` (0.03)
+      strikes only if its down-stroke went at least `CONFIG.taps.minStrokeDepth` (then 0.03)
       down the board, measured in board units through the homography, at a mean speed of
       at least `minStrikeSpeed` (0.25 board units/s), and stopped. Every played note must
       pass this on its own before the chord ratio (now 0.8) applies; the stop check,
@@ -180,6 +180,32 @@ All code in this repo was written during the hackathon.
       as too shallow, but the instant guess, extrapolating, can measure it at 0.03 and
       play it; lowering `maxExtrapolateMs` trades that against cutting short real taps
       whose last frames haven't arrived.
+- [x] Onsets that ignore background noise (`src/onset-detector.ts`, run by the worklet):
+      the floor is the running median of the block level over the last second
+      (`onset.floorWindowMs`), not a minimum tracker, which had sat 8 dB below a
+      fluctuating background and put the threshold inside it. An onset needs the level
+      8 dB over the floor and a transient: at least `minRiseDb` (8) over the RMS of the
+      50 ms before the last 10 ms. On recorded-style test noise whose level jumps +-6 dB
+      every 5-20 ms (-31 dBFS), the old detector fired 4.8 onsets/s with no taps, the new
+      one none; synthetic taps 14 dB or more over the background are all found, taps only
+      10 dB over about half the time. Rejected onsets show their rise in the tap log.
+      `minStrokeDepth` is now 0.02 (real presses measured about 0.025).
+- [x] Detection rate. Profiled in headless Edge with a fake camera (two hands moving) and
+      mic. The two-hand/chord changes add about 0.05-0.08 ms of main-thread work per hand
+      result and nothing in the worker; the old and new code detect at the same rate under
+      the same load. What sets the rate is the GPU MediaPipe gets and what else uses it:
+      - The browser ran MediaPipe on the Intel integrated GPU, not the laptop's RTX 5060.
+        Two moving hands took 12-25 ms per frame in isolation on Intel (it varied 2x
+        between sessions), 35 ms in the app, versus 5-6 ms in isolation and 7.5-9 ms in
+        the app (30/s, the camera's rate) on the RTX. Setting the browser to "High
+        performance" in Windows Settings > System > Display > Graphics moves it.
+      - Wallpaper Engine was using about half of the Intel GPU's 3D engine.
+      - The canvas redrew on every animation frame, 240/s on the 240 Hz panel, each a full
+        1280x720 video copy. It now redraws only when a new video frame or new hand result
+        has arrived (about 45-60/s). With the browser's frame rate unlimited, the old loop
+        redrew ~3000/s and starved detection entirely; the new one held 30/s.
+      The status line shows the main thread's time per hand result, redraws per second
+      and time per redraw, next to the detection rate and time in the debug panel.
 
 ## Meta models
 
