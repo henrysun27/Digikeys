@@ -16,6 +16,7 @@ export class Calibration {
   corners: Pt[] = [];
   boardToCam: Mat3 | null = null;
   camToBoard: Mat3 | null = null;
+  private key = CONFIG.calibration.storageKey;
 
   get done(): boolean {
     return this.corners.length === 4;
@@ -51,13 +52,18 @@ export class Calibration {
     this.boardToCam = null;
     this.camToBoard = null;
     try {
-      localStorage.removeItem(CONFIG.calibration.storageKey);
+      localStorage.removeItem(this.key);
     } catch {}
   }
 
-  load() {
+  // Corners are saved per camera resolution ("1280x720"): another mode can crop or
+  // stretch the view, so its corners would be wrong. 1280x720 also reads the
+  // pre-per-resolution key.
+  load(camera: string) {
+    this.key = `${CONFIG.calibration.storageKey}.${camera}`;
     try {
-      const raw = localStorage.getItem(CONFIG.calibration.storageKey);
+      const legacy = camera === "1280x720" ? localStorage.getItem(CONFIG.calibration.storageKey) : null;
+      const raw = localStorage.getItem(this.key) ?? legacy;
       if (!raw) return;
       const pts: unknown = JSON.parse(raw);
       if (!isCornerList(pts)) return;
@@ -69,7 +75,7 @@ export class Calibration {
 
   private save() {
     try {
-      localStorage.setItem(CONFIG.calibration.storageKey, JSON.stringify(this.corners));
+      localStorage.setItem(this.key, JSON.stringify(this.corners));
     } catch {}
   }
 

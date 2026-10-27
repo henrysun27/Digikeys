@@ -88,6 +88,13 @@ All code in this repo was written during the hackathon.
       landmarks so down-strokes aren't blunted. Tracking dropouts (a hand present one frame
       and gone the next) are counted per board column of its last index-tip position,
       with a rate per 1000 hand frames, to show whether edge keys lose tracking.
+- [x] Hand detection runs in a module Web Worker (`src/hand-worker.ts`): each new video
+      frame is transferred as an ImageBitmap and landmarks come back, so mic onsets no
+      longer wait behind `detectForVideo` on the main thread. The camera first tries
+      640x480 @ 60 fps and keeps it if it measures more than 45 fps over a second,
+      otherwise it reopens at 1280x720 (`CONFIG.camera`). The debug panel shows the mode
+      in use, the probe result, and the worker's detection rate and time. Calibration is
+      saved per camera resolution.
 
 ## Meta models
 

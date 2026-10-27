@@ -1,10 +1,14 @@
 // All tunables live here. Later milestones add onset, refractory, finger history,
 // videoLagMs and layout validation limits.
 export const CONFIG = {
+  // The fast mode is tried first and kept if it measures more than fastMinFps over
+  // probeMs; otherwise the camera is reopened in the fallback mode.
   camera: {
-    width: 1280,
-    height: 720,
-    frameRate: 60,
+    tryFast: true,
+    fast: { width: 640, height: 480, frameRate: 60 },
+    fallback: { width: 1280, height: 720, frameRate: 60 },
+    fastMinFps: 45,
+    probeMs: 1000,
   },
   hands: {
     wasmPath: "/mediapipe/wasm",

@@ -1,13 +1,23 @@
-import type { HandLandmarkerResult, NormalizedLandmark } from "@mediapipe/tasks-vision";
 import { CONFIG } from "./config.ts";
 import type { Pt } from "./geometry.ts";
+import type { HandFrame } from "./hand-worker.ts";
 import { OneEuroFilter } from "./one-euro.ts";
 import { FINGERTIPS } from "./taps.ts";
+
+// MediaPipe's 21-landmark hand skeleton: wrist 0, then 4 joints per finger, thumb first.
+export const HAND_CONNECTIONS: [number, number][] = [
+  [0, 1], [1, 2], [2, 3], [3, 4],
+  [0, 5], [5, 6], [6, 7], [7, 8],
+  [9, 10], [10, 11], [11, 12],
+  [13, 14], [14, 15], [15, 16],
+  [0, 17], [17, 18], [18, 19], [19, 20],
+  [5, 9], [9, 13], [13, 17],
+];
 
 // side: MediaPipe's handedness label, made unique within the frame ("Right 2" if both hands
 // read as Right). raw: the 21 landmarks as detected. tips: One Euro filtered fingertips,
 // in FINGERTIPS order, for display and hit-testing.
-export type TrackedHand = { side: string; raw: NormalizedLandmark[]; tips: Pt[] };
+export type TrackedHand = { side: string; raw: Pt[]; tips: Pt[] };
 
 const INDEX = FINGERTIPS.indexOf(8);
 
@@ -18,7 +28,7 @@ export class HandTracking {
   private lastIndexTip = new Map<string, Pt>(); // side -> filtered index tip last frame
 
   // lost: the filtered index tip, last seen, of each hand present last frame but not now.
-  update(result: HandLandmarkerResult, t: number): { hands: TrackedHand[]; lost: Pt[] } {
+  update(result: HandFrame, t: number): { hands: TrackedHand[]; lost: Pt[] } {
     const hands: TrackedHand[] = [];
     result.landmarks.forEach((raw, h) => {
       const label = result.handedness[h]?.[0]?.categoryName ?? "Hand";

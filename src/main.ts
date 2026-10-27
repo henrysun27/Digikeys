@@ -1,5 +1,4 @@
 import "./style.css";
-import { FilesetResolver, HandLandmarker } from "@mediapipe/tasks-vision";
 import { Calibration, CORNER_NAMES, checkCorners, orderCorners } from "./calibration.ts";
 import { CONFIG } from "./config.ts";
 import {
@@ -9,13 +8,15 @@ import {
   resolveTap,
   showCamera,
   showCorrections,
+  showDetection,
   showDropouts,
   showLevel,
   showMicInfo,
   showTest,
 } from "./debug.ts";
 import { applyH, convexHull, fitQuad, polygonArea, type Pt } from "./geometry.ts";
-import { HandTracking, type TrackedHand } from "./hand-tracking.ts";
+import { HAND_CONNECTIONS, HandTracking, type TrackedHand } from "./hand-tracking.ts";
+import type { FromWorker, HandFrame, ToWorker } from "./hand-worker.ts";
 import { PRESETS, hitTest, shapeCenter, shapeOutline, type Layout, type Zone } from "./layout.ts";
 import { startMic, type Onset } from "./mic.ts";
 import { maskArea, maskImage, maskOutline, maskPixels, segmentFrame, type SamObject, type Segmentation } from "./sam.ts";
@@ -496,29 +497,66 @@ function countDropouts(hands: TrackedHand[], lost: Pt[]) {
   }
 }
 
-async function startCamera() {
-  const { width, height, frameRate } = CONFIG.camera;
+type CameraMode = { width: number; height: number; frameRate: number };
+export type CameraProbe = { asked: CameraMode; settings: MediaTrackSettings; fps: number; used: boolean };
+export type CameraInfo = { asked: CameraMode; settings: MediaTrackSettings; probe: CameraProbe | null };
+
+async function openCamera(mode: CameraMode): Promise<MediaStream> {
   const stream = await navigator.mediaDevices.getUserMedia({
-    video: { width: { ideal: width }, height: { ideal: height }, frameRate: { ideal: frameRate } },
+    video: { width: { ideal: mode.width }, height: { ideal: mode.height }, frameRate: { ideal: mode.frameRate } },
     audio: false,
   });
   video.srcObject = stream;
   await video.play();
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-  return stream.getVideoTracks()[0].getSettings();
+  return stream;
 }
 
-async function createLandmarker() {
-  const h = CONFIG.hands;
-  const fileset = await FilesetResolver.forVisionTasks(h.wasmPath);
-  return HandLandmarker.createFromOptions(fileset, {
-    baseOptions: { modelAssetPath: h.modelPath, delegate: "GPU" },
-    runningMode: "VIDEO",
-    numHands: h.numHands,
-    minHandDetectionConfidence: h.minHandDetectionConfidence,
-    minHandPresenceConfidence: h.minHandPresenceConfidence,
-    minTrackingConfidence: h.minTrackingConfidence,
+// New video frames per second, measured over ms.
+function measureFps(ms: number): Promise<number> {
+  return new Promise((resolve) => {
+    let first = -1;
+    let n = 0;
+    const step = (now: number) => {
+      if (first < 0) first = now;
+      else n++;
+      if (now - first < ms) video.requestVideoFrameCallback(step);
+      else resolve((n * 1000) / (now - first));
+    };
+    video.requestVideoFrameCallback(step);
+  });
+}
+
+// Tries the fast mode first and keeps it if it really delivers more than fastMinFps;
+// otherwise reopens in the fallback mode.
+async function startCamera(): Promise<CameraInfo> {
+  const { tryFast, fast, fallback, fastMinFps, probeMs } = CONFIG.camera;
+  let probe: CameraProbe | null = null;
+  let stream: MediaStream | null = null;
+  let asked = fallback;
+  if (tryFast) {
+    stream = await openCamera(fast);
+    const fps = await measureFps(probeMs);
+    probe = { asked: fast, settings: stream.getVideoTracks()[0].getSettings(), fps, used: fps > fastMinFps };
+    if (probe.used) asked = fast;
+    else {
+      stream.getTracks().forEach((t) => t.stop());
+      stream = null;
+    }
+  }
+  stream ??= await openCamera(fallback);
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  return { asked, settings: stream.getVideoTracks()[0].getSettings(), probe };
+}
+
+function startWorker(): Promise<Worker> {
+  const worker = new Worker(new URL("./hand-worker.ts", import.meta.url), { type: "module" });
+  return new Promise((resolve, reject) => {
+    worker.onmessage = (e: MessageEvent<FromWorker>) => {
+      if (e.data.type === "ready") resolve(worker);
+      else if (e.data.type === "error") reject(new Error(`hand worker: ${e.data.message}`));
+    };
+    worker.onerror = (e) => reject(new Error(`hand worker: ${e.message}`));
   });
 }
 
@@ -666,7 +704,7 @@ function drawHands(hands: TrackedHand[]) {
     ctx.strokeStyle = "rgba(0, 255, 180, 0.8)";
     ctx.lineWidth = 3;
     ctx.beginPath();
-    for (const { start, end } of HandLandmarker.HAND_CONNECTIONS) {
+    for (const [start, end] of HAND_CONNECTIONS) {
       ctx.moveTo(pts[start].x, pts[start].y);
       ctx.lineTo(pts[end].x, pts[end].y);
     }
@@ -683,23 +721,56 @@ function drawHands(hands: TrackedHand[]) {
   }
 }
 
-function loop(landmarker: HandLandmarker, camera: MediaTrackSettings) {
-  let lastVideoTime = -1;
+// Hand detection runs in the worker. Each new video frame is copied to an ImageBitmap and
+// transferred there, one at a time: frames arriving while the worker is busy are skipped.
+// A frame's time is when it was grabbed, so finger samples are stamped as before. The main
+// thread only draws, hit-tests and handles onsets, so those never queue behind detection.
+function loop(worker: Worker, camera: CameraInfo) {
   let hands: TrackedHand[] = [];
-  let frames = 0;
+  let busy = false;
+  let videoFrames = 0;
+  let detections = 0;
+  let detectMs = 0;
   let fpsStart = performance.now();
+
+  const onResult = (t: number, frame: HandFrame) => {
+    const tracked = tracking.update(frame, t);
+    hands = tracked.hands;
+    recordFingers(hands, t);
+    countDropouts(hands, tracked.lost);
+    handsInFrame = hands.length;
+  };
+  worker.onmessage = (e: MessageEvent<FromWorker>) => {
+    const m = e.data;
+    if (m.type === "result") {
+      busy = false;
+      detections++;
+      detectMs += m.detectMs;
+      onResult(m.t, m.frame);
+    } else if (m.type === "error") {
+      setStatus(`Hand worker error: ${m.message}`);
+    }
+  };
+
+  const onFrame = () => {
+    videoFrames++;
+    if (!busy) {
+      busy = true;
+      const t = performance.now();
+      createImageBitmap(video).then(
+        (bitmap) => worker.postMessage({ type: "frame", bitmap, t } satisfies ToWorker, [bitmap]),
+        (err) => {
+          busy = false;
+          console.error(err);
+        },
+      );
+    }
+    video.requestVideoFrameCallback(onFrame);
+  };
+  video.requestVideoFrameCallback(onFrame);
 
   const tick = () => {
     const now = performance.now();
-    if (video.currentTime !== lastVideoTime) {
-      lastVideoTime = video.currentTime;
-      const tracked = tracking.update(landmarker.detectForVideo(video, now), now);
-      hands = tracked.hands;
-      recordFingers(hands, now);
-      countDropouts(hands, tracked.lost);
-      handsInFrame = hands.length;
-      frames++;
-    }
 
     // Only the video is drawn through a mirror transform; overlays use screen coords so
     // text stays readable.
@@ -713,11 +784,13 @@ function loop(landmarker: HandLandmarker, camera: MediaTrackSettings) {
     drawHands(hands);
 
     if (now - fpsStart >= 1000) {
-      const fps = (frames * 1000) / (now - fpsStart);
+      const secs = (now - fpsStart) / 1000;
+      const fps = videoFrames / secs;
       setStatus(`${hands.length} hand(s) · ${fps.toFixed(0)} fps`);
       showCamera(camera, fps);
+      showDetection(detections / secs, detections ? detectMs / detections : null);
       showDropouts(dropouts);
-      frames = 0;
+      videoFrames = detections = detectMs = 0;
       fpsStart = now;
     }
     requestAnimationFrame(tick);
@@ -726,18 +799,18 @@ function loop(landmarker: HandLandmarker, camera: MediaTrackSettings) {
 }
 
 async function main() {
-  calibration.load();
-  // A saved tap correction without the board it was fitted on is stale.
-  setCorrections(calibration.done ? corrections : null);
   try {
-    setStatus("Starting camera…");
+    setStatus("Starting camera and hand model…");
+    const worker = startWorker();
     const camera = await startCamera();
     showCamera(camera, null);
+    calibration.load(`${video.videoWidth}x${video.videoHeight}`);
+    // A saved tap correction without the board it was fitted on is stale.
+    setCorrections(calibration.done ? corrections : null);
     updateHint();
     setStatus("Loading hand model…");
-    const landmarker = await createLandmarker();
+    loop(await worker, camera);
     setStatus("Running");
-    loop(landmarker, camera);
   } catch (err) {
     console.error(err);
     setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);

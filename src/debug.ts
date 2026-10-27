@@ -1,4 +1,5 @@
 import { CONFIG } from "./config.ts";
+import type { CameraInfo } from "./main.ts";
 import type { MicInfo, MicLevel } from "./mic.ts";
 import type { Correction, TapCorrections } from "./tap-correction.ts";
 import type { TestScore } from "./test-mode.ts";
@@ -20,6 +21,8 @@ const testPanelEl = el("test-panel");
 const testStatsEl = el("test-stats");
 const tapCorrectionEl = el("tap-correction");
 const cameraEl = el("camera-info");
+const probeEl = el("camera-probe");
+const detectionEl = el("detection");
 const dropoutsEl = el("dropouts");
 const logEl = el("tap-log");
 const recentOffsets: number[] = [];
@@ -131,14 +134,25 @@ export function showTest(target: string | null, setting: string, scores: Map<str
   testStatsEl.replaceChildren(...lines);
 }
 
-// What the camera actually delivers vs what was asked for; measuredFps counts new video
-// frames (null until the first second has passed).
-export function showCamera(s: MediaTrackSettings, measuredFps: number | null) {
-  const { width, height, frameRate } = CONFIG.camera;
-  const fps = s.frameRate ? `${s.frameRate.toFixed(0)} fps` : "? fps";
+const fmtMode = (s: MediaTrackSettings) =>
+  `${s.width ?? "?"}×${s.height ?? "?"} @ ${s.frameRate ? s.frameRate.toFixed(0) : "?"} fps`;
+
+// The mode in use vs what was asked for, and how the fast-mode probe went. measuredFps
+// counts new video frames (null until the first second has passed).
+export function showCamera(c: CameraInfo, measuredFps: number | null) {
+  const { width, height, frameRate } = c.asked;
   const measured = measuredFps === null ? "" : `, measured ${measuredFps.toFixed(0)}`;
-  cameraEl.textContent =
-    `${s.width ?? "?"}×${s.height ?? "?"} @ ${fps}${measured} (asked ${width}×${height} @ ${frameRate})`;
+  cameraEl.textContent = `${fmtMode(c.settings)}${measured} (asked ${width}×${height} @ ${frameRate})`;
+  const p = c.probe;
+  probeEl.textContent = p
+    ? `asked ${p.asked.width}×${p.asked.height} @ ${p.asked.frameRate}, got ${fmtMode(p.settings)}, ` +
+      `measured ${p.fps.toFixed(0)} fps: ${p.used ? "used" : `not used (needs > ${CONFIG.camera.fastMinFps})`}`
+    : "off";
+}
+
+// Hand detection in the worker: results per second and mean detect time.
+export function showDetection(perSec: number, meanMs: number | null) {
+  detectionEl.textContent = `${perSec.toFixed(0)}/s, ${meanMs === null ? "–" : meanMs.toFixed(1)} ms each (worker)`;
 }
 
 export type Dropouts = { lost: number[]; frames: number[]; offLost: number; offFrames: number };
