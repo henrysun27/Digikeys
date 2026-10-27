@@ -97,6 +97,14 @@ All code in this repo was written during the hackathon.
       dropped after it picked a slower mode; the debug panel's Probe button still measures
       that mode on demand and then returns to the default. Calibration is saved per
       camera resolution.
+- [x] Detection placement: frames to the worker are pipelined (every new frame is copied
+      as it arrives and the newest copy is sent the moment the previous result is back;
+      older copies are dropped). MediaPipe gets a WebGL2 context created with
+      `powerPreference: "high-performance"`. `CONFIG.hands.detectOn` picks the worker, the
+      main thread, or "auto": start in the worker and, if it detects fewer than 90% of
+      camera frames, measure the main thread and keep whichever is faster. `?detect=worker`,
+      `?detect=main` or `?detect=auto` overrides it for comparing. The debug panel shows
+      where detection runs, the GPU renderer, and the auto measurements.
 
 ## Meta models
 

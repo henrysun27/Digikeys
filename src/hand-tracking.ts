@@ -1,6 +1,6 @@
 import { CONFIG } from "./config.ts";
 import type { Pt } from "./geometry.ts";
-import type { HandFrame } from "./hand-worker.ts";
+import type { HandFrame } from "./hand-detector.ts";
 import { OneEuroFilter } from "./one-euro.ts";
 import { FINGERTIPS } from "./taps.ts";
 

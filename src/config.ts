@@ -18,6 +18,14 @@ export const CONFIG = {
     minHandPresenceConfidence: 0.3,
     minTrackingConfidence: 0.3,
     dropoutColumns: 8, // board columns that tracking dropouts are counted in
+    // Where detection runs. "worker" keeps mic onsets from waiting behind it; "main" skips
+    // the per-frame copy to the worker. "auto" starts in the worker and moves to the main
+    // thread if the worker can't keep up with the camera and the main thread does better.
+    detectOn: "auto" as "auto" | "worker" | "main",
+    keepUpRatio: 0.9, // detection keeps up if its rate is at least this times the camera's
+    autoWarmupMs: 1500, // auto: settle time before measuring each option...
+    autoMeasureMs: 3000, // ...and how long to measure it
+    powerPreference: "high-performance" as WebGLPowerPreference, // GPU asked for
   },
   // One Euro filter on fingertip positions for display and hit-testing; tap detection's
   // motion history stays raw. Positions are 0-1 camera coords.

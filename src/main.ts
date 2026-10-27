@@ -17,7 +17,8 @@ import {
 } from "./debug.ts";
 import { applyH, convexHull, fitQuad, polygonArea, type Pt } from "./geometry.ts";
 import { HAND_CONNECTIONS, HandTracking, type TrackedHand } from "./hand-tracking.ts";
-import type { FromWorker, HandFrame, ToWorker, WorkerInfo } from "./hand-worker.ts";
+import { createDetector, type Detector } from "./detectors.ts";
+import type { HandFrame } from "./hand-detector.ts";
 import { PRESETS, hitTest, shapeCenter, shapeOutline, type Layout, type Zone } from "./layout.ts";
 import { startMic, type Onset } from "./mic.ts";
 import { maskArea, maskImage, maskOutline, maskPixels, segmentFrame, type SamObject, type Segmentation } from "./sam.ts";
@@ -561,15 +562,60 @@ probeBtn.addEventListener("click", async () => {
   }
 });
 
-function startWorker(): Promise<{ worker: Worker; info: WorkerInfo }> {
-  const worker = new Worker(new URL("./hand-worker.ts", import.meta.url), { type: "module" });
-  return new Promise((resolve, reject) => {
-    worker.onmessage = (e: MessageEvent<FromWorker>) => {
-      if (e.data.type === "ready") resolve({ worker, info: e.data });
-      else if (e.data.type === "error") reject(new Error(`hand worker: ${e.data.message}`));
-    };
-    worker.onerror = (e) => reject(new Error(`hand worker: ${e.message}`));
-  });
+// Hand detection, in the worker or on the main thread (see CONFIG.hands.detectOn). Counts
+// are totals since startup; the panel and the auto choice take differences.
+let detector: Detector | null = null;
+let hands: TrackedHand[] = [];
+const counts = { videoFrames: 0, detections: 0, detectMs: 0 };
+let detectorChoice: string | null = null;
+
+function useDetector(d: Detector) {
+  d.onHands = (t: number, frame: HandFrame, ms: number) => {
+    if (detector !== d) return;
+    counts.detections++;
+    counts.detectMs += ms;
+    const tracked = tracking.update(frame, t);
+    hands = tracked.hands;
+    recordFingers(hands, t);
+    countDropouts(hands, tracked.lost);
+    handsInFrame = hands.length;
+  };
+  detector = d;
+}
+
+// Camera and detection rates over autoMeasureMs, after autoWarmupMs to settle.
+async function measureDetection(): Promise<{ camera: number; detection: number }> {
+  const { autoWarmupMs, autoMeasureMs } = CONFIG.hands;
+  await new Promise((r) => setTimeout(r, autoWarmupMs));
+  const f0 = counts.videoFrames;
+  const d0 = counts.detections;
+  const t0 = performance.now();
+  await new Promise((r) => setTimeout(r, autoMeasureMs));
+  const secs = (performance.now() - t0) / 1000;
+  return { camera: (counts.videoFrames - f0) / secs, detection: (counts.detections - d0) / secs };
+}
+
+// "auto": keep the worker if it keeps up with the camera. Otherwise try the main thread
+// and keep whichever detects more frames per second.
+async function chooseDetector(worker: Detector) {
+  const keepsUp = (m: { camera: number; detection: number }) => m.detection >= m.camera * CONFIG.hands.keepUpRatio;
+  detectorChoice = "auto: measuring worker…";
+  const w = await measureDetection();
+  const rate = (name: string, m: { detection: number }) => `${name} ${m.detection.toFixed(0)}/s`;
+  if (keepsUp(w)) {
+    detectorChoice = `auto: ${rate("worker", w)} keeps up with camera ${w.camera.toFixed(0)} fps`;
+    return;
+  }
+  detectorChoice = `auto: ${rate("worker", w)} < camera ${w.camera.toFixed(0)} fps, measuring main thread…`;
+  const main = await createDetector("main", video);
+  useDetector(main);
+  const m = await measureDetection();
+  const pick = keepsUp(m) || m.detection > w.detection ? main : worker;
+  useDetector(pick);
+  (pick === main ? worker : main).close();
+  detectorChoice =
+    `auto: ${rate("worker", w)}, ${rate("main", m)}, camera ${m.camera.toFixed(0)} fps → ` +
+    (pick === main ? "main thread" : "worker");
 }
 
 // Filtered fingertips are hit-tested like a stopped finger, through the check correction.
@@ -733,50 +779,15 @@ function drawHands(hands: TrackedHand[]) {
   }
 }
 
-// Hand detection runs in the worker. Each new video frame is copied to an ImageBitmap and
-// transferred there, one at a time: frames arriving while the worker is busy are skipped.
-// A frame's time is when it was grabbed, so finger samples are stamped as before. The main
-// thread only draws, hit-tests and handles onsets, so those never queue behind detection.
-function loop(worker: Worker, info: WorkerInfo) {
-  let hands: TrackedHand[] = [];
-  let busy = false;
-  let videoFrames = 0;
-  let detections = 0;
-  let detectMs = 0;
+// Every new video frame goes to the detector, stamped with when it was grabbed, so finger
+// samples are timed as before. Drawing runs on animation frames with the latest hands.
+function loop() {
   let fpsStart = performance.now();
-
-  const onResult = (t: number, frame: HandFrame) => {
-    const tracked = tracking.update(frame, t);
-    hands = tracked.hands;
-    recordFingers(hands, t);
-    countDropouts(hands, tracked.lost);
-    handsInFrame = hands.length;
-  };
-  worker.onmessage = (e: MessageEvent<FromWorker>) => {
-    const m = e.data;
-    if (m.type === "result") {
-      busy = false;
-      detections++;
-      detectMs += m.detectMs;
-      onResult(m.t, m.frame);
-    } else if (m.type === "error") {
-      setStatus(`Hand worker error: ${m.message}`);
-    }
-  };
+  let last = { ...counts };
 
   const onFrame = () => {
-    videoFrames++;
-    if (!busy) {
-      busy = true;
-      const t = performance.now();
-      createImageBitmap(video).then(
-        (bitmap) => worker.postMessage({ type: "frame", bitmap, t } satisfies ToWorker, [bitmap]),
-        (err) => {
-          busy = false;
-          console.error(err);
-        },
-      );
-    }
+    counts.videoFrames++;
+    detector?.frame(performance.now());
     video.requestVideoFrameCallback(onFrame);
   };
   video.requestVideoFrameCallback(onFrame);
@@ -797,12 +808,16 @@ function loop(worker: Worker, info: WorkerInfo) {
 
     if (now - fpsStart >= 1000) {
       const secs = (now - fpsStart) / 1000;
-      const fps = videoFrames / secs;
+      const fps = (counts.videoFrames - last.videoFrames) / secs;
+      const n = counts.detections - last.detections;
       setStatus(`${hands.length} hand(s) · ${fps.toFixed(0)} fps`);
       if (camera) showCamera(camera, fps);
-      showDetection(info, detections / secs, detections ? detectMs / detections : null);
+      if (detector) {
+        const meanMs = n ? (counts.detectMs - last.detectMs) / n : null;
+        showDetection(detector.kind, detector.info, n / secs, meanMs, detectorChoice);
+      }
       showDropouts(dropouts);
-      videoFrames = detections = detectMs = 0;
+      last = { ...counts };
       fpsStart = now;
     }
     requestAnimationFrame(tick);
@@ -813,7 +828,10 @@ function loop(worker: Worker, info: WorkerInfo) {
 async function main() {
   try {
     setStatus("Starting camera and hand model…");
-    const worker = startWorker();
+    // ?detect=worker|main|auto overrides CONFIG.hands.detectOn, for comparing them.
+    const param = new URLSearchParams(location.search).get("detect");
+    const detectOn = param === "worker" || param === "main" || param === "auto" ? param : CONFIG.hands.detectOn;
+    const first = createDetector(detectOn === "main" ? "main" : "worker", video);
     camera = await startCamera();
     showCamera(camera, null);
     calibration.load(`${video.videoWidth}x${video.videoHeight}`);
@@ -821,9 +839,10 @@ async function main() {
     setCorrections(calibration.done ? corrections : null);
     updateHint();
     setStatus("Loading hand model…");
-    const { worker: w, info } = await worker;
-    loop(w, info);
+    useDetector(await first);
+    loop();
     setStatus("Running");
+    if (detectOn === "auto") await chooseDetector(detector!);
   } catch (err) {
     console.error(err);
     setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);

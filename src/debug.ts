@@ -1,5 +1,6 @@
 import { CONFIG } from "./config.ts";
-import type { WorkerInfo } from "./hand-worker.ts";
+import type { DetectorKind } from "./detectors.ts";
+import type { DetectorInfo } from "./hand-detector.ts";
 import type { CameraInfo, CameraProbe } from "./main.ts";
 import type { MicInfo, MicLevel } from "./mic.ts";
 import type { Correction, TapCorrections } from "./tap-correction.ts";
@@ -157,13 +158,20 @@ export function showProbe(p: CameraProbe | "running" | string) {
         : `asked ${fmtAsked(p.asked)}, got ${fmtMode(p.settings)}, measured ${p.fps.toFixed(0)} fps`;
 }
 
-// Hand detection in the worker: delegate and WebGL renderer, results per second and mean
-// detect time.
-export function showDetection(info: WorkerInfo, perSec: number, meanMs: number | null) {
+// Hand detection: where it runs, delegate and WebGL renderer, results per second and mean
+// detect time, and how "auto" chose (null if it didn't run or hasn't finished).
+export function showDetection(
+  kind: DetectorKind,
+  info: DetectorInfo,
+  perSec: number,
+  meanMs: number | null,
+  choice: string | null,
+) {
   const delegate = info.gpuError ? `CPU (GPU failed: ${info.gpuError})` : info.delegate;
   detectionEl.textContent =
-    `${delegate} on ${info.renderer} · ${perSec.toFixed(0)}/s, ` +
-    `${meanMs === null ? "–" : meanMs.toFixed(1)} ms each (worker)`;
+    `${kind === "worker" ? "worker" : "main thread"}, ${delegate} on ${info.renderer} · ` +
+    `${perSec.toFixed(0)}/s, ${meanMs === null ? "–" : meanMs.toFixed(1)} ms each` +
+    (choice ? ` · ${choice}` : "");
 }
 
 export type Dropouts = { lost: number[]; frames: number[]; offLost: number; offFrames: number };
