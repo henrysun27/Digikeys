@@ -26,8 +26,11 @@ const shifted = (s: Sample, t: number, dx: number, dy: number): Sample => ({
   fy: s.fy + dy,
 });
 
+// score: what fingers are ranked by (weighted travel for the guess, peak speed for the
+// check), so chord members can be compared with the best.
 export type FingerPick = {
   finger: string;
+  score: number;
   peakSpeed: number; // frame heights per second, downward
   at: Sample; // where the finger stopped, or where it should land if still moving
   stopOffset: number | null; // stop time minus expected stop time (onset + videoLagMs), ms
@@ -109,11 +112,16 @@ export class FingerHistory {
   // there: the stop must be within stopToleranceMs of it (per finger, the stroke
   // stopping closest to it). Needs frames up to that time, so call it after they're in.
   resolve(onset: number): FingerPick | null {
+    return this.resolveAll(onset)[0] ?? null;
+  }
+
+  // Every allowed finger with a stop in the window, fastest stroke first.
+  resolveAll(onset: number): FingerPick[] {
     const { historyMs, stopToleranceMs, videoLagMs } = CONFIG.taps;
     const expected = onset + videoLagMs;
     const from = expected - stopToleranceMs - historyMs;
     const to = expected + stopToleranceMs;
-    let best: FingerPick | null = null;
+    const picks: FingerPick[] = [];
     for (const [finger, track] of this.tracks) {
       if (!isAllowed(finger)) continue;
       const strokes = downStrokes(track.filter((s) => s.t >= from && s.t <= to));
@@ -121,10 +129,11 @@ export class FingerHistory {
         strokes.filter((k) => k.stop && Math.abs(k.stop.t - expected) <= stopToleranceMs),
         expected,
       );
-      if (!stroke || (best && stroke.peak <= best.peakSpeed)) continue;
-      best = { finger, peakSpeed: stroke.peak, at: stroke.stop!, stopOffset: stroke.stop!.t - expected };
+      if (!stroke) continue;
+      const at = stroke.stop!;
+      picks.push({ finger, score: stroke.peak, peakSpeed: stroke.peak, at, stopOffset: at.t - expected });
     }
-    return best;
+    return picks.sort((a, b) => b.score - a.score);
   }
 
   // Best guess at onset time, from the frames so far. With webcam lag the latest frames
@@ -135,12 +144,16 @@ export class FingerHistory {
   // its stop if already seen, the extrapolated stroke if it is coming down, or its
   // resting height (lowest point in the window) if still raised.
   guess(onset: number, c: GuessContext): FingerPick | null {
+    return this.guessAll(onset, c)[0] ?? null;
+  }
+
+  // Every allowed finger that lifted at least minLift, scored as in guess, best first.
+  guessAll(onset: number, c: GuessContext): FingerPick[] {
     const { historyMs, stopToleranceMs, videoLagMs, minLift } = CONFIG.taps;
     const g = CONFIG.guess;
     const expected = onset + videoLagMs;
     const from = expected - stopToleranceMs - historyMs;
-    let best: FingerPick | null = null;
-    let bestScore = 0;
+    const picks: FingerPick[] = [];
     for (const [finger, track] of this.tracks) {
       if (!isAllowed(finger)) continue;
       const s = track.filter((p) => p.t >= from);
@@ -152,16 +165,14 @@ export class FingerHistory {
       if (fingerOf(finger) === "thumb" && travel < g.thumbStrikeLift) score *= g.thumbWeight;
       if (c.onBoard(landing(s[s.length - 1]))) score *= g.onBoardWeight;
       if (c.lastHand !== null && handOf(finger) === c.lastHand) score *= g.lastHandWeight;
-      if (score <= bestScore) continue;
-      bestScore = score;
       const stroke = downStrokes(s).at(-1);
       let at: Sample;
       if (stroke?.stop && stroke.stop.t >= expected - stopToleranceMs) at = stroke.stop;
       else if (stroke && !stroke.stop) at = extrapolate(stroke, expected);
       else at = shifted(s[s.length - 1], s[s.length - 1].t, 0, restY - s[s.length - 1].y);
-      best = { finger, peakSpeed: stroke?.peak ?? 0, at, stopOffset: null };
+      picks.push({ finger, score, peakSpeed: stroke?.peak ?? 0, at, stopOffset: null });
     }
-    return best;
+    return picks.sort((a, b) => b.score - a.score);
   }
 }
 

@@ -57,7 +57,10 @@ export const CONFIG = {
     riseLookbackMs: 12,
     floorFallMs: 150, // floor time constant when the level drops below it
     floorRiseMs: 2000, // ...and when it rises above it
-    refractoryMs: 80,
+    // Not a refractory (that is per zone, taps.zoneRefractoryMs): one tap's transient can
+    // pass the rise check in several consecutive blocks, and this merges them into one
+    // onset. Short, so a second finger landing just after the first still gets its own.
+    mergeMs: 25,
     reportMs: 30, // how often the worklet posts levels for the debug panel
   },
   mic: {
@@ -92,6 +95,11 @@ export const CONFIG = {
     keepMs: 1000,
     minDownSpeed: 0.3, // frame heights/s for a downward stroke
     stopSpeedRatio: 0.3, // stopped once speed falls below this fraction of the peak
+    // Chords: an accepted onset plays every allowed finger whose strike score is at least
+    // this fraction of the best one's (one note per zone). Lower catches more of a chord,
+    // and more sympathetic finger motion.
+    chordRatio: 0.6,
+    zoneRefractoryMs: 80, // a zone can't play again sooner than this; other zones can
     flashMs: 300,
     logSize: 8,
     dotTaps: 30, // taps with a target whose guess/check positions are drawn on the board
@@ -104,6 +112,11 @@ export const CONFIG = {
     minTravel: 0.01, // frame heights a stroke must descend
     missWindowMs: 150, // test mode: a stop with no accepted onset within this is a miss
     keepMs: 2000, // how long onset times and mic levels are kept for miss checks
+  },
+  // Test mode targets.
+  test: {
+    chordChance: 0.3, // share of targets that are a two-zone chord
+    chordWindowMs: 120, // taps this soon after a chord attempt's first one count toward it
   },
   // "Calibrate taps": an offset in board coords, fitted separately for guess and check
   // positions.

@@ -159,10 +159,11 @@ export function showTest(target: string | null, setting: string, scores: Map<str
     const div = document.createElement("div");
     div.textContent =
       `${name}: guess ${s.guessHits}/${s.taps}${pct(s.guessHits)} · ` +
-      `check ${s.checkHits}/${s.taps}${pct(s.checkHits)}`;
+      `check ${s.checkHits}/${s.taps}${pct(s.checkHits)}` +
+      (s.extraNotes ? ` · ${s.extraNotes} extra notes` : "");
     return div;
   };
-  const lines = [line(setting, scores.get(setting) ?? { taps: 0, guessHits: 0, checkHits: 0 })];
+  const lines = [line(setting, scores.get(setting) ?? { taps: 0, guessHits: 0, checkHits: 0, extraNotes: 0 })];
   for (const [name, s] of scores) if (name !== setting) lines.push(line(name, s));
   if (target !== null) {
     const tap = document.createElement("div");
@@ -239,9 +240,11 @@ export function showCorrections(c: TapCorrections | null) {
   tapCorrectionEl.textContent = c ? `${fmt("guess", c.guess)} · ${fmt("check", c.check)}` : "none";
 }
 
-export function logTest(line: HTMLLIElement, target: string, hit: { guess: boolean; check: boolean }) {
+// A chord target is a hit only if all its zones played; extra: other zones that played.
+export function logTest(line: HTMLLIElement, target: string, hit: { guess: boolean; check: boolean; extra: number }) {
   const mark = (ok: boolean) => (ok ? "✓" : "✗");
-  line.textContent += ` · target ${target}: guess ${mark(hit.guess)} check ${mark(hit.check)}`;
+  const extra = hit.extra ? ` (+${hit.extra} extra)` : "";
+  line.textContent += ` · target ${target}: guess ${mark(hit.guess)}${extra} check ${mark(hit.check)}`;
 }
 
 export function resolveTap(line: HTMLLIElement, playedFinger: string | null, r: ResolvedTap) {

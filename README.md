@@ -148,6 +148,21 @@ All code in this repo was written during the hackathon.
   - In simulation, random landmark noise of σ 0.003 frame heights on a resting finger gives
     about 6 false stops per 10 s (none at σ 0.002). That affects vision-only taps and the
     miss log, not hybrid taps, which also need an onset.
+- [x] Chords: each accepted onset plays every allowed finger whose strike score is at
+      least `CONFIG.taps.chordRatio` (0.6) of the best finger's, one note per zone. The
+      refractory is per zone (`zoneRefractoryMs`, 80 ms): a zone can't retrigger, but
+      another finger's zone can, so a second finger landing just after the first plays on
+      its own onset. The ratio is always taken against the best finger, so a second onset
+      from one tap can't promote a weaker finger. The worklet keeps only a 25 ms merge
+      window (`onset.mergeMs`) so one tap's transient isn't counted as several onsets.
+      In vision-only mode each finger's stop is its own tap, so chords need nothing extra.
+      The check resolves every stopped finger the same way and the tap log shows both
+      chords.
+- [x] Chord targets in Test mode: 30% of targets (`CONFIG.test.chordChance`) are two
+      zones, highlighted together. Taps within 120 ms of the first (`chordWindowMs`) count
+      toward the same attempt, and it is a hit only if both zones played (guess) or were
+      found by the stop check. Chord scores are listed separately, and zones that played
+      without being targeted are counted as extra notes.
 
 ## Meta models
 

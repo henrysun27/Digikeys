@@ -1,5 +1,5 @@
 // Audio-thread onset detector. Per 128-sample block: RMS level, adaptive noise floor,
-// sudden-rise check and refractory period. Posts onsets and periodic level reports.
+// sudden-rise check and a short merge window. Posts onsets and periodic level reports.
 import type { OnsetParams } from "./config.ts";
 
 declare const sampleRate: number;
@@ -50,7 +50,7 @@ class OnsetProcessor extends AudioWorkletProcessor {
     const threshold = Math.max(this.floor * this.thresholdRatio, this.minLevel);
     const before = this.recent.length ? this.recent.reduce((a, b) => a + b, 0) / this.recent.length : 0;
     const rising = level >= before * this.riseRatio;
-    const ready = (currentTime - this.lastOnset) * 1000 >= p.refractoryMs;
+    const ready = (currentTime - this.lastOnset) * 1000 >= p.mergeMs;
     if (level >= threshold && rising && ready) {
       this.lastOnset = currentTime;
       this.port.postMessage({ type: "onset", time: currentTime, level, threshold } satisfies OnsetMessage);

@@ -35,8 +35,17 @@ import {
 import { startMic, type MicLevel, type Onset } from "./mic.ts";
 import { requestLayout } from "./muse.ts";
 import { maskArea, maskImage, maskOutline, maskPixels, segmentFrame, type SamObject, type Segmentation } from "./sam.ts";
-import { initSound, play, playNow } from "./sound.ts";
-import { FINGER_NAMES, FINGERTIPS, FingerHistory, fingerKey, handOf, landing, type Motion } from "./taps.ts";
+import { initSound, playNow } from "./sound.ts";
+import {
+  FINGER_NAMES,
+  FINGERTIPS,
+  FingerHistory,
+  fingerKey,
+  handOf,
+  landing,
+  type FingerPick,
+  type Motion,
+} from "./taps.ts";
 import {
   applyCorrection,
   loadCorrections,
@@ -45,7 +54,7 @@ import {
   type TapCorrections,
   type TapKind,
 } from "./tap-correction.ts";
-import { TestMode } from "./test-mode.ts";
+import { TestMode, type Attempt } from "./test-mode.ts";
 
 const video = document.querySelector<HTMLVideoElement>("#video")!;
 const canvas = document.querySelector<HTMLCanvasElement>("#view")!;
@@ -80,6 +89,7 @@ let generated: Layout | null = null; // the last layout from Muse Spark that pas
 let generating = false;
 const history = new FingerHistory();
 const flashes = new Map<string, number>(); // zone id -> flash end, performance.now() ms
+const zonePlayedAt = new Map<string, number>(); // zone id -> last played, performance.now() ms
 let hintError: string | null = null;
 let tapCount = 0;
 let handsInFrame = 0; // hands in the latest detection
@@ -490,34 +500,67 @@ function onStop(m: Motion) {
   else if (test.active && !tapCal && audio.micOn) checkMiss(m);
 }
 
-// Vision-only: plays at the stop frame's position, through the check correction. Scored
-// in test mode and recorded in tap calibration like an onset tap whose guess and check
-// are the same position.
+// Vision-only: plays at the stop frame's position, through the check correction, unless
+// the zone is in its refractory. Each finger's stop is its own tap, so chords play as
+// their fingers stop. Scored in test mode and recorded in tap calibration like an onset
+// tap whose guess and check are the same position.
 function visionTap(m: Motion) {
   const n = ++tapCount;
   const at = tapPoint("check", landing(m.end));
   const zone = at ? hitTest(layout, at) : null;
-  const played = zone ? playNow(zone.sound) : null;
+  const played = zone && zoneReady(zone) ? playZone(zone) : null;
   const latencyMs = played ? performance.now() - m.end.t + played.outputMs : null;
   setLastTap(m.finger, m.end.t);
-  if (zone) flashes.set(zone.id, performance.now() + CONFIG.taps.flashMs);
   const line = logVisionTap(n, m.finger, zone?.label ?? null, latencyMs);
 
-  const cal = tapCal;
-  const target = cal ? cal.take() : test.active ? test.target : null;
-  if (!target) return;
-  if (at) pushDot({ guess: { p: at, hit: zone?.id === target.id }, check: null });
-  if (cal) {
+  if (tapCal) {
+    const cal = tapCal;
+    const target = cal.take();
+    if (!target) return;
+    if (at) pushDot({ guess: { p: at, hit: zone?.id === target.id }, check: null });
     cal.add("guess", target, at);
     cal.add("check", target, at);
     cal.settle();
     updateTapCalStatus();
     if (cal.finished) finishTapCal();
-  } else {
-    test.next(layout);
-    logTest(line, target.label, test.record(fingerSetting(), target, zone, zone));
-    updateTest();
+    return;
   }
+  const joined = test.active ? test.join(m.end.t, fingerSetting(), layout) : null;
+  if (!joined) return;
+  const { attempt, opened } = joined;
+  if (zone) {
+    attempt.played.add(zone.id);
+    attempt.checked.add(zone.id);
+  }
+  if (at) pushDot({ guess: { p: at, hit: !!zone && attempt.target.zones.includes(zone) }, check: null });
+  if (opened) {
+    attempt.line = line;
+    closeAttemptAt(attempt, attempt.start + attempt.window);
+  }
+  updateTest();
+}
+
+// Scores a test attempt once every tap in its window has played and been checked.
+function closeAttemptAt(a: Attempt, t: number) {
+  setTimeout(() => {
+    const hit = test.record(a);
+    if (a.line) logTest(a.line, a.target.label, hit);
+    updateTest();
+  }, Math.max(0, t + 5 - performance.now()));
+}
+
+// Per-zone refractory: a zone can't play again within zoneRefractoryMs; other zones can,
+// so the second finger of a chord isn't cut off.
+function zoneReady(zone: Zone): boolean {
+  return performance.now() - (zonePlayedAt.get(zone.id) ?? -Infinity) >= CONFIG.taps.zoneRefractoryMs;
+}
+
+// Plays a zone now and starts its refractory and flash.
+function playZone(zone: Zone): { ctxTime: number; outputMs: number } | null {
+  const now = performance.now();
+  zonePlayedAt.set(zone.id, now);
+  flashes.set(zone.id, now + CONFIG.taps.flashMs);
+  return playNow(zone.sound);
 }
 
 // Hybrid test mode: a stop with no accepted onset within missWindowMs of when its onset
@@ -563,11 +606,42 @@ function setLastTap(finger: string, t: number) {
   if (!lastTap || t >= lastTap.t) lastTap = { hand: handOf(finger), t };
 }
 
-// Plays right away from the best-guess finger. The finger frames for the moment of the
-// onset arrive videoLagMs later and the stop may be up to stopToleranceMs after that, so
-// the tap is checked against the stopped finger once those frames are in. In test mode
-// both are scored against the target shown at the onset, and the next target appears;
-// in tap calibration both positions are recorded against the zone being calibrated.
+// A finger's tap position on the board and the zone there. late: a check stop past
+// lateStopMs, so at is the finger's guess position instead.
+type Note = { pick: FingerPick; at: Pt | null; zone: Zone | null; late: boolean };
+
+// The chord in a ranked list of fingers: every finger scoring at least chordRatio of the
+// best (the best first), one per zone. Fingers off the board stay in, with no zone.
+function chordOf(notes: Note[]): Note[] {
+  if (notes.length === 0) return [];
+  const min = notes[0].pick.score * CONFIG.taps.chordRatio;
+  const zones = new Set<string>();
+  return notes.filter(({ pick, zone }) => {
+    if (pick.score < min) return false;
+    if (!zone) return true;
+    if (zones.has(zone.id)) return false;
+    zones.add(zone.id);
+    return true;
+  });
+}
+
+// Finger names in a stable order, so a guessed and a checked chord compare as text.
+const fingerList = (notes: Note[]) => notes.map((x) => x.pick.finger).sort().join(" + ");
+const zoneList = (notes: Note[]) => notes.map((x) => x.zone?.label ?? "off board").join(" + ");
+
+// Plays right away from the best-guess fingers: every allowed finger whose strike score
+// is at least chordRatio of the best one's, one note per zone, except zones still in
+// their refractory. The ratio is always taken against the best finger, refractory or not,
+// so a second onset from the same tap can't promote a weaker finger, while the second
+// finger of a slightly staggered chord plays on its own onset if it would have joined
+// the chord anyway.
+//
+// The finger frames for the moment of the onset arrive videoLagMs later and the stop may
+// be up to stopToleranceMs after that, so the tap is checked against the stopped fingers
+// once those frames are in. In test mode, the tap joins the current attempt (a chord's
+// fingers may land with separate onsets) and the attempt is scored once all its taps are
+// checked; in tap calibration the best finger's positions are recorded against the zone
+// being calibrated.
 //
 // Hybrid mode gate: the onset threshold is low enough for light contact, so an onset only
 // counts if an allowed finger is moving down or just stopped on the board in the finger
@@ -579,7 +653,7 @@ function onOnset(onset: Onset) {
     logIgnored(n, "no hand");
     return;
   }
-  const { videoLagMs, stopToleranceMs, historyMs, settleMarginMs, flashMs } = CONFIG.taps;
+  const { videoLagMs, stopToleranceMs, historyMs, settleMarginMs } = CONFIG.taps;
   if (history.motionSince(onset.time + videoLagMs - stopToleranceMs - historyMs, onBoard).length === 0) {
     keepRecent(rejectedOnsets, onset.time);
     logRejected(n, onset.level, onset.threshold);
@@ -587,65 +661,86 @@ function onOnset(onset: Onset) {
   }
   keepRecent(acceptedOnsets, onset.time);
   const recent = lastTap && onset.time - lastTap.t <= CONFIG.guess.lastHandMs;
-  const guess = history.guess(onset.time, { onBoard, lastHand: recent ? lastTap!.hand : null });
-  const guessAt = guess ? tapPoint("guess", landing(guess.at)) : null;
-  const zone = guessAt ? hitTest(layout, guessAt) : null;
-  const latencyMs = zone ? play(zone.sound, onset.ctxTime) : null;
+  const guesses = history.guessAll(onset.time, { onBoard, lastHand: recent ? lastTap!.hand : null }).map((pick): Note => {
+    const at = tapPoint("guess", landing(pick.at));
+    return { pick, at, zone: at ? hitTest(layout, at) : null, late: false };
+  });
+  const chord = chordOf(guesses);
+  const played: Zone[] = [];
+  let latencyMs: number | null = null;
+  for (const { zone } of chord) {
+    if (!zone || !zoneReady(zone)) continue;
+    const p = playZone(zone);
+    if (!p) continue;
+    played.push(zone);
+    latencyMs ??= (p.ctxTime - onset.ctxTime) * 1000 + p.outputMs;
+  }
   const handlerMs = performance.now() - onset.receivedAt;
-  if (guess) setLastTap(guess.finger, onset.time);
-  if (zone) flashes.set(zone.id, performance.now() + flashMs);
+  const best = chord[0] ?? null;
+  if (best) setLastTap(best.pick.finger, onset.time);
   const line = logPlayed({
     n,
-    finger: guess?.finger ?? null,
-    zone: zone?.label ?? null,
+    finger: chord.length ? fingerList(chord) : null,
+    zone: played.length ? played.map((z) => z.label).join(" + ") : null,
     latencyMs,
     waitMs: onset.receivedAt - onset.time,
     handlerMs,
   });
-  const setting = fingerSetting();
+
   // Taps after the last calibration zone (while its checks resolve) count for nothing.
   const calTarget = tapCal?.take() ?? null;
   const cal = calTarget ? tapCal : null;
-  const testTarget = !tapCal && test.active ? test.target : null;
-  const target = calTarget ?? testTarget;
-  if (testTarget) {
-    test.next(layout);
+  const joined = !tapCal && test.active ? test.join(onset.time, fingerSetting(), layout) : null;
+  const attempt = joined?.attempt ?? null;
+  const resolveAt = onset.time + videoLagMs + stopToleranceMs + settleMarginMs;
+  if (attempt) {
+    for (const z of played) attempt.played.add(z.id);
+    if (joined!.opened) {
+      attempt.line = line;
+      // After the resolve of the last onset that can still join.
+      closeAttemptAt(attempt, resolveAt + attempt.window);
+    }
     updateTest();
   }
+  const targetHas = (zone: Zone | null) =>
+    !!zone && (calTarget ? zone.id === calTarget.id : !!attempt?.target.zones.includes(zone));
   if (cal) {
-    cal.add("guess", target!, guessAt);
+    cal.add("guess", calTarget!, best?.at ?? null);
     updateTapCalStatus();
   }
   const dot: (typeof dots)[number] = { guess: null, check: null };
-  if (target) {
-    if (guessAt) dot.guess = { p: guessAt, hit: zone?.id === target.id };
+  if (calTarget || attempt) {
+    if (best?.at) dot.guess = { p: best.at, hit: targetHas(best.zone) };
     pushDot(dot);
   }
 
-  const resolveAt = onset.time + videoLagMs + stopToleranceMs + settleMarginMs;
   setTimeout(() => {
-    const pick = history.resolve(onset.time);
-    const stopAt = pick ? tapPoint("check", landing(pick.at)) : null;
-    // A late stop is the finger settling after contact; the guess position is better.
-    const late = !!pick && pick.stopOffset! > CONFIG.taps.lateStopMs && guessAt !== null;
-    const checkAt = late ? guessAt : stopAt;
-    const checkZone = checkAt ? hitTest(layout, checkAt) : null;
-    if (pick) setLastTap(pick.finger, onset.time);
-    resolveTap(line, guess?.finger ?? null, {
-      finger: pick?.finger ?? null,
-      zone: checkZone?.label ?? null,
-      stopOffset: pick?.stopOffset ?? null,
-      late,
+    // A late stop is the finger settling after contact; its guess position is better.
+    const guessAt = new Map(guesses.map((g) => [g.pick.finger, g.at]));
+    const checks = chordOf(
+      history.resolveAll(onset.time).map((pick): Note => {
+        const early = guessAt.get(pick.finger) ?? null;
+        const late = pick.stopOffset! > CONFIG.taps.lateStopMs && early !== null;
+        const at = late ? early : tapPoint("check", landing(pick.at));
+        return { pick, at, zone: at ? hitTest(layout, at) : null, late };
+      }),
+    );
+    const top = checks[0] ?? null;
+    if (top) setLastTap(top.pick.finger, onset.time);
+    resolveTap(line, chord.length ? fingerList(chord) : null, {
+      finger: checks.length ? fingerList(checks) : null,
+      zone: checks.length ? zoneList(checks) : null,
+      stopOffset: top?.pick.stopOffset ?? null,
+      late: !!top?.late,
     });
-    if (target && checkAt) dot.check = { p: checkAt, hit: checkZone?.id === target.id };
+    if ((calTarget || attempt) && top?.at) dot.check = { p: top.at, hit: targetHas(top.zone) };
     if (cal) {
       // Only on-time stops go into the check fit; late ones aren't check positions.
-      cal.add("check", target!, late ? null : stopAt);
+      cal.add("check", calTarget!, top && !top.late ? top.at : null);
       cal.settle();
       if (cal === tapCal && cal.finished) finishTapCal();
-    } else if (testTarget) {
-      logTest(line, testTarget.label, test.record(setting, testTarget, zone, checkZone));
-      updateTest();
+    } else if (attempt) {
+      for (const { zone } of checks) if (zone) attempt.checked.add(zone.id);
     }
   }, Math.max(0, resolveAt - performance.now()));
 }
@@ -843,7 +938,7 @@ function drawLayout(active: Set<string>, now: number) {
       ctx.fillStyle = `rgba(0, 220, 255, ${(0.85 * flashLeft) / CONFIG.taps.flashMs})`;
       ctx.fill();
     }
-    const isTarget = zone.id === (tapCal ? tapCal.zone : test.target)?.id;
+    const isTarget = tapCal ? zone.id === tapCal.zone?.id : test.isTarget(zone);
     if (isTarget) {
       ctx.fillStyle = "rgba(0, 230, 118, 0.35)";
       ctx.fill();
