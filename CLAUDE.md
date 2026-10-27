@@ -62,11 +62,11 @@ type Layout = { instrument: string; zones: Zone[] };
 
 
 
-The piano is just the first Layout (`PIANO_LAYOUT`, 2x7 keys). Hit-testing, rendering and
+The piano is just the first Layout (`PIANO_LAYOUT`, one row of 8 white keys, C4-C5).
 
-sound all read from the active Layout; never hardcode keys anywhere else. Milestones 6-7
+Hit-testing, rendering and sound all read from the active Layout; never hardcode keys
 
-generate Layouts from Meta models, so this must stay generic.
+anywhere else. Milestones 6-7 generate Layouts from Meta models, so this must stay generic.
 
 
 

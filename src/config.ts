@@ -21,7 +21,7 @@ export const CONFIG = {
     // Where detection runs. "worker" keeps mic onsets from waiting behind it; "main" skips
     // the per-frame copy to the worker. "auto" starts in the worker and moves to the main
     // thread if the worker can't keep up with the camera and the main thread does better.
-    detectOn: "auto" as "auto" | "worker" | "main",
+    detectOn: "worker" as "auto" | "worker" | "main",
     keepUpRatio: 0.9, // detection keeps up if its rate is at least this times the camera's
     autoWarmupMs: 1500, // auto: settle time before measuring each option...
     autoMeasureMs: 3000, // ...and how long to measure it
