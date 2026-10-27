@@ -225,3 +225,10 @@ and the output latency is shown on its own, with a warning above 60 ms (usually 
 audio). Measured: 66 ms median tap-to-sound, of which 52 ms is output latency. Tone runs
 with `latencyHint: "interactive"` and `lookAhead: 0`, and notes trigger at
 `Tone.immediate()`, so the rest is the time between the onset block and the trigger.
+- [x] Wider stop window: real taps were rejected as "stopped too early" at -204 to -265 ms.
+      A finger's stop now counts from 300 ms before to 150 ms after onset + `videoLagMs`
+      (`CONFIG.taps.stopWindowMs`, was +-150 ms), for both the instant guess and the
+      check. The window is set for the camera's nominal 30 fps and stretches by the
+      measured frame interval over nominal (never shrinks), so it stays valid if the frame
+      rate drops: at 15 fps it is -600 to +300 ms. Below 25 measured fps
+      (`camera.lowFpsWarn`) the debug panel warns "low light? camera fps dropped".

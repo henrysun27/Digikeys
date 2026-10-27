@@ -46,9 +46,27 @@ export type FingerPick = {
   stopOffset: number | null; // stop time minus expected stop time (onset + videoLagMs), ms
 };
 
+// Where a finger's stop may fall around onset + videoLagMs, ms (lo before, hi after).
+export type StopWindow = { lo: number; hi: number };
+
+// CONFIG.taps.stopWindowMs, stretched when the camera's measured frame interval (frameMs,
+// null if not measured yet) is longer than at camera.mode.frameRate: with fewer frames, a
+// stop is seen up to a frame later and strokes are cut into coarser steps.
+export function stopWindow(frameMs: number | null): StopWindow {
+  const [lo, hi] = CONFIG.taps.stopWindowMs;
+  const nominal = 1000 / CONFIG.camera.mode.frameRate;
+  const k = frameMs === null ? 1 : Math.max(1, frameMs / nominal);
+  return { lo: lo * k, hi: hi * k };
+}
+
 // What the guess knows besides finger motion: board mapping, whether a camera point is on
-// the board, and the hand of the last tap if it was recent.
-export type GuessContext = { toBoard: ToBoard; onBoard: (p: Pt) => boolean; lastHand: string | null };
+// the board, the hand of the last tap if it was recent, and the stop window.
+export type GuessContext = {
+  toBoard: ToBoard;
+  onBoard: (p: Pt) => boolean;
+  lastHand: string | null;
+  window: StopWindow;
+};
 
 // start: the frame the stroke started from. prev is the frame before last, for
 // extrapolating a stroke that is still moving.
@@ -122,20 +140,20 @@ export class FingerHistory {
 
   // Every allowed finger with a stop around the onset, judged as a strike and scored by
   // speed (the fastest strike first). A finger landing at the onset shows up in frames
-  // videoLagMs later, so the search is centered there: the stop must be within
-  // stopToleranceMs of it (per finger, the stroke stopping closest to it). Needs frames up
-  // to that time, so call it after they're in.
-  resolveAll(onset: number, toBoard: ToBoard): FingerPick[] {
-    const { historyMs, stopToleranceMs, videoLagMs } = CONFIG.taps;
+  // videoLagMs later, so the search is around there: the stop must be inside the window
+  // (per finger, the stroke stopping closest to the expected time). Needs frames up to
+  // the window's end, so call it after they're in.
+  resolveAll(onset: number, toBoard: ToBoard, win: StopWindow): FingerPick[] {
+    const { historyMs, videoLagMs } = CONFIG.taps;
     const expected = onset + videoLagMs;
-    const from = expected - stopToleranceMs - historyMs;
-    const to = expected + stopToleranceMs;
+    const from = expected + win.lo - historyMs;
+    const to = expected + win.hi;
     const picks: FingerPick[] = [];
     for (const [finger, track] of this.tracks) {
       if (!isAllowed(finger)) continue;
       const strokes = downStrokes(track.filter((s) => s.t >= from && s.t <= to));
       const stroke = nearestStop(
-        strokes.filter((k) => k.stop && Math.abs(k.stop.t - expected) <= stopToleranceMs),
+        strokes.filter((k) => k.stop && k.stop.t >= expected + win.lo && k.stop.t <= to),
         expected,
       );
       if (!stroke) continue;
@@ -147,15 +165,15 @@ export class FingerHistory {
 
   // Best guess at onset time, from the frames so far: every allowed finger with a
   // down-stroke in the window, judged on its latest stroke. That is its stop if already
-  // seen (not older than stopToleranceMs before the expected stop), or, with webcam lag
-  // usually, the stroke still coming down, extrapolated to where it should land. Strikes
-  // are scored by depth weighted by CONFIG.guess: thumbs count less unless they strike
-  // deep, and fingers already on the board or on the hand that tapped last count more.
+  // seen (not before the stop window's start), or, with webcam lag usually, the stroke
+  // still coming down, extrapolated to where it should land. Strikes are scored by depth
+  // weighted by CONFIG.guess: thumbs count less unless they strike deep, and fingers
+  // already on the board or on the hand that tapped last count more.
   guessAll(onset: number, c: GuessContext): FingerPick[] {
-    const { historyMs, stopToleranceMs, videoLagMs } = CONFIG.taps;
+    const { historyMs, videoLagMs } = CONFIG.taps;
     const g = CONFIG.guess;
     const expected = onset + videoLagMs;
-    const from = expected - stopToleranceMs - historyMs;
+    const from = expected + c.window.lo - historyMs;
     const picks: FingerPick[] = [];
     for (const [finger, track] of this.tracks) {
       if (!isAllowed(finger)) continue;
@@ -164,8 +182,8 @@ export class FingerHistory {
       if (!stroke) continue;
       const at = stroke.stop ?? extrapolate(stroke, expected);
       const m = judge(finger, stroke.start, at, !!stroke.stop, c.toBoard);
-      if (!m.why && stroke.stop && stroke.stop.t < expected - stopToleranceMs) {
-        m.why = `stopped too early (${(stroke.stop.t - expected).toFixed(0)} ms)`;
+      if (!m.why && stroke.stop && stroke.stop.t < expected + c.window.lo) {
+        m.why = `stopped too early (${(stroke.stop.t - expected).toFixed(0)} < ${c.window.lo.toFixed(0)} ms)`;
       }
       let score = m.depth;
       if (fingerOf(finger) === "thumb" && m.depth < g.thumbStrikeDepth) score *= g.thumbWeight;

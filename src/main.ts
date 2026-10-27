@@ -44,6 +44,7 @@ import {
   handOf,
   landing,
   type FingerPick,
+  stopWindow,
 } from "./taps.ts";
 import {
   applyCorrection,
@@ -649,7 +650,7 @@ const zoneList = (notes: Note[]) => notes.map((x) => x.zone?.label ?? "off board
 // the chord anyway.
 //
 // The finger frames for the moment of the onset arrive videoLagMs later and the stop may
-// be up to stopToleranceMs after that, so the tap is checked against the stopped fingers
+// be up to the stop window's end after that, so the tap is checked against the stopped fingers
 // once those frames are in. In test mode, the tap joins the current attempt (a chord's
 // fingers may land with separate onsets) and the attempt is scored once all its taps are
 // checked; in tap calibration the best finger's positions are recorded against the zone
@@ -665,10 +666,12 @@ function onOnset(onset: Onset) {
     logIgnored(n, "no hand");
     return;
   }
-  const { videoLagMs, stopToleranceMs, settleMarginMs } = CONFIG.taps;
+  const { videoLagMs, settleMarginMs } = CONFIG.taps;
+  // One window for both the guess and the check of this onset.
+  const win = stopWindow(frameMs);
   const recent = lastTap && onset.time - lastTap.t <= CONFIG.guess.lastHandMs;
   const guesses = history
-    .guessAll(onset.time, { toBoard, onBoard, lastHand: recent ? lastTap!.hand : null })
+    .guessAll(onset.time, { toBoard, onBoard, lastHand: recent ? lastTap!.hand : null, window: win })
     .map((pick): Note => {
       const at = tapPoint("guess", landing(pick.at));
       return { pick, at, zone: at ? hitTest(layout, at) : null, late: false };
@@ -711,7 +714,7 @@ function onOnset(onset: Onset) {
   const cal = calTarget ? tapCal : null;
   const joined = !tapCal && test.active ? test.join(onset.time, fingerSetting(), layout) : null;
   const attempt = joined?.attempt ?? null;
-  const resolveAt = onset.time + videoLagMs + stopToleranceMs + settleMarginMs;
+  const resolveAt = onset.time + videoLagMs + win.hi + settleMarginMs;
   if (attempt) {
     for (const z of played) attempt.played.add(z.id);
     if (joined!.opened) {
@@ -737,7 +740,7 @@ function onOnset(onset: Onset) {
     // A late stop is the finger settling after contact; its guess position is better.
     const guessAt = new Map(guesses.map((g) => [g.pick.finger, g.at]));
     const { chord: checks, rejected: checkRejected } = chordOf(
-      history.resolveAll(onset.time, toBoard).map((pick): Note => {
+      history.resolveAll(onset.time, toBoard, win).map((pick): Note => {
         const early = guessAt.get(pick.finger) ?? null;
         const late = pick.stopOffset! > CONFIG.taps.lateStopMs && early !== null;
         const at = late ? early : tapPoint("check", landing(pick.at));
@@ -807,6 +810,9 @@ type CameraMode = { width: number; height: number; frameRate: number };
 export type CameraInfo = { asked: CameraMode; settings: MediaTrackSettings };
 export type CameraProbe = CameraInfo & { fps: number };
 let camera: CameraInfo | null = null;
+// Mean interval between new video frames over the last second, ms (null until measured).
+// The tap stop window stretches with it.
+let frameMs: number | null = null;
 
 async function openCamera(mode: CameraMode): Promise<MediaStream> {
   (video.srcObject as MediaStream | null)?.getTracks().forEach((t) => t.stop());
@@ -1150,6 +1156,7 @@ function loop() {
     if (now - fpsStart >= 1000) {
       const secs = (now - fpsStart) / 1000;
       const fps = (counts.videoFrames - last.videoFrames) / secs;
+      frameMs = fps > 0 ? 1000 / fps : null;
       const n = counts.detections - last.detections;
       const draws = counts.draws - last.draws;
       const per = (ms: number, k: number) => (k ? (ms / k).toFixed(2) : "–");

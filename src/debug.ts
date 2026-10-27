@@ -23,6 +23,7 @@ const testPanelEl = el("test-panel");
 const testStatsEl = el("test-stats");
 const tapCorrectionEl = el("tap-correction");
 const cameraEl = el("camera-info");
+const cameraWarningEl = el("camera-warning");
 const probeEl = el("camera-probe");
 const detectionEl = el("detection");
 const dropoutsEl = el("dropouts");
@@ -193,9 +194,13 @@ const fmtAsked = (m: CameraInfo["asked"]) => `${m.width}×${m.height} @ ${m.fram
 
 // The mode in use vs what was asked for. measuredFps counts new video frames (null until
 // the first second has passed).
+// Below camera.lowFpsWarn measured fps, a warning shows under the mic button.
 export function showCamera(c: CameraInfo, measuredFps: number | null) {
   const measured = measuredFps === null ? "" : `, measured ${measuredFps.toFixed(0)}`;
   cameraEl.textContent = `${fmtMode(c.settings)}${measured} (asked ${fmtAsked(c.asked)})`;
+  const low = measuredFps !== null && measuredFps < CONFIG.camera.lowFpsWarn;
+  cameraWarningEl.hidden = !low;
+  if (low) cameraWarningEl.textContent = `Camera ${measuredFps.toFixed(0)} fps · low light? camera fps dropped`;
 }
 
 // The Probe button's result: running, an error message, or what the probe mode delivered.

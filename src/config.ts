@@ -8,6 +8,7 @@ export const CONFIG = {
     probe: { width: 640, height: 480, frameRate: 60 },
     probeWarmupMs: 1500,
     probeMs: 1000,
+    lowFpsWarn: 25, // warn in the debug panel when the measured frame rate drops below this
   },
   hands: {
     wasmPath: "/mediapipe/wasm",
@@ -82,7 +83,10 @@ export const CONFIG = {
     // Finger frames are detected this long after the onset of the same moment. Tune it by
     // adding the debug panel's median stop offset.
     videoLagMs: 50,
-    stopToleranceMs: 150, // a stop counts within +-this of onset + videoLagMs
+    // A stop counts from stopWindowMs[0] to [1] around onset + videoLagMs. Set for
+    // camera.mode.frameRate; stretched by (measured frame interval / nominal) when the
+    // camera delivers fewer frames, never shrunk.
+    stopWindowMs: [-300, 150] as [number, number],
     historyMs: 200, // how long a down-stroke may take before it stops
     settleMarginMs: 40, // extra wait for late frames before resolving a tap
     // A stop later than this past onset + videoLagMs is likely the finger settling after
