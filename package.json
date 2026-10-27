@@ -5,17 +5,21 @@
   "type": "module",
   "scripts": {
     "predev": "node scripts/fetch-mediapipe.mjs",
-    "dev": "vite",
+    "dev": "concurrently -k -n web,api -c cyan,magenta \"vite\" \"npm:server\"",
+    "server": "node --env-file-if-exists=.env --watch server/index.ts",
     "prebuild": "node scripts/fetch-mediapipe.mjs",
-    "build": "tsc && vite build",
+    "build": "tsc && tsc -p server && vite build",
     "preview": "vite preview"
   },
   "devDependencies": {
+    "@types/node": "^26.6.5",
+    "concurrently": "^10.0.6",
     "typescript": "~6.0.3",
     "vite": "^8.3.4"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.1.1",
+    "@meta-sam/parser": "^0.1.0",
     "tone": "^15.1.22"
   }
 }

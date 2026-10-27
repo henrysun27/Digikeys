@@ -6,6 +6,7 @@ import { logIgnored, logPlayed, resolveTap, showLevel, showMicInfo } from "./deb
 import { applyH, type Pt } from "./geometry.ts";
 import { PRESETS, hitTest, shapeCenter, shapeOutline, type Layout, type Zone } from "./layout.ts";
 import { startMic, type Onset } from "./mic.ts";
+import { maskArea, maskImage, segmentFrame, type SamObject, type Segmentation } from "./sam.ts";
 import { initSound, play } from "./sound.ts";
 import { FINGER_NAMES, FINGERTIPS, FingerHistory } from "./taps.ts";
 
@@ -16,6 +17,8 @@ const hintEl = document.querySelector<HTMLDivElement>("#hint")!;
 const resetBtn = document.querySelector<HTMLButtonElement>("#reset")!;
 const micBtn = document.querySelector<HTMLButtonElement>("#mic")!;
 const layoutSelect = document.querySelector<HTMLSelectElement>("#layout")!;
+const detectBtn = document.querySelector<HTMLButtonElement>("#detect")!;
+const samStatusEl = document.querySelector<HTMLDivElement>("#sam-status")!;
 const ctx = canvas.getContext("2d")!;
 
 const calibration = new Calibration();
@@ -25,6 +28,8 @@ const flashes = new Map<string, number>(); // zone id -> flash end, performance.
 let hintError: string | null = null;
 let tapCount = 0;
 let handsInFrame = 0; // hands in the latest detection
+// The latest SAM 3.1 surface detection; the largest match is taken as the playing surface.
+let surface: { seg: Segmentation; pick: SamObject; image: HTMLCanvasElement } | null = null;
 
 // Coordinate spaces:
 //   cam    - raw camera coords normalized to 0-1, unmirrored (same as MediaPipe landmarks)
@@ -71,6 +76,8 @@ canvas.addEventListener("click", (e) => {
 
 resetBtn.addEventListener("click", () => {
   calibration.reset();
+  surface = null;
+  samStatusEl.textContent = "";
   hintError = null;
   updateHint();
 });
@@ -79,6 +86,27 @@ PRESETS.forEach((preset, i) => layoutSelect.add(new Option(preset.instrument, St
 layoutSelect.addEventListener("change", () => {
   layout = PRESETS[Number(layoutSelect.value)];
   flashes.clear();
+});
+
+detectBtn.addEventListener("click", async () => {
+  if (video.videoWidth === 0) return;
+  const prompt = CONFIG.sam.boundaryPrompt;
+  detectBtn.disabled = true;
+  samStatusEl.textContent = `Asking SAM 3.1 for "${prompt}"…`;
+  try {
+    const seg = await segmentFrame(video, prompt);
+    const pick = seg.objects.reduce<SamObject | null>((a, o) => (!a || maskArea(o) > maskArea(a) ? o : a), null);
+    surface = pick ? { seg, pick, image: maskImage(pick, [0, 200, 255, 110]) } : null;
+    const found = `${seg.objects.length} match(es) for "${prompt}" in ${seg.ms.toFixed(0)} ms (SAM ${seg.serverMs} ms)`;
+    samStatusEl.textContent = pick
+      ? `SAM 3.1: ${found}; showing the largest (confidence ${pick.confidence?.toFixed(2) ?? "?"}).`
+      : `SAM 3.1: ${found}. Click the corners instead.`;
+  } catch (err) {
+    console.error(err);
+    samStatusEl.textContent = `SAM 3.1 failed: ${err instanceof Error ? err.message : String(err)}`;
+  } finally {
+    detectBtn.disabled = false;
+  }
 });
 
 // One AudioContext, created inside the click, for both the mic detector and Tone. Sounds
@@ -221,6 +249,17 @@ function drawLabel(zone: Zone, outline: Pt[]) {
   ctx.fillText(zone.label, c.x, c.y);
 }
 
+// Drawn in camera pixels through the mirror transform, like the video.
+function drawSurface() {
+  if (!surface) return;
+  const { seg, pick, image } = surface;
+  const s = canvas.width / seg.width;
+  const b = pick.bounds;
+  ctx.setTransform(-s, 0, 0, s, canvas.width, 0);
+  ctx.drawImage(image, b.left, b.top, b.right - b.left, b.bottom - b.top);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+
 function drawCorners() {
   const pts = calibration.corners.map(camToScreen);
   if (pts.length === 0) return;
@@ -287,6 +326,7 @@ function loop(landmarker: HandLandmarker) {
     ctx.setTransform(-1, 0, 0, 1, canvas.width, 0);
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
+    drawSurface();
     drawLayout(zonesUnderFingertips(result), now);
     drawCorners();
     if (result) drawHands(result);

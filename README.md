@@ -8,8 +8,13 @@ Build for Your World track.
 
 ```
 npm install
+cp .env.example .env   # then put your Meta Model API key in MODEL_API_KEY
 npm run dev
 ```
+
+`npm run dev` starts Vite and the API server in `server/` together. The browser never sees
+the API key: it calls `/api/*`, which Vite proxies to the server, and only the server talks
+to the Meta Model API.
 
 `predev` copies the MediaPipe wasm runtime and downloads the hand landmarker model into
 `public/mediapipe/` (gitignored), so everything is served from our own origin.
@@ -39,10 +44,19 @@ All code in this repo was written during the hackathon.
       immediately from a best-guess finger (the one that lifted to strike, with its
       landing point predicted) without waiting for the stop; the later stopped-finger
       check is logged next to it. A layout picker switches between piano and drums.
+- [ ] Milestone 5: SAM 3.1 surface detection.
+  - [x] Part A: a minimal Node server (`server/index.ts`) holds the key and exposes
+        `POST /api/segment`. "Detect surface" sends the current camera frame and the prompt
+        `desk` to SAM 3.1, decodes the masks and draws the largest one over the video.
+  - [ ] Part B: fit 4 corners to the mask and feed the existing homography; click
+        calibration stays as the fallback.
 
 ## Meta models
 
-None yet (SAM 3.1 and Muse Spark arrive in milestones 5-7).
+- **SAM 3.1** (`sam-3.1`, Responses API at `https://api.meta.ai/v1/responses`, streamed,
+  one-bit masks): finds the playing surface in a camera frame (milestone 5). Called only
+  from `server/index.ts`; the output is parsed with Meta's `@meta-sam/parser`.
+- Muse Spark arrives in milestones 6-7.
 
 ## Tap-to-sound latency
 

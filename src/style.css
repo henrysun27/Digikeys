@@ -54,7 +54,8 @@ body {
 }
 
 #status,
-#hint {
+#hint,
+#sam-status {
   padding: 6px 10px;
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.6);
@@ -65,7 +66,8 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-#hint:empty {
+#hint:empty,
+#sam-status:empty {
   display: none;
 }
 
@@ -74,6 +76,7 @@ body {
 }
 
 #reset,
+#detect,
 #mic,
 #layout {
   padding: 6px 12px;
@@ -100,10 +103,12 @@ body {
 
 #reset:hover,
 #layout:hover,
+#detect:hover:enabled,
 #mic:hover:enabled {
   background: rgba(40, 40, 40, 0.8);
 }
 
+#detect:disabled,
 #mic:disabled {
   cursor: default;
   opacity: 0.8;

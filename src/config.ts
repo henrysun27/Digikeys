@@ -59,6 +59,19 @@ export const CONFIG = {
     flashMs: 300,
     logSize: 8,
   },
+  // The Node server in server/ (holds the API key; the browser only talks to it via /api).
+  server: {
+    port: 8787,
+    apiBaseUrl: "https://api.meta.ai/v1",
+    maxBodyBytes: 8_000_000, // one JPEG frame as a data URL
+    maxPromptChars: 100,
+  },
+  // Surface detection with SAM 3.1 (model ID from https://dev.meta.ai/docs/models).
+  sam: {
+    model: "sam-3.1",
+    boundaryPrompt: "desk", // a short noun phrase naming one concept
+    jpegQuality: 0.9,
+  },
 };
 
 export type OnsetParams = typeof CONFIG.onset;

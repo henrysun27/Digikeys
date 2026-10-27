@@ -25,3 +25,6 @@ dist-ssr
 
 # MediaPipe wasm + model (fetched by scripts/fetch-mediapipe.mjs)
 public/mediapipe
+
+# Meta API key (server only)
+.env
