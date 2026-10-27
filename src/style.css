@@ -150,6 +150,18 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+#output-latency {
+  margin-top: 10px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+#output-latency.warn {
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: #ff3b6b;
+}
+
 .meter {
   position: relative;
   height: 8px;

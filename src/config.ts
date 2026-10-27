@@ -41,6 +41,7 @@ export const CONFIG = {
     noteSeconds: 1.5,
     velocity: 0.8,
     warmupMs: 200, // muted warm-up after loading
+    outputLatencyWarnMs: 60, // warn above this reported output latency (likely Bluetooth)
   },
   // Fusing onsets with fingertip motion.
   taps: {

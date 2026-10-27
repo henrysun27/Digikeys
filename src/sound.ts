@@ -20,7 +20,7 @@ let drums: Tone.Players | null = null;
 // Runs Tone on the same AudioContext as the mic detector so onsets and triggers share a
 // clock. Lookahead is 0: taps must sound now, not on a schedule.
 export async function initSound(ctx: AudioContext) {
-  Tone.setContext(new Tone.Context({ context: ctx, lookAhead: 0 }));
+  Tone.setContext(new Tone.Context({ context: ctx, latencyHint: "interactive", lookAhead: 0 }));
   const s = CONFIG.sound;
   master = new Tone.Volume(0).toDestination();
   piano = new Tone.Sampler({ urls: PIANO_SAMPLES, baseUrl: s.pianoBaseUrl, release: 1 }).connect(master);
@@ -42,11 +42,12 @@ export async function initSound(ctx: AudioContext) {
   master.mute = false;
 }
 
-// Plays the sound now. Returns tap-to-sound latency in ms (onset block's audio-clock
-// time to the trigger time, plus output latency), or null if nothing was played.
+// Plays the sound now (Tone.immediate: the context's currentTime, no lookahead offset).
+// Returns tap-to-sound latency in ms (onset block's audio-clock time to the trigger time,
+// plus the unclamped reported output latency), or null if nothing was played.
 export function play(sound: Sound, onsetCtxTime: number): number | null {
   if (!audioCtx || !piano || !drums) return null;
-  const t = Tone.now();
+  const t = Tone.immediate();
   if (sound.type === "note") {
     piano.triggerAttackRelease(sound.note, CONFIG.sound.noteSeconds, t, CONFIG.sound.velocity);
   } else if (drums.has(sound.sample)) {
@@ -55,5 +56,5 @@ export function play(sound: Sound, onsetCtxTime: number): number | null {
     console.warn(`unknown drum sample "${sound.sample}"`);
     return null;
   }
-  return (t - onsetCtxTime) * 1000 + outputLatency(audioCtx).ms;
+  return (t - onsetCtxTime) * 1000 + outputLatency(audioCtx).rawMs;
 }

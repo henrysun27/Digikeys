@@ -31,8 +31,8 @@ type AudioSettings = MediaTrackSettings & { latency?: number };
 
 // baseLatency + outputLatency as reported, and clamped to 0..maxLatencyCorrectionMs for use.
 export function outputLatency(ctx: AudioContext): { rawMs: number; ms: number } {
-  const rawMs = (ctx.baseLatency + (ctx.outputLatency || 0)) * 1000;
-  return { rawMs, ms: Math.min(CONFIG.mic.maxLatencyCorrectionMs, Math.max(0, rawMs || 0)) };
+  const rawMs = ((ctx.baseLatency || 0) + (ctx.outputLatency || 0)) * 1000;
+  return { rawMs, ms: Math.min(CONFIG.mic.maxLatencyCorrectionMs, Math.max(0, rawMs)) };
 }
 
 // ctx must have been created in a user gesture so it may start.

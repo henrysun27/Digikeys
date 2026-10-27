@@ -65,5 +65,9 @@ All code in this repo was written during the hackathon.
 
 ## Tap-to-sound latency
 
-Measured per tap as audio onset (audio clock) to Tone trigger time, plus output latency;
-the median over the last 20 taps is shown in the debug panel. Not recorded here yet.
+Measured per tap as audio onset (audio clock) to Tone trigger time, plus the reported
+output latency (unclamped); the median over the last 20 taps is shown in the debug panel,
+and the output latency is shown on its own, with a warning above 60 ms (usually Bluetooth
+audio). Measured: 66 ms median tap-to-sound, of which 52 ms is output latency. Tone runs
+with `latencyHint: "interactive"` and `lookAhead: 0`, and notes trigger at
+`Tone.immediate()`, so the rest is the time between the onset block and the trigger.

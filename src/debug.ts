@@ -13,6 +13,7 @@ const medianLatencyEl = el("median-latency");
 const offsetEl = el("stop-offset");
 const medianOffsetEl = el("median-offset");
 const audioLatencyEl = el("audio-latency");
+const outputLatencyEl = el("output-latency");
 const logEl = el("tap-log");
 const recentOffsets: number[] = [];
 const recentLatencies: number[] = [];
@@ -41,6 +42,11 @@ export function showLevel(l: MicLevel) {
 export function showMicInfo(i: MicInfo) {
   const rates = `${(i.ctxRate / 1000).toFixed(1)} kHz ctx / ${i.micRate ? `${(i.micRate / 1000).toFixed(1)} kHz` : "?"} mic`;
   const raw = (v: number | null) => (v === null ? "n/a" : String(v));
+  const slow = i.outputRawMs > CONFIG.sound.outputLatencyWarnMs;
+  outputLatencyEl.hidden = false;
+  outputLatencyEl.classList.toggle("warn", slow);
+  outputLatencyEl.textContent =
+    `Output latency ${i.outputRawMs.toFixed(0)} ms` + (slow ? " · Bluetooth audio? switch to wired" : "");
   audioLatencyEl.textContent =
     `out ${i.outputMs.toFixed(0)} ms applied (raw ${i.outputRawMs.toFixed(1)} ms, ${i.clock}) · ` +
     `in 0 ms applied (stats raw ${raw(i.inputStatsRaw)} ms, settings raw ${raw(i.inputSettingsRaw)} s) · ${rates}`;
