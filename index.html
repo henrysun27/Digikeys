@@ -13,6 +13,7 @@
         <div id="status"></div>
         <div id="hint"></div>
         <div id="sam-status"></div>
+        <div id="layout-status"></div>
         <div id="tap-cal-status"></div>
         <div id="sam-actions" hidden>
           <button id="accept" type="button">Accept corners</button>
@@ -22,6 +23,8 @@
       </div>
       <div id="toolbar">
         <select id="layout" aria-label="Instrument"></select>
+        <input id="instrument" type="text" aria-label="Instrument to generate" spellcheck="false" />
+        <button id="generate" type="button">Generate</button>
         <select id="fingers" aria-label="Fingers that can tap">
           <option value="index">Index fingers only</option>
           <option value="all">All fingers</option>

@@ -121,6 +121,28 @@ export const CONFIG = {
     minSurfaceFrac: 0.05, // reject a surface mask smaller than this fraction of the frame
     looseFitRatio: 1.3, // warn when the fitted quad's area exceeds the mask's by this ratio
   },
+  // Instrument layouts from Muse Spark, through Chat Completions with a JSON schema
+  // (model ID from https://dev.meta.ai/docs/models).
+  muse: {
+    model: "muse-spark-1.3",
+    defaultRequest: "drum kit", // default for the instrument box
+    reasoningEffort: "low", // minimal | low | medium | high | xhigh ("none" is a 400)
+    maxCompletionTokens: 8000, // reasoning plus the JSON
+    jpegQuality: 0.85,
+  },
+  // Checks on generated layouts, in board coords (0-1 on both axes). A layout that fails
+  // any of them is replaced by the matching preset.
+  layoutLimits: {
+    maxZones: 24,
+    maxPolyPts: 16,
+    minZoneSide: 0.05, // each zone's bounding box, along both axes
+    minZoneArea: 0.004,
+    boundsTolerance: 0.005, // coords this far outside 0-1 are clamped, not rejected
+    maxOverlap: 0.02, // fraction of the smaller zone two zones may share (rounding slop)
+    checkGrid: 200, // samples per axis when measuring zone areas and overlaps
+    noteOctaves: [1, 7], // allowed octaves for note zones
+    aspectRange: [0.2, 5], // plausible board width / depth
+  },
 };
 
 export type OnsetParams = typeof CONFIG.onset;

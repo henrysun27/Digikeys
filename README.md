@@ -105,13 +105,32 @@ All code in this repo was written during the hackathon.
       than 90% of camera frames, measure the main thread and keep whichever is faster.
       `?detect=worker`, `?detect=main` or `?detect=auto` overrides it for comparing. The
       debug panel shows where detection runs, the GPU renderer, and the auto measurements.
+- [x] Milestone 6 (text input; voice comes next): type an instrument ("drum kit", "8-key
+      piano in C major", "marimba") and press Generate. The server (`POST /api/layout`) sends
+      Muse Spark the request, the current frame (mirrored as on screen, with the accepted
+      board outlined and its corners numbered) and the corner pixel positions. Muse Spark
+      estimates the board's real width/depth from the frame and returns a Layout sized for
+      it, as JSON constrained by a schema (`server/layout-prompt.ts`). The browser checks it
+      (`checkLayout` in `src/layout.ts`, limits in `CONFIG.layoutLimits`): zones inside 0-1,
+      at least the minimum size, no overlaps (measured on a sample grid, so rects and
+      polygons are treated alike), known notes and drum samples, a plausible aspect. A
+      layout that fails, or a failed request, falls back to the matching preset (drums for
+      percussive requests, otherwise piano) with the reason in the layout status line. The
+      generated layout joins the instrument picker. Generation takes about 5-15 s.
+      The shape schema is one flat object with `kind` plus all fields rather than an
+      `anyOf` of rect and poly: the API writes keys in alphabetical order, so with `anyOf`
+      the first key picked the branch and a model starting with `kind` was forced into a
+      polygon with made-up points (2 of 4 piano requests came back that way).
 
 ## Meta models
 
 - **SAM 3.1** (`sam-3.1`, Responses API at `https://api.meta.ai/v1/responses`, streamed,
   one-bit masks): finds the playing surface in a camera frame (milestone 5). Called only
   from `server/index.ts`; the output is parsed with Meta's `@meta-sam/parser`.
-- Muse Spark arrives in milestones 6-7.
+- **Muse Spark 1.3** (`muse-spark-1.3`, Chat Completions at
+  `https://api.meta.ai/v1/chat/completions`, image input, `response_format` JSON schema,
+  `reasoning_effort: "low"`): estimates the board's aspect ratio from a camera frame and
+  generates instrument Layouts for it (milestone 6). Called only from `server/index.ts`.
 
 ## Tap-to-sound latency
 

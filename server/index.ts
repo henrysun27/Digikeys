@@ -2,6 +2,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { decodeMaskToRaster, parseImageStream, recordsOfKind, type ResponsesEvent } from "@meta-sam/parser";
 import { CONFIG } from "../src/config.ts";
+import { LAYOUT_INSTRUCTIONS, LAYOUT_SCHEMA, layoutRequestText, toZones, type Corner } from "./layout-prompt.ts";
 
 const apiKey = process.env.MODEL_API_KEY?.trim() || null;
 
@@ -51,6 +52,17 @@ async function* sseEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<Resp
   }
 }
 
+async function upstreamError(upstream: Response, model: string): Promise<HttpError> {
+  const text = await upstream.text();
+  let message = text;
+  try {
+    message = JSON.parse(text).error?.message ?? text;
+  } catch {
+    // not JSON; keep the raw text
+  }
+  return new HttpError(upstream.status, `${model}: ${message}`);
+}
+
 // One bit per pixel, row-major, most significant bit first.
 function packBits(raster: Uint8Array): string {
   const packed = new Uint8Array(Math.ceil(raster.length / 8));
@@ -84,16 +96,7 @@ async function segment(image: string, prompt: string) {
       metadata: { mask_encoding: "one_bit", include_confidence: "true" },
     }),
   });
-  if (!upstream.ok || !upstream.body) {
-    const text = await upstream.text();
-    let message = text;
-    try {
-      message = JSON.parse(text).error?.message ?? text;
-    } catch {
-      // not JSON; keep the raw text
-    }
-    throw new HttpError(upstream.status, `${CONFIG.sam.model}: ${message}`);
-  }
+  if (!upstream.ok || !upstream.body) throw await upstreamError(upstream, CONFIG.sam.model);
 
   const result = await parseImageStream(sseEvents(upstream.body)).finalResult;
   const objects = recordsOfKind(result.records, "mask").map((r) => ({
@@ -104,6 +107,61 @@ async function segment(image: string, prompt: string) {
   }));
   return { outcome: result.outcome.status, diagnostics: result.diagnostics.length, objects };
 }
+
+// Asks Muse Spark for the board's aspect and a Layout, as schema-constrained JSON. The
+// layout is returned as the model gave it; the browser validates it.
+async function generateLayout(image: string, request: string, width: number, height: number, corners: Corner[]) {
+  const m = CONFIG.muse;
+  const upstream = await fetch(`${CONFIG.server.apiBaseUrl}/chat/completions`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: m.model,
+      messages: [
+        { role: "system", content: LAYOUT_INSTRUCTIONS },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: layoutRequestText(request, width, height, corners) },
+            { type: "image_url", image_url: { url: image } },
+          ],
+        },
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "desk_layout", strict: true, schema: LAYOUT_SCHEMA },
+      },
+      reasoning_effort: m.reasoningEffort,
+      max_completion_tokens: m.maxCompletionTokens,
+    }),
+  });
+  if (!upstream.ok) throw await upstreamError(upstream, m.model);
+  const body = (await upstream.json()) as {
+    choices?: { message?: { content?: string | null }; finish_reason?: string }[];
+    usage?: unknown;
+  };
+  const choice = body.choices?.[0];
+  if (choice?.finish_reason === "length") {
+    throw new HttpError(502, `${m.model} ran out of tokens (max_completion_tokens ${m.maxCompletionTokens})`);
+  }
+  const content = choice?.message?.content;
+  if (!content) throw new HttpError(502, `${m.model} returned no content (finish_reason ${choice?.finish_reason})`);
+  let out: { aspectReasoning?: unknown; boardAspect?: unknown; instrument?: unknown; zones?: unknown };
+  try {
+    out = JSON.parse(content);
+  } catch {
+    throw new HttpError(502, `${m.model} returned invalid JSON`);
+  }
+  return {
+    aspect: out.boardAspect,
+    aspectReasoning: out.aspectReasoning,
+    layout: { instrument: out.instrument, zones: toZones(out.zones) },
+    usage: body.usage ?? null,
+  };
+}
+
+const isCorner = (c: unknown): c is Corner =>
+  typeof c === "object" && c !== null && Number.isFinite((c as Corner).x) && Number.isFinite((c as Corner).y);
 
 async function handle(req: IncomingMessage, res: ServerResponse) {
   const path = new URL(req.url ?? "/", "http://localhost").pathname;
@@ -128,6 +186,30 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     send(res, 200, { ...out, ms });
     return;
   }
+  if (req.method === "POST" && path === "/api/layout") {
+    if (!apiKey) throw new HttpError(500, "MODEL_API_KEY is not set in .env");
+    const body = (await readJson(req)) as { image?: unknown; request?: unknown; width?: unknown; height?: unknown; corners?: unknown };
+    const { image, request, width, height, corners } = body ?? {};
+    if (typeof image !== "string" || !image.startsWith("data:image/")) {
+      throw new HttpError(400, "image must be an image data URL");
+    }
+    if (typeof request !== "string" || !request.trim() || request.length > CONFIG.server.maxPromptChars) {
+      throw new HttpError(400, `request must be 1-${CONFIG.server.maxPromptChars} characters`);
+    }
+    if (typeof width !== "number" || typeof height !== "number" || width <= 0 || height <= 0) {
+      throw new HttpError(400, "width and height must be the image size");
+    }
+    if (!Array.isArray(corners) || corners.length !== 4 || !corners.every(isCorner)) {
+      throw new HttpError(400, "corners must be 4 {x, y} pixel positions");
+    }
+    const started = performance.now();
+    const out = await generateLayout(image, request.trim(), width, height, corners);
+    const ms = Math.round(performance.now() - started);
+    const zones = Array.isArray(out.layout.zones) ? out.layout.zones.length : "no";
+    console.log(`layout "${request}": ${zones} zone(s), aspect ${String(out.aspect)}, ${ms} ms`);
+    send(res, 200, { ...out, model: CONFIG.muse.model, ms });
+    return;
+  }
   throw new HttpError(404, `no route for ${req.method} ${path}`);
 }
 
@@ -141,5 +223,5 @@ createServer((req, res) => {
   });
 }).listen(CONFIG.server.port, "127.0.0.1", () => {
   console.log(`api server on http://127.0.0.1:${CONFIG.server.port}`);
-  if (!apiKey) console.warn("MODEL_API_KEY is not set; /api/segment will fail");
+  if (!apiKey) console.warn("MODEL_API_KEY is not set; /api/segment and /api/layout will fail");
 });

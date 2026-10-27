@@ -66,6 +66,7 @@ body {
 #status,
 #hint,
 #sam-status,
+#layout-status,
 #tap-cal-status {
   padding: 6px 10px;
   border-radius: 6px;
@@ -79,6 +80,7 @@ body {
 
 #hint:empty,
 #sam-status:empty,
+#layout-status:empty,
 #tap-cal-status:empty {
   display: none;
 }
@@ -93,6 +95,8 @@ body {
 #clear-correction,
 #sam-prompt,
 #detect,
+#instrument,
+#generate,
 #sam-actions button,
 #mic,
 #layout,
@@ -115,7 +119,8 @@ body {
   gap: 8px;
 }
 
-#sam-prompt {
+#sam-prompt,
+#instrument {
   width: 140px;
   cursor: text;
 }
@@ -132,6 +137,7 @@ body {
 #layout:hover,
 #fingers:hover,
 #detect:hover:enabled,
+#generate:hover:enabled,
 #sam-actions button:hover:enabled,
 #mic:hover:enabled {
   background: rgba(40, 40, 40, 0.8);
@@ -154,6 +160,7 @@ body {
 }
 
 #detect:disabled,
+#generate:disabled,
 #sam-actions button:disabled,
 #mic:disabled {
   cursor: default;

@@ -1,6 +1,6 @@
 import * as Tone from "tone";
 import { CONFIG } from "./config.ts";
-import type { Sound } from "./layout.ts";
+import { DRUM_SAMPLES, type Sound } from "./layout.ts";
 import { outputLatency } from "./mic.ts";
 
 // Salamander piano, sampled every minor third from C2 to C7; Sampler repitches in between.
@@ -10,7 +10,6 @@ for (let octave = 2; octave <= 6; octave++) {
     PIANO_SAMPLES[`${note}${octave}`] = `${file}${octave}.mp3`;
   }
 }
-const DRUM_SAMPLES = ["kick", "snare", "hihat", "tom1", "tom2", "tom3"];
 
 let audioCtx: AudioContext | null = null;
 let master: Tone.Volume | null = null;

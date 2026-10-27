@@ -19,8 +19,18 @@ import { applyH, convexHull, fitQuad, polygonArea, type Pt } from "./geometry.ts
 import { HAND_CONNECTIONS, HandTracking, type TrackedHand } from "./hand-tracking.ts";
 import { createDetector, type Detector } from "./detectors.ts";
 import type { HandFrame } from "./hand-detector.ts";
-import { PRESETS, hitTest, shapeCenter, shapeOutline, type Layout, type Zone } from "./layout.ts";
+import {
+  PRESETS,
+  checkLayout,
+  hitTest,
+  presetFor,
+  shapeCenter,
+  shapeOutline,
+  type Layout,
+  type Zone,
+} from "./layout.ts";
 import { startMic, type Onset } from "./mic.ts";
+import { requestLayout } from "./muse.ts";
 import { maskArea, maskImage, maskOutline, maskPixels, segmentFrame, type SamObject, type Segmentation } from "./sam.ts";
 import { initSound, play } from "./sound.ts";
 import { FINGER_NAMES, FINGERTIPS, FingerHistory, fingerKey, handOf, landing } from "./taps.ts";
@@ -55,10 +65,15 @@ const samActions = document.querySelector<HTMLDivElement>("#sam-actions")!;
 const acceptBtn = document.querySelector<HTMLButtonElement>("#accept")!;
 const retryBtn = document.querySelector<HTMLButtonElement>("#retry")!;
 const discardBtn = document.querySelector<HTMLButtonElement>("#discard")!;
+const instrumentInput = document.querySelector<HTMLInputElement>("#instrument")!;
+const generateBtn = document.querySelector<HTMLButtonElement>("#generate")!;
+const layoutStatusEl = document.querySelector<HTMLDivElement>("#layout-status")!;
 const ctx = canvas.getContext("2d")!;
 
 const calibration = new Calibration();
 let layout: Layout = PRESETS[0];
+let generated: Layout | null = null; // the last layout from Muse Spark that passed the checks
+let generating = false;
 const history = new FingerHistory();
 const flashes = new Map<string, number>(); // zone id -> flash end, performance.now() ms
 let hintError: string | null = null;
@@ -116,6 +131,7 @@ function setStatus(text: string) {
 function updateHint() {
   canvas.classList.toggle("calibrating", !calibration.done);
   testBtn.disabled = !calibration.done;
+  generateBtn.disabled = !calibration.done || generating;
   calTapsBtn.disabled = !calibration.done;
   if (!calibration.done && test.active) setTesting(false);
   if (!calibration.done && tapCal) setTapCal(false);
@@ -150,16 +166,75 @@ resetBtn.addEventListener("click", () => {
   updateHint();
 });
 
+// The picker lists the presets, plus the last generated layout once there is one.
 PRESETS.forEach((preset, i) => layoutSelect.add(new Option(preset.instrument, String(i))));
+const generatedOption = new Option("", "generated");
 layoutSelect.addEventListener("change", () => {
-  layout = PRESETS[Number(layoutSelect.value)];
+  setLayout(layoutSelect.value === "generated" ? generated! : PRESETS[Number(layoutSelect.value)]);
+});
+
+function setLayout(l: Layout) {
+  if (!PRESETS.includes(l)) {
+    generated = l;
+    generatedOption.text = `${l.instrument} (Muse Spark)`;
+    if (!generatedOption.parentElement) layoutSelect.add(generatedOption);
+  }
+  layoutSelect.value = PRESETS.includes(l) ? String(PRESETS.indexOf(l)) : "generated";
+  layout = l;
   flashes.clear();
   if (tapCal) setTapCal(false);
   if (test.active) {
     test.next(layout);
     updateTest();
   }
+}
+
+// Muse Spark gets the request, the current frame and the accepted corners, and answers with
+// the board's estimated aspect and a layout for it. Anything unusable falls back to the
+// preset matching the request, with the reason in the layout status line.
+async function generateLayout() {
+  if (!calibration.done || video.videoWidth === 0 || generating) return;
+  const request = instrumentInput.value.trim() || CONFIG.muse.defaultRequest;
+  const fallback = (why: string) => {
+    const preset = presetFor(request);
+    setLayout(preset);
+    layoutStatusEl.textContent = `Muse Spark layout not used: ${why}. Using the ${preset.instrument} preset.`;
+  };
+  generating = true;
+  updateHint();
+  layoutStatusEl.textContent = `Asking Muse Spark for "${request}"…`;
+  try {
+    const reply = await requestLayout(video, calibration.corners, request);
+    const took = `${(reply.ms / 1000).toFixed(1)} s`;
+    const [lo, hi] = CONFIG.layoutLimits.aspectRange;
+    const aspect = reply.aspect;
+    const checked = checkLayout(reply.layout);
+    if (typeof aspect !== "number" || !(aspect >= lo && aspect <= hi)) {
+      fallback(`board aspect ${String(aspect)} is outside ${lo}-${hi} (${took})`);
+    } else if ("problem" in checked) {
+      fallback(`${checked.problem} (${took})`);
+    } else {
+      setLayout(checked.layout);
+      const why = typeof reply.aspectReasoning === "string" ? ` (${reply.aspectReasoning})` : "";
+      layoutStatusEl.textContent =
+        `Muse Spark: ${checked.layout.instrument}, ${checked.layout.zones.length} zones in ${took}. ` +
+        `Board ≈ ${aspect.toFixed(2)}:1${why}.`;
+    }
+  } catch (err) {
+    console.error(err);
+    fallback(err instanceof Error ? err.message : String(err));
+  } finally {
+    generating = false;
+    updateHint();
+  }
+}
+
+instrumentInput.placeholder = CONFIG.muse.defaultRequest;
+instrumentInput.maxLength = CONFIG.server.maxPromptChars;
+instrumentInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") generateLayout();
 });
+generateBtn.addEventListener("click", generateLayout);
 
 // The finger toggle writes CONFIG.fingers.allowed. Test scores are kept per finger setting
 // and tap correction, so accuracy before and after calibrating taps shows side by side.
