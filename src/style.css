@@ -86,6 +86,7 @@ body {
 }
 
 #reset,
+#sam-prompt,
 #detect,
 #sam-actions button,
 #mic,
@@ -106,6 +107,11 @@ body {
   right: 12px;
   display: flex;
   gap: 8px;
+}
+
+#sam-prompt {
+  width: 140px;
+  cursor: text;
 }
 
 #layout option {

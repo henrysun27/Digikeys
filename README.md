@@ -47,7 +47,8 @@ All code in this repo was written during the hackathon.
 - [x] Milestone 5: SAM 3.1 surface detection.
   - Part A: a minimal Node server (`server/index.ts`) holds the key and exposes
     `POST /api/segment`. "Detect surface" sends the current camera frame and the prompt
-    `desk` to SAM 3.1 and decodes the returned masks.
+    from the box next to it (default `sheet of paper`) to SAM 3.1 and decodes the
+    returned masks.
   - Part B: the largest mask, minus small specks, is reduced to its convex hull, and the
     hull to the enclosing quadrilateral whose corners sit where its long sides meet. That
     handles perspective, rounded corners and hands covering an edge. The corners are put in

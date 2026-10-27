@@ -18,6 +18,7 @@ const resetBtn = document.querySelector<HTMLButtonElement>("#reset")!;
 const micBtn = document.querySelector<HTMLButtonElement>("#mic")!;
 const layoutSelect = document.querySelector<HTMLSelectElement>("#layout")!;
 const detectBtn = document.querySelector<HTMLButtonElement>("#detect")!;
+const samPromptInput = document.querySelector<HTMLInputElement>("#sam-prompt")!;
 const samStatusEl = document.querySelector<HTMLDivElement>("#sam-status")!;
 const samActions = document.querySelector<HTMLDivElement>("#sam-actions")!;
 const acceptBtn = document.querySelector<HTMLButtonElement>("#accept")!;
@@ -129,7 +130,8 @@ function setDetecting(busy: boolean) {
 
 async function detectSurface() {
   if (video.videoWidth === 0) return;
-  const { boundaryPrompt: prompt, minSurfaceFrac, looseFitRatio } = CONFIG.sam;
+  const { minSurfaceFrac, looseFitRatio } = CONFIG.sam;
+  const prompt = samPromptInput.value.trim() || CONFIG.sam.boundaryPrompt;
   setDetecting(true);
   samStatusEl.textContent = `Asking SAM 3.1 for "${prompt}"…`;
   try {
@@ -167,6 +169,11 @@ async function detectSurface() {
   }
 }
 
+samPromptInput.value = CONFIG.sam.boundaryPrompt;
+samPromptInput.maxLength = CONFIG.server.maxPromptChars;
+samPromptInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !detectBtn.disabled) detectSurface();
+});
 detectBtn.addEventListener("click", detectSurface);
 retryBtn.addEventListener("click", detectSurface);
 discardBtn.addEventListener("click", () => {

@@ -69,7 +69,7 @@ export const CONFIG = {
   // Surface detection with SAM 3.1 (model ID from https://dev.meta.ai/docs/models).
   sam: {
     model: "sam-3.1",
-    boundaryPrompt: "desk", // a short noun phrase naming one concept
+    boundaryPrompt: "sheet of paper", // default for the prompt box; a short noun phrase
     jpegQuality: 0.9,
     minBlobFrac: 0.02, // mask pieces smaller than this fraction of the mask are specks
     minSurfaceFrac: 0.05, // reject a surface mask smaller than this fraction of the frame
