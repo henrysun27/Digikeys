@@ -1,4 +1,5 @@
 import { CONFIG } from "./config.ts";
+import type { Pt } from "./geometry.ts";
 
 // Pixel coords of the captured frame; right and bottom are exclusive.
 export type Bounds = { left: number; top: number; right: number; bottom: number };
@@ -62,6 +63,64 @@ export async function segmentFrame(video: HTMLVideoElement, prompt: string): Pro
 
 export function maskArea(o: SamObject): number {
   return o.mask.data.reduce((n, v) => n + v, 0);
+}
+
+// Drops 4-connected blobs smaller than minBlobFrac of the mask, so stray specks can't
+// stretch the convex hull. Big pieces all stay: an arm across the surface splits the mask
+// but both halves still belong to it.
+function dropSpecks(o: SamObject): Uint8Array {
+  const { width: W, data } = o.mask;
+  const label = new Int32Array(data.length);
+  const sizes = [0]; // by label; 0 = background
+  const stack: number[] = [];
+  for (let start = 0; start < data.length; start++) {
+    if (!data[start] || label[start]) continue;
+    const id = sizes.length;
+    let size = 0;
+    label[start] = id;
+    stack.push(start);
+    while (stack.length) {
+      const i = stack.pop()!;
+      size++;
+      const x = i % W;
+      for (const j of [i - W, i + W, x > 0 ? i - 1 : -1, x < W - 1 ? i + 1 : -1]) {
+        if (j >= 0 && j < data.length && data[j] && !label[j]) {
+          label[j] = id;
+          stack.push(j);
+        }
+      }
+    }
+    sizes.push(size);
+  }
+  const min = CONFIG.sam.minBlobFrac * sizes.reduce((a, b) => a + b, 0);
+  return Uint8Array.from(label, (l) => (l !== 0 && sizes[l] >= min ? 1 : 0));
+}
+
+// The despeckled mask in frame pixels: the pixel corners at both ends of each row (every
+// convex hull vertex is among them) and its area.
+export function maskOutline(o: SamObject): { pts: Pt[]; area: number } {
+  const { width: W, height: H } = o.mask;
+  const kept = dropSpecks(o);
+  const b = o.bounds;
+  const sx = (b.right - b.left) / W;
+  const sy = (b.bottom - b.top) / H;
+  const pts: Pt[] = [];
+  for (let y = 0; y < H; y++) {
+    const row = kept.subarray(y * W, (y + 1) * W);
+    const first = row.indexOf(1);
+    if (first < 0) continue;
+    const last = row.lastIndexOf(1) + 1;
+    for (const x of [first, last]) {
+      for (const yy of [y, y + 1]) pts.push({ x: b.left + x * sx, y: b.top + yy * sy });
+    }
+  }
+  return { pts, area: kept.reduce((n, v) => n + v, 0) * sx * sy };
+}
+
+// The mask's area in frame pixels.
+export function maskPixels(o: SamObject): number {
+  const b = o.bounds;
+  return (maskArea(o) * (b.right - b.left) * (b.bottom - b.top)) / (o.mask.width * o.mask.height);
 }
 
 // The mask as a tinted image the size of its raster, for drawImage into bounds.

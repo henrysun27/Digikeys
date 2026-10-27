@@ -44,12 +44,16 @@ All code in this repo was written during the hackathon.
       immediately from a best-guess finger (the one that lifted to strike, with its
       landing point predicted) without waiting for the stop; the later stopped-finger
       check is logged next to it. A layout picker switches between piano and drums.
-- [ ] Milestone 5: SAM 3.1 surface detection.
-  - [x] Part A: a minimal Node server (`server/index.ts`) holds the key and exposes
-        `POST /api/segment`. "Detect surface" sends the current camera frame and the prompt
-        `desk` to SAM 3.1, decodes the masks and draws the largest one over the video.
-  - [ ] Part B: fit 4 corners to the mask and feed the existing homography; click
-        calibration stays as the fallback.
+- [x] Milestone 5: SAM 3.1 surface detection.
+  - Part A: a minimal Node server (`server/index.ts`) holds the key and exposes
+    `POST /api/segment`. "Detect surface" sends the current camera frame and the prompt
+    `desk` to SAM 3.1 and decodes the returned masks.
+  - Part B: the largest mask, minus small specks, is reduced to its convex hull, and the
+    hull to the enclosing quadrilateral whose corners sit where its long sides meet. That
+    handles perspective, rounded corners and hands covering an edge. The corners are put in
+    click order for the mirrored view and shown over the mask; Accept feeds them to the
+    same homography and validation as clicked corners, Retry asks SAM again, Discard keeps
+    the current calibration. Clicking 4 corners still works as the fallback.
 
 ## Meta models
 

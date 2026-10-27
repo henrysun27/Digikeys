@@ -35,6 +35,17 @@ export class Calibration {
     return null;
   }
 
+  // Replaces the calibration with 4 corners at once (from surface detection), in
+  // CORNER_NAMES order. Returns why they were rejected, or null if accepted.
+  set(pts: Pt[]): string | null {
+    const problem = checkCorners(pts);
+    if (problem) return problem;
+    this.corners = [...pts];
+    this.solve();
+    this.save();
+    return null;
+  }
+
   reset() {
     this.corners = [];
     this.boardToCam = null;
@@ -50,7 +61,7 @@ export class Calibration {
       if (!raw) return;
       const pts: unknown = JSON.parse(raw);
       if (!isCornerList(pts)) return;
-      if (pts.some((_, i) => checkLast(pts.slice(0, i + 1)))) return;
+      if (checkCorners(pts)) return;
       this.corners = pts;
       this.solve();
     } catch {}
@@ -66,6 +77,29 @@ export class Calibration {
     this.boardToCam = homography(BOARD_CORNERS, this.corners);
     this.camToBoard = homography(this.corners, BOARD_CORNERS);
   }
+}
+
+// Checks a full set of 4 corners as if they had been clicked in order.
+export function checkCorners(pts: Pt[]): string | null {
+  if (pts.length !== 4) return "Need exactly 4 corners";
+  for (let i = 1; i <= 4; i++) {
+    const problem = checkLast(pts.slice(0, i));
+    if (problem) return problem;
+  }
+  return null;
+}
+
+// Puts a quad (raw camera coords, any winding) into click order: going clockwise on
+// screen, starting from the on-screen top-left corner. The view is mirrored, so screen x
+// is 1 - x; aspect (width / height) makes the top-left pick use true proportions.
+export function orderCorners(quad: Pt[], aspect: number): Pt[] {
+  const screen = quad.map((p) => ({ x: (1 - p.x) * aspect, y: p.y }));
+  // Clockwise on screen (y down) is a positive cross product at every corner.
+  let order = [0, 1, 2, 3];
+  if (cross(screen[0], screen[1], screen[2]) < 0) order = order.reverse();
+  const first = order.reduce((a, i) => (screen[i].x + screen[i].y < screen[a].x + screen[a].y ? i : a));
+  const k = order.indexOf(first);
+  return [...order.slice(k), ...order.slice(0, k)].map((i) => quad[i]);
 }
 
 // Checks the newest point against the ones before it.

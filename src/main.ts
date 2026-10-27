@@ -1,12 +1,12 @@
 import "./style.css";
 import { FilesetResolver, HandLandmarker, type HandLandmarkerResult } from "@mediapipe/tasks-vision";
-import { Calibration, CORNER_NAMES } from "./calibration.ts";
+import { Calibration, CORNER_NAMES, checkCorners, orderCorners } from "./calibration.ts";
 import { CONFIG } from "./config.ts";
 import { logIgnored, logPlayed, resolveTap, showLevel, showMicInfo } from "./debug.ts";
-import { applyH, type Pt } from "./geometry.ts";
+import { applyH, convexHull, fitQuad, polygonArea, type Pt } from "./geometry.ts";
 import { PRESETS, hitTest, shapeCenter, shapeOutline, type Layout, type Zone } from "./layout.ts";
 import { startMic, type Onset } from "./mic.ts";
-import { maskArea, maskImage, segmentFrame, type SamObject, type Segmentation } from "./sam.ts";
+import { maskArea, maskImage, maskOutline, maskPixels, segmentFrame, type SamObject, type Segmentation } from "./sam.ts";
 import { initSound, play } from "./sound.ts";
 import { FINGER_NAMES, FINGERTIPS, FingerHistory } from "./taps.ts";
 
@@ -19,6 +19,10 @@ const micBtn = document.querySelector<HTMLButtonElement>("#mic")!;
 const layoutSelect = document.querySelector<HTMLSelectElement>("#layout")!;
 const detectBtn = document.querySelector<HTMLButtonElement>("#detect")!;
 const samStatusEl = document.querySelector<HTMLDivElement>("#sam-status")!;
+const samActions = document.querySelector<HTMLDivElement>("#sam-actions")!;
+const acceptBtn = document.querySelector<HTMLButtonElement>("#accept")!;
+const retryBtn = document.querySelector<HTMLButtonElement>("#retry")!;
+const discardBtn = document.querySelector<HTMLButtonElement>("#discard")!;
 const ctx = canvas.getContext("2d")!;
 
 const calibration = new Calibration();
@@ -28,8 +32,16 @@ const flashes = new Map<string, number>(); // zone id -> flash end, performance.
 let hintError: string | null = null;
 let tapCount = 0;
 let handsInFrame = 0; // hands in the latest detection
-// The latest SAM 3.1 surface detection; the largest match is taken as the playing surface.
-let surface: { seg: Segmentation; pick: SamObject; image: HTMLCanvasElement } | null = null;
+// A SAM 3.1 surface detection waiting for Accept. The largest match is taken as the playing
+// surface; corners (raw cam coords, click order) are null if no quad could be fitted.
+type Proposal = {
+  seg: Segmentation;
+  pick: SamObject;
+  image: HTMLCanvasElement;
+  corners: Pt[] | null;
+  problem: string | null;
+};
+let proposal: Proposal | null = null;
 
 // Coordinate spaces:
 //   cam    - raw camera coords normalized to 0-1, unmirrored (same as MediaPipe landmarks)
@@ -59,7 +71,8 @@ function updateHint() {
     return;
   }
   const n = calibration.corners.length;
-  const next = `Click corner ${n + 1} of 4: ${CORNER_NAMES[n]} of the playing surface.`;
+  const or = n === 0 ? ", or press Detect surface" : "";
+  const next = `Click corner ${n + 1} of 4: ${CORNER_NAMES[n]} of the playing surface${or}.`;
   hintEl.textContent = hintError ? `${hintError}. ${next}` : next;
 }
 
@@ -76,7 +89,7 @@ canvas.addEventListener("click", (e) => {
 
 resetBtn.addEventListener("click", () => {
   calibration.reset();
-  surface = null;
+  setProposal(null);
   samStatusEl.textContent = "";
   hintError = null;
   updateHint();
@@ -88,25 +101,89 @@ layoutSelect.addEventListener("change", () => {
   flashes.clear();
 });
 
-detectBtn.addEventListener("click", async () => {
+// Playing-surface corners from a SAM mask: convex hull, then the enclosing quad, in click
+// order. fit is quad area / mask area (1 = the mask is exactly a quadrilateral).
+function fitSurface(seg: Segmentation, pick: SamObject): { corners: Pt[]; fit: number } | null {
+  const { pts, area } = maskOutline(pick);
+  const quad = fitQuad(convexHull(pts));
+  if (!quad) return null;
+  const norm = quad.map((p) => ({ x: p.x / seg.width, y: p.y / seg.height }));
+  return {
+    corners: orderCorners(norm, seg.width / seg.height),
+    fit: Math.abs(polygonArea(quad)) / area,
+  };
+}
+
+function setProposal(p: Proposal | null) {
+  proposal = p;
+  samActions.hidden = p === null;
+  acceptBtn.disabled = !p?.corners || p.problem !== null;
+}
+
+function setDetecting(busy: boolean) {
+  detectBtn.disabled = busy;
+  retryBtn.disabled = busy;
+  if (busy) acceptBtn.disabled = true;
+  else setProposal(proposal);
+}
+
+async function detectSurface() {
   if (video.videoWidth === 0) return;
-  const prompt = CONFIG.sam.boundaryPrompt;
-  detectBtn.disabled = true;
+  const { boundaryPrompt: prompt, minSurfaceFrac, looseFitRatio } = CONFIG.sam;
+  setDetecting(true);
   samStatusEl.textContent = `Asking SAM 3.1 for "${prompt}"…`;
   try {
     const seg = await segmentFrame(video, prompt);
-    const pick = seg.objects.reduce<SamObject | null>((a, o) => (!a || maskArea(o) > maskArea(a) ? o : a), null);
-    surface = pick ? { seg, pick, image: maskImage(pick, [0, 200, 255, 110]) } : null;
     const found = `${seg.objects.length} match(es) for "${prompt}" in ${seg.ms.toFixed(0)} ms (SAM ${seg.serverMs} ms)`;
-    samStatusEl.textContent = pick
-      ? `SAM 3.1: ${found}; showing the largest (confidence ${pick.confidence?.toFixed(2) ?? "?"}).`
-      : `SAM 3.1: ${found}. Click the corners instead.`;
+    const pick = seg.objects.reduce<SamObject | null>((a, o) => (!a || maskArea(o) > maskArea(a) ? o : a), null);
+    if (!pick) {
+      setProposal(null);
+      samStatusEl.textContent = `SAM 3.1: ${found}. Retry, or click the corners.`;
+      return;
+    }
+    const frac = maskPixels(pick) / (seg.width * seg.height);
+    const fitted = fitSurface(seg, pick);
+    const problem =
+      frac < minSurfaceFrac
+        ? `it covers only ${(frac * 100).toFixed(1)}% of the frame`
+        : !fitted
+          ? "couldn't fit 4 corners to it"
+          : checkCorners(fitted.corners);
+    setProposal({ seg, pick, image: maskImage(pick, [0, 200, 255, 90]), corners: fitted?.corners ?? null, problem });
+    const conf = pick.confidence?.toFixed(2) ?? "?";
+    const fit = fitted ? `, quad/mask area ${fitted.fit.toFixed(2)}` : "";
+    const loose =
+      fitted && fitted.fit > looseFitRatio
+        ? " (loose fit: something covers part of the surface, or it isn't four-sided)"
+        : "";
+    samStatusEl.textContent = problem
+      ? `SAM 3.1: ${found}. Largest (confidence ${conf}): ${problem}. Retry, or click the corners.`
+      : `SAM 3.1: ${found}. Largest (confidence ${conf})${fit}${loose}. Accept to use these corners.`;
   } catch (err) {
     console.error(err);
     samStatusEl.textContent = `SAM 3.1 failed: ${err instanceof Error ? err.message : String(err)}`;
   } finally {
-    detectBtn.disabled = false;
+    setDetecting(false);
   }
+}
+
+detectBtn.addEventListener("click", detectSurface);
+retryBtn.addEventListener("click", detectSurface);
+discardBtn.addEventListener("click", () => {
+  setProposal(null);
+  samStatusEl.textContent = "";
+});
+acceptBtn.addEventListener("click", () => {
+  if (!proposal?.corners) return;
+  const problem = calibration.set(proposal.corners);
+  if (problem) {
+    samStatusEl.textContent = `Can't use these corners: ${problem}. Retry, or click the corners.`;
+    return;
+  }
+  setProposal(null);
+  samStatusEl.textContent = "Using the corners from SAM 3.1.";
+  hintError = null;
+  updateHint();
 });
 
 // One AudioContext, created inside the click, for both the mic detector and Tone. Sounds
@@ -249,24 +326,27 @@ function drawLabel(zone: Zone, outline: Pt[]) {
   ctx.fillText(zone.label, c.x, c.y);
 }
 
-// Drawn in camera pixels through the mirror transform, like the video.
-function drawSurface() {
-  if (!surface) return;
-  const { seg, pick, image } = surface;
+// The pending detection: the mask, drawn in camera pixels through the mirror transform like
+// the video, and its fitted corners.
+function drawProposal() {
+  if (!proposal) return;
+  const { seg, pick, image, corners } = proposal;
   const s = canvas.width / seg.width;
   const b = pick.bounds;
   ctx.setTransform(-s, 0, 0, s, canvas.width, 0);
   ctx.drawImage(image, b.left, b.top, b.right - b.left, b.bottom - b.top);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
+  if (corners) drawCorners(corners, true, "#00dcff");
 }
 
-function drawCorners() {
-  const pts = calibration.corners.map(camToScreen);
+// Numbered corner dots joined by a dashed outline; corners in cam coords.
+function drawCorners(corners: Pt[], closed: boolean, color: string) {
+  const pts = corners.map(camToScreen);
   if (pts.length === 0) return;
   ctx.setLineDash([8, 6]);
-  ctx.strokeStyle = "#ffd400";
+  ctx.strokeStyle = color;
   ctx.lineWidth = 2;
-  tracePath(pts, calibration.done);
+  tracePath(pts, closed);
   ctx.stroke();
   ctx.setLineDash([]);
 
@@ -274,7 +354,7 @@ function drawCorners() {
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   pts.forEach((p, i) => {
-    ctx.fillStyle = "#ffd400";
+    ctx.fillStyle = color;
     ctx.beginPath();
     ctx.arc(p.x, p.y, 12, 0, Math.PI * 2);
     ctx.fill();
@@ -326,9 +406,9 @@ function loop(landmarker: HandLandmarker) {
     ctx.setTransform(-1, 0, 0, 1, canvas.width, 0);
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    drawSurface();
     drawLayout(zonesUnderFingertips(result), now);
-    drawCorners();
+    drawCorners(calibration.corners, calibration.done, "#ffd400");
+    drawProposal();
     if (result) drawHands(result);
 
     if (now - fpsStart >= 1000) {

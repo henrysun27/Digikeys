@@ -38,8 +38,18 @@ body {
   pointer-events: none;
 }
 
-#debug button {
+#debug button,
+#hud button {
   pointer-events: auto;
+}
+
+#sam-actions {
+  display: flex;
+  gap: 8px;
+}
+
+#sam-actions[hidden] {
+  display: none;
 }
 
 #hud {
@@ -77,6 +87,7 @@ body {
 
 #reset,
 #detect,
+#sam-actions button,
 #mic,
 #layout {
   padding: 6px 12px;
@@ -104,11 +115,17 @@ body {
 #reset:hover,
 #layout:hover,
 #detect:hover:enabled,
+#sam-actions button:hover:enabled,
 #mic:hover:enabled {
   background: rgba(40, 40, 40, 0.8);
 }
 
+#accept:enabled {
+  border-color: #00dcff;
+}
+
 #detect:disabled,
+#sam-actions button:disabled,
 #mic:disabled {
   cursor: default;
   opacity: 0.8;
