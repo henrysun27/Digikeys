@@ -9,12 +9,19 @@ declare class AudioWorkletProcessor {
   readonly port: MessagePort;
 }
 
+// time: the block's audio-clock time, s. A level report's level is the peak since the
+// previous report.
 export type OnsetMessage =
   | { type: "onset"; time: number; level: number; threshold: number }
-  | { type: "level"; level: number; floor: number; threshold: number };
+  | { type: "level"; time: number; level: number; floor: number; threshold: number };
+
+const fromDb = (db: number) => 10 ** (db / 20);
 
 class OnsetProcessor extends AudioWorkletProcessor {
   private p: OnsetParams;
+  private thresholdRatio: number;
+  private riseRatio: number;
+  private minLevel: number;
   private floor = -1;
   private recent: number[] = [];
   private lastOnset = -Infinity;
@@ -24,6 +31,9 @@ class OnsetProcessor extends AudioWorkletProcessor {
   constructor(options: { processorOptions: OnsetParams }) {
     super();
     this.p = options.processorOptions;
+    this.thresholdRatio = fromDb(this.p.thresholdDb);
+    this.riseRatio = fromDb(this.p.riseDb);
+    this.minLevel = fromDb(this.p.minLevelDb);
   }
 
   process(inputs: Float32Array[][]): boolean {
@@ -37,9 +47,9 @@ class OnsetProcessor extends AudioWorkletProcessor {
     const level = Math.sqrt(sum / ch.length);
     if (this.floor < 0) this.floor = level;
 
-    const threshold = Math.max(this.floor * p.thresholdRatio, p.minLevel);
+    const threshold = Math.max(this.floor * this.thresholdRatio, this.minLevel);
     const before = this.recent.length ? this.recent.reduce((a, b) => a + b, 0) / this.recent.length : 0;
-    const rising = level >= before * p.riseRatio;
+    const rising = level >= before * this.riseRatio;
     const ready = (currentTime - this.lastOnset) * 1000 >= p.refractoryMs;
     if (level >= threshold && rising && ready) {
       this.lastOnset = currentTime;
@@ -57,6 +67,7 @@ class OnsetProcessor extends AudioWorkletProcessor {
     if ((currentTime - this.lastReport) * 1000 >= p.reportMs) {
       this.port.postMessage({
         type: "level",
+        time: currentTime,
         level: this.reportPeak,
         floor: this.floor,
         threshold,

@@ -3,8 +3,11 @@ import { Calibration, CORNER_NAMES, checkCorners, orderCorners } from "./calibra
 import { CONFIG } from "./config.ts";
 import {
   logIgnored,
+  logMissed,
   logPlayed,
+  logRejected,
   logTest,
+  logVisionTap,
   resolveTap,
   showCamera,
   showCorrections,
@@ -29,11 +32,11 @@ import {
   type Layout,
   type Zone,
 } from "./layout.ts";
-import { startMic, type Onset } from "./mic.ts";
+import { startMic, type MicLevel, type Onset } from "./mic.ts";
 import { requestLayout } from "./muse.ts";
 import { maskArea, maskImage, maskOutline, maskPixels, segmentFrame, type SamObject, type Segmentation } from "./sam.ts";
-import { initSound, play } from "./sound.ts";
-import { FINGER_NAMES, FINGERTIPS, FingerHistory, fingerKey, handOf, landing } from "./taps.ts";
+import { initSound, play, playNow } from "./sound.ts";
+import { FINGER_NAMES, FINGERTIPS, FingerHistory, fingerKey, handOf, landing, type Motion } from "./taps.ts";
 import {
   applyCorrection,
   loadCorrections,
@@ -56,6 +59,7 @@ const resetStatsBtn = document.querySelector<HTMLButtonElement>("#reset-stats")!
 const probeBtn = document.querySelector<HTMLButtonElement>("#probe-camera")!;
 const tapCalStatusEl = document.querySelector<HTMLDivElement>("#tap-cal-status")!;
 const micBtn = document.querySelector<HTMLButtonElement>("#mic")!;
+const tapModeSelect = document.querySelector<HTMLSelectElement>("#tap-mode")!;
 const layoutSelect = document.querySelector<HTMLSelectElement>("#layout")!;
 const fingersSelect = document.querySelector<HTMLSelectElement>("#fingers")!;
 const detectBtn = document.querySelector<HTMLButtonElement>("#detect")!;
@@ -105,6 +109,12 @@ type Proposal = {
   problem: string | null;
 };
 let proposal: Proposal | null = null;
+// Audio: one context for the mic detector and Tone, started by the mic button.
+const audio = { ctx: null as AudioContext | null, micOn: false, soundOn: false, starting: false };
+// Recent onset times (performance.now() ms) and mic level reports, for missed-tap checks.
+const acceptedOnsets: number[] = [];
+const rejectedOnsets: number[] = [];
+const levels: MicLevel[] = [];
 
 // Coordinate spaces:
 //   cam    - raw camera coords normalized to 0-1, unmirrored (same as MediaPipe landmarks)
@@ -236,13 +246,23 @@ instrumentInput.addEventListener("keydown", (e) => {
 });
 generateBtn.addEventListener("click", generateLayout);
 
-// The finger toggle writes CONFIG.fingers.allowed. Test scores are kept per finger setting
-// and tap correction, so accuracy before and after calibrating taps shows side by side.
+// The finger toggle writes CONFIG.fingers.allowed. Test scores are kept per tap mode,
+// finger setting and tap correction, so accuracy before and after calibrating taps, or
+// with and without the mic, shows side by side.
 const FINGER_SETS: Record<string, string[]> = { index: ["index"], all: FINGER_NAMES };
 const fingerSetting = () => {
   const fit = corrections ? `tap correction ${new Date(corrections.fittedAt).toLocaleTimeString()}` : "no tap correction";
-  return `${fingersSelect.selectedOptions[0].text}, ${fit}`;
+  return `${tapModeSelect.selectedOptions[0].text}, ${fingersSelect.selectedOptions[0].text}, ${fit}`;
 };
+
+// The tap-mode toggle writes CONFIG.taps.mode. Vision-only needs sound but not the mic.
+tapModeSelect.value = CONFIG.taps.mode;
+updateAudioButton();
+tapModeSelect.addEventListener("change", () => {
+  CONFIG.taps.mode = tapModeSelect.value === "vision" ? "vision" : "hybrid";
+  updateAudioButton();
+  updateTest();
+});
 fingersSelect.value = CONFIG.fingers.allowed.length === 1 && CONFIG.fingers.allowed[0] === "index" ? "index" : "all";
 fingersSelect.addEventListener("change", () => {
   CONFIG.fingers.allowed = FINGER_SETS[fingersSelect.value];
@@ -417,25 +437,107 @@ acceptBtn.addEventListener("click", () => {
   updateHint();
 });
 
-// One AudioContext, created inside the click, for both the mic detector and Tone. Sounds
-// load and warm up here so the first tap isn't silent.
+// The button starts whatever the tap mode still needs: sounds always, the mic only in
+// hybrid mode.
+function updateAudioButton() {
+  const needMic = CONFIG.taps.mode === "hybrid" && !audio.micOn;
+  micBtn.disabled = audio.starting || (audio.soundOn && !needMic);
+  if (audio.starting) return;
+  micBtn.textContent = needMic ? "Enable mic" : !audio.soundOn ? "Enable sound" : audio.micOn ? "Mic on" : "Sound on";
+}
+
+function onLevel(l: MicLevel) {
+  showLevel(l);
+  levels.push(l);
+  while (levels.length && levels[0].time < l.time - CONFIG.motion.keepMs) levels.shift();
+}
+
+// One AudioContext, created inside the first click, for both the mic detector and Tone.
+// Sounds load and warm up here so the first tap isn't silent.
 micBtn.addEventListener("click", async () => {
-  micBtn.disabled = true;
-  micBtn.textContent = "Starting mic, loading sounds…";
+  const startMicToo = CONFIG.taps.mode === "hybrid" && !audio.micOn;
+  audio.starting = true;
+  updateAudioButton();
+  micBtn.textContent = startMicToo ? "Starting mic, loading sounds…" : "Loading sounds…";
   try {
-    const audioCtx = new AudioContext({ latencyHint: "interactive" });
-    await audioCtx.resume();
+    audio.ctx ??= new AudioContext({ latencyHint: "interactive" });
+    const ctx = audio.ctx;
+    await ctx.resume();
     await Promise.all([
-      startMic(audioCtx, { onOnset, onLevel: showLevel, onInfo: showMicInfo }),
-      initSound(audioCtx),
+      startMicToo && startMic(ctx, { onOnset, onLevel, onInfo: showMicInfo }).then(() => (audio.micOn = true)),
+      !audio.soundOn && initSound(ctx).then(() => (audio.soundOn = true)),
     ]);
-    micBtn.textContent = "Mic on";
+    audio.starting = false;
+    updateAudioButton();
   } catch (err) {
     console.error(err);
-    micBtn.disabled = false;
-    micBtn.textContent = `Enable mic (${err instanceof Error ? err.message : String(err)})`;
+    audio.starting = false;
+    updateAudioButton();
+    micBtn.textContent += ` (${err instanceof Error ? err.message : String(err)})`;
   }
 });
+
+function keepRecent(times: number[], t: number) {
+  times.push(t);
+  while (times.length && times[0] < t - CONFIG.motion.keepMs) times.shift();
+}
+
+// A finger came down and stopped on the board (from FingerHistory.newStops, once per
+// stroke). In vision-only mode that is the tap; in hybrid test mode, it is checked for a
+// matching onset.
+function onStop(m: Motion) {
+  if (CONFIG.taps.mode === "vision") visionTap(m);
+  else if (test.active && !tapCal && audio.micOn) checkMiss(m);
+}
+
+// Vision-only: plays at the stop frame's position, through the check correction. Scored
+// in test mode and recorded in tap calibration like an onset tap whose guess and check
+// are the same position.
+function visionTap(m: Motion) {
+  const n = ++tapCount;
+  const at = tapPoint("check", landing(m.end));
+  const zone = at ? hitTest(layout, at) : null;
+  const played = zone ? playNow(zone.sound) : null;
+  const latencyMs = played ? performance.now() - m.end.t + played.outputMs : null;
+  setLastTap(m.finger, m.end.t);
+  if (zone) flashes.set(zone.id, performance.now() + CONFIG.taps.flashMs);
+  const line = logVisionTap(n, m.finger, zone?.label ?? null, latencyMs);
+
+  const cal = tapCal;
+  const target = cal ? cal.take() : test.active ? test.target : null;
+  if (!target) return;
+  if (at) pushDot({ guess: { p: at, hit: zone?.id === target.id }, check: null });
+  if (cal) {
+    cal.add("guess", target, at);
+    cal.add("check", target, at);
+    cal.settle();
+    updateTapCalStatus();
+    if (cal.finished) finishTapCal();
+  } else {
+    test.next(layout);
+    logTest(line, target.label, test.record(fingerSetting(), target, zone, zone));
+    updateTest();
+  }
+}
+
+// Hybrid test mode: a stop with no accepted onset within missWindowMs of when its onset
+// would have been (videoLagMs before the stop frame) is logged as a miss, with the peak
+// mic level around then. Waits until onsets for the whole window are in.
+function checkMiss(m: Motion) {
+  const expected = m.end.t - CONFIG.taps.videoLagMs;
+  const lo = expected - CONFIG.motion.missWindowMs;
+  const hi = expected + CONFIG.motion.missWindowMs;
+  const inWindow = (t: number) => t >= lo && t <= hi;
+  setTimeout(() => {
+    if (acceptedOnsets.some(inWindow)) return;
+    // A level report covers the reportMs before its time.
+    const near = levels.filter((l) => l.time >= lo && l.time <= hi + CONFIG.onset.reportMs);
+    const peak = near.reduce<MicLevel | null>((a, l) => (!a || l.level > a.level ? l : a), null);
+    const at = tapPoint("check", landing(m.end));
+    const zone = at ? hitTest(layout, at) : null;
+    logMissed(m.finger, zone?.label ?? null, peak, rejectedOnsets.some(inWindow));
+  }, Math.max(0, hi + CONFIG.taps.settleMarginMs - performance.now()));
+}
 
 // A guess or check position (cam coords) on the board, with its tap correction applied.
 function tapPoint(kind: TapKind, cam: Pt): Pt | null {
@@ -466,13 +568,24 @@ function setLastTap(finger: string, t: number) {
 // the tap is checked against the stopped finger once those frames are in. In test mode
 // both are scored against the target shown at the onset, and the next target appears;
 // in tap calibration both positions are recorded against the zone being calibrated.
+//
+// Hybrid mode gate: the onset threshold is low enough for light contact, so an onset only
+// counts if an allowed finger is moving down or just stopped on the board in the finger
+// search window. Onsets are ignored in vision-only mode.
 function onOnset(onset: Onset) {
+  if (CONFIG.taps.mode !== "hybrid") return;
   const n = ++tapCount;
   if (handsInFrame === 0) {
     logIgnored(n, "no hand");
     return;
   }
-  const { videoLagMs, stopToleranceMs, settleMarginMs, flashMs } = CONFIG.taps;
+  const { videoLagMs, stopToleranceMs, historyMs, settleMarginMs, flashMs } = CONFIG.taps;
+  if (history.motionSince(onset.time + videoLagMs - stopToleranceMs - historyMs, onBoard).length === 0) {
+    keepRecent(rejectedOnsets, onset.time);
+    logRejected(n, onset.level, onset.threshold);
+    return;
+  }
+  keepRecent(acceptedOnsets, onset.time);
   const recent = lastTap && onset.time - lastTap.t <= CONFIG.guess.lastHandMs;
   const guess = history.guess(onset.time, { onBoard, lastHand: recent ? lastTap!.hand : null });
   const guessAt = guess ? tapPoint("guess", landing(guess.at)) : null;
@@ -656,6 +769,7 @@ function useDetector(d: Detector) {
     }
     hands = tracked.hands;
     recordFingers(hands, t);
+    for (const m of history.newStops(onBoard)) onStop(m);
     countDropouts(hands, tracked.lost);
     handsInFrame = hands.length;
   };

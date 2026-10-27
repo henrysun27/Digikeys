@@ -30,6 +30,8 @@ const logEl = el("tap-log");
 const recentOffsets: number[] = [];
 const recentLatencies: number[] = [];
 const recentWaits: number[] = [];
+const recentVision: number[] = [];
+const visionLatencyEl = el("vision-latency");
 
 // What was played at onset time from the best-guess finger. waitMs: onset to the main
 // thread getting the message; handlerMs: from then to the trigger.
@@ -84,6 +86,40 @@ function appendLog(text: string): HTMLLIElement {
 
 export function logIgnored(n: number, reason: string) {
   appendLog(`#${n} ignored (${reason})`);
+}
+
+// Hybrid mode: an onset with no allowed finger moving down or just stopped on the board.
+export function logRejected(n: number, level: number, threshold: number) {
+  appendLog(`#${n} rejected (no finger motion) · ${fmtDb(level)} vs threshold ${fmtDb(threshold)}`);
+}
+
+// Test mode: a finger came down and stopped on the board but no onset was accepted
+// around it. peak: the loudest mic level near when its onset would have been (null if
+// no level reports covered it); rejected: an onset there failed the motion gate.
+export function logMissed(
+  finger: string,
+  zone: string | null,
+  peak: { level: number; threshold: number } | null,
+  rejected: boolean,
+) {
+  const level = peak ? ` · peak ${fmtDb(peak.level)} vs threshold ${fmtDb(peak.threshold)}` : " · no mic levels";
+  appendLog(`missed (no onset): ${where(finger, zone)}${level}${rejected ? " · onset was rejected" : ""}`);
+}
+
+// Vision-only taps. latencyMs: from the stop frame's timestamp to the trigger, plus output
+// latency; the contact itself came about videoLagMs before that frame.
+export function logVisionTap(n: number, finger: string, zone: string | null, latencyMs: number | null) {
+  fingerEl.textContent = where(finger, zone);
+  if (latencyMs !== null) {
+    pushRecent(recentVision, latencyMs);
+    const lag = CONFIG.taps.videoLagMs;
+    visionLatencyEl.textContent =
+      `${latencyMs.toFixed(0)} ms from stop frame, ≈ ${(latencyMs + lag).toFixed(0)} ms from contact · ` +
+      `median ${median(recentVision).toFixed(0)} / ≈ ${(median(recentVision) + lag).toFixed(0)} ms ` +
+      `(last ${recentVision.length})`;
+  }
+  const played = latencyMs !== null ? ` · ${latencyMs.toFixed(0)} ms` : " · silent";
+  return appendLog(`#${n} vision ${where(finger, zone)}${played}`);
 }
 
 function median(xs: number[]): number {

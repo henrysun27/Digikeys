@@ -37,11 +37,22 @@ export type FingerPick = {
 // the hand of the last tap if it was recent.
 export type GuessContext = { onBoard: (p: Pt) => boolean; lastHand: string | null };
 
-// prev is the frame before last, for extrapolating a stroke that is still moving.
-type Stroke = { peak: number; stop: Sample | null; last: Sample; prev: Sample | null };
+// start: the frame the stroke started from. prev is the frame before last, for
+// extrapolating a stroke that is still moving.
+type Stroke = { peak: number; start: Sample; stop: Sample | null; last: Sample; prev: Sample | null };
+
+// A down-stroke of one finger for the hybrid gate, vision taps and miss logging. end is
+// where it stopped, or its latest frame if still moving; travel is in frame heights.
+export type Motion = { finger: string; peak: number; travel: number; end: Sample; stopped: boolean };
+
+function toMotion(finger: string, k: Stroke): Motion {
+  const end = k.stop ?? k.last;
+  return { finger, peak: k.peak, travel: end.y - k.start.y, end, stopped: k.stop !== null };
+}
 
 export class FingerHistory {
   private tracks = new Map<string, Sample[]>();
+  private reported = new Map<string, number>(); // finger -> time of its last stop from newStops
 
   add(finger: string, s: Sample) {
     let track = this.tracks.get(finger);
@@ -52,7 +63,45 @@ export class FingerHistory {
 
   // Forgets a hand's fingers, when its ID passes to a different hand.
   dropHand(hand: string) {
-    for (const finger of this.tracks.keys()) if (handOf(finger) === hand) this.tracks.delete(finger);
+    for (const finger of this.tracks.keys()) {
+      if (handOf(finger) !== hand) continue;
+      this.tracks.delete(finger);
+      this.reported.delete(finger);
+    }
+  }
+
+  // Allowed fingers' down-strokes in frames since `from` that descended at least
+  // CONFIG.motion.minTravel and end (stopped or still moving) inside the board.
+  motionSince(from: number, onBoard: (p: Pt) => boolean): Motion[] {
+    const { minDownSpeed, minTravel } = CONFIG.motion;
+    const out: Motion[] = [];
+    for (const [finger, track] of this.tracks) {
+      if (!isAllowed(finger)) continue;
+      for (const k of downStrokes(track.filter((s) => s.t >= from), minDownSpeed)) {
+        const m = toMotion(finger, k);
+        if (m.travel >= minTravel && onBoard(landing(m.end))) out.push(m);
+      }
+    }
+    return out;
+  }
+
+  // Down-strokes that stopped inside the board since the last call: a down-then-stop of an
+  // allowed finger, each reported once. Call after every frame's samples are added.
+  newStops(onBoard: (p: Pt) => boolean): Motion[] {
+    const { minDownSpeed, minTravel } = CONFIG.motion;
+    const out: Motion[] = [];
+    for (const [finger, track] of this.tracks) {
+      if (!isAllowed(finger) || track.length < 2) continue;
+      const from = track[track.length - 1].t - CONFIG.taps.historyMs;
+      const after = this.reported.get(finger) ?? -Infinity;
+      for (const k of downStrokes(track.filter((s) => s.t >= from), minDownSpeed)) {
+        if (!k.stop || k.stop.t <= after) continue;
+        this.reported.set(finger, k.stop.t);
+        const m = toMotion(finger, k);
+        if (m.travel >= minTravel && onBoard(landing(m.end))) out.push(m);
+      }
+    }
+    return out;
   }
 
   // The finger that moved down fastest and then stopped around the onset. A finger
@@ -119,22 +168,26 @@ export class FingerHistory {
 // Downward (increasing y) strokes in order. A stroke starts when speed reaches
 // minDownSpeed and stops at the last frame before speed falls below stopSpeedRatio of
 // its peak. The final stroke may still be moving (stop null).
-function downStrokes(s: Sample[]): Stroke[] {
-  const { minDownSpeed, stopSpeedRatio } = CONFIG.taps;
+function downStrokes(s: Sample[], minDownSpeed = CONFIG.taps.minDownSpeed): Stroke[] {
+  const { stopSpeedRatio } = CONFIG.taps;
   const strokes: Stroke[] = [];
   let peak = 0;
+  let start = s[0];
   for (let i = 1; i < s.length; i++) {
     const v = speed(s[i - 1], s[i]);
     if (peak === 0) {
-      if (v >= minDownSpeed) peak = v;
+      if (v >= minDownSpeed) {
+        peak = v;
+        start = s[i - 1];
+      }
     } else if (v > peak) {
       peak = v;
     } else if (v <= peak * stopSpeedRatio) {
-      strokes.push({ peak, stop: s[i - 1], last: s[i - 1], prev: null });
+      strokes.push({ peak, start, stop: s[i - 1], last: s[i - 1], prev: null });
       peak = 0;
     }
   }
-  if (peak > 0) strokes.push({ peak, stop: null, last: s[s.length - 1], prev: s[s.length - 2] });
+  if (peak > 0) strokes.push({ peak, start, stop: null, last: s[s.length - 1], prev: s[s.length - 2] });
   return strokes;
 }
 

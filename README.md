@@ -129,6 +129,25 @@ All code in this repo was written during the hackathon.
       brief dropout reattaches, and a hand that matches nothing gets the lowest free ID
       with its history cleared. Finger histories are keyed by that ID, and each hand shows
       its ID (A or B) in a badge below the wrist.
+- [x] Light-touch taps, with two tap modes (toolbar toggle, `CONFIG.taps.mode`):
+  - Mic + motion (hybrid, default): the onset threshold is the noise floor + 5 dB (rise
+    check also 5 dB, absolute minimum -66 dBFS; `CONFIG.onset`), low enough for light
+    fingertip contact. An onset is kept only if an allowed finger has a down-stroke in the
+    finger search window that ends (stopped or still moving) inside the board; otherwise
+    it is logged as "rejected (no finger motion)" with its level. Down-strokes here use
+    `CONFIG.motion`: at least 0.1 frame heights/s and 1% of the frame height of travel.
+  - Vision only: a down-stroke of an allowed finger that stops inside the board plays at
+    the stop position, with no mic (the button then only loads sounds). The debug panel
+    shows its latency from the stop frame's timestamp to the trigger plus output latency,
+    and the estimated latency from contact (adding `videoLagMs`). Test scores are kept
+    per mode.
+  - Missed taps: in Test mode (hybrid), a down-then-stop inside the board with no
+    accepted onset within 150 ms of when its onset would have been is logged as
+    "missed (no onset)" with the peak mic level and threshold around then, and whether
+    an onset there was rejected by the motion gate.
+  - In simulation, random landmark noise of σ 0.003 frame heights on a resting finger gives
+    about 6 false stops per 10 s (none at σ 0.002). That affects vision-only taps and the
+    miss log, not hybrid taps, which also need an onset.
 
 ## Meta models
 

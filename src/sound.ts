@@ -42,9 +42,9 @@ export async function initSound(ctx: AudioContext) {
 }
 
 // Plays the sound now (Tone.immediate: the context's currentTime, no lookahead offset).
-// Returns tap-to-sound latency in ms (onset block's audio-clock time to the trigger time,
-// plus the unclamped reported output latency), or null if nothing was played.
-export function play(sound: Sound, onsetCtxTime: number): number | null {
+// Returns the trigger's audio-clock time and the unclamped reported output latency, or
+// null if nothing was played.
+export function playNow(sound: Sound): { ctxTime: number; outputMs: number } | null {
   if (!audioCtx || !piano || !drums) return null;
   const t = Tone.immediate();
   if (sound.type === "note") {
@@ -55,5 +55,12 @@ export function play(sound: Sound, onsetCtxTime: number): number | null {
     console.warn(`unknown drum sample "${sound.sample}"`);
     return null;
   }
-  return (t - onsetCtxTime) * 1000 + outputLatency(audioCtx).rawMs;
+  return { ctxTime: t, outputMs: outputLatency(audioCtx).rawMs };
+}
+
+// Plays the sound now. Returns tap-to-sound latency in ms (onset block's audio-clock time
+// to the trigger time, plus the reported output latency), or null if nothing was played.
+export function play(sound: Sound, onsetCtxTime: number): number | null {
+  const p = playNow(sound);
+  return p ? (p.ctxTime - onsetCtxTime) * 1000 + p.outputMs : null;
 }

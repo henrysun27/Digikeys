@@ -46,10 +46,14 @@ export const CONFIG = {
     minCornerCross: 0.002,
   },
   // Mic onset detection (runs in the audio worklet). Levels are block RMS, 0-1.
+  // Low enough for light fingertip contact: in hybrid mode the finger-motion gate, not the
+  // level, rejects other sounds.
   onset: {
-    thresholdRatio: 4, // level must exceed floor * this (~12 dB)
-    minLevel: 0.002, // absolute minimum threshold (~-54 dBFS)
-    riseRatio: 3, // level must jump this much over the mean of the last riseLookbackMs
+    thresholdDb: 5, // level must exceed the floor by this
+    minLevelDb: -66, // absolute minimum threshold, dBFS
+    // Level must jump this much over the mean of the last riseLookbackMs. Kept at
+    // thresholdDb: from a quiet floor a larger rise would be the real threshold.
+    riseDb: 5,
     riseLookbackMs: 12,
     floorFallMs: 150, // floor time constant when the level drops below it
     floorRiseMs: 2000, // ...and when it rises above it
@@ -69,6 +73,10 @@ export const CONFIG = {
   },
   // Fusing onsets with fingertip motion.
   taps: {
+    // "hybrid": mic onsets, kept only if an allowed finger is moving down or just stopped
+    // on the board. "vision": a down-stroke that stops on the board is the tap, no mic.
+    // The toolbar toggle switches it.
+    mode: "hybrid" as "hybrid" | "vision",
     // Finger frames are detected this long after the onset of the same moment. Tune it by
     // adding the debug panel's median stop offset.
     videoLagMs: 50,
@@ -87,6 +95,15 @@ export const CONFIG = {
     flashMs: 300,
     logSize: 8,
     dotTaps: 30, // taps with a target whose guess/check positions are drawn on the board
+  },
+  // Down-strokes for the hybrid gate, vision-only taps and missed-tap logging. Speed is
+  // well below taps.minDownSpeed so light, slow contact counts (a 7 mm press over ~130 ms
+  // is ~0.12 frame heights/s); minTravel is what keeps landmark jitter out.
+  motion: {
+    minDownSpeed: 0.1, // frame heights/s
+    minTravel: 0.01, // frame heights a stroke must descend
+    missWindowMs: 150, // test mode: a stop with no accepted onset within this is a miss
+    keepMs: 2000, // how long onset times and mic levels are kept for miss checks
   },
   // "Calibrate taps": an offset in board coords, fitted separately for guess and check
   // positions.

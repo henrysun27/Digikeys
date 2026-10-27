@@ -25,6 +25,10 @@
         <select id="layout" aria-label="Instrument"></select>
         <input id="instrument" type="text" aria-label="Instrument to generate" spellcheck="false" />
         <button id="generate" type="button">Generate</button>
+        <select id="tap-mode" aria-label="What triggers a tap">
+          <option value="hybrid">Mic + motion</option>
+          <option value="vision">Vision only</option>
+        </select>
         <select id="fingers" aria-label="Fingers that can tap">
           <option value="index">Index fingers only</option>
           <option value="all">All fingers</option>
@@ -60,6 +64,8 @@
           <dd id="tap-latency">–</dd>
           <dt>Median tap → sound</dt>
           <dd id="median-latency">–</dd>
+          <dt>Vision tap → sound</dt>
+          <dd id="vision-latency">–</dd>
           <dt>Stop offset</dt>
           <dd id="stop-offset">–</dd>
           <dt>Median stop</dt>

@@ -9,7 +9,8 @@ export type Onset = {
   level: number;
   threshold: number;
 };
-export type MicLevel = { level: number; floor: number; threshold: number };
+// time: performance.now() ms of the report; level is the peak since the previous one.
+export type MicLevel = { time: number; level: number; floor: number; threshold: number };
 export type MicInfo = {
   outputRawMs: number; // baseLatency + outputLatency as reported
   outputMs: number; // the clamped correction actually applied
@@ -87,7 +88,7 @@ export async function startMic(ctx: AudioContext, h: MicHandlers) {
     const receivedAt = performance.now();
     const msg = e.data;
     if (msg.type === "level") {
-      h.onLevel(msg);
+      h.onLevel({ ...msg, time: toPerf(msg.time).time });
       return;
     }
     const { time, info } = toPerf(msg.time);

@@ -100,7 +100,8 @@ body {
 #sam-actions button,
 #mic,
 #layout,
-#fingers {
+#fingers,
+#tap-mode {
   padding: 6px 12px;
   border: 1px solid rgba(255, 255, 255, 0.4);
   border-radius: 6px;
@@ -126,7 +127,8 @@ body {
 }
 
 #layout option,
-#fingers option {
+#fingers option,
+#tap-mode option {
   background: #222;
 }
 
@@ -136,6 +138,7 @@ body {
 #clear-correction:hover:enabled,
 #layout:hover,
 #fingers:hover,
+#tap-mode:hover,
 #detect:hover:enabled,
 #generate:hover:enabled,
 #sam-actions button:hover:enabled,
