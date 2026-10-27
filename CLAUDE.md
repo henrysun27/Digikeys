@@ -135,3 +135,13 @@ videoLagMs, validation limits.
 Note which features were built during the hackathon, which Meta models are used and where,
 
 and the measured tap-to-sound latency.
+
+
+
+## Known issues
+
+- Two hands in frame destabilize tracking (likely hand order/handedness swaps between
+
+  frames mixing finger histories). Fix after milestone 6: match hands frame-to-frame by
+
+  wrist position, not MediaPipe index or label.
