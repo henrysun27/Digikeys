@@ -2,13 +2,30 @@ import "./style.css";
 import { FilesetResolver, HandLandmarker, type HandLandmarkerResult } from "@mediapipe/tasks-vision";
 import { Calibration, CORNER_NAMES, checkCorners, orderCorners } from "./calibration.ts";
 import { CONFIG } from "./config.ts";
-import { logIgnored, logPlayed, logTest, resolveTap, showLevel, showMicInfo, showTest } from "./debug.ts";
+import {
+  logIgnored,
+  logPlayed,
+  logTest,
+  resolveTap,
+  showCorrections,
+  showLevel,
+  showMicInfo,
+  showTest,
+} from "./debug.ts";
 import { applyH, convexHull, fitQuad, polygonArea, type Pt } from "./geometry.ts";
 import { PRESETS, hitTest, shapeCenter, shapeOutline, type Layout, type Zone } from "./layout.ts";
 import { startMic, type Onset } from "./mic.ts";
 import { maskArea, maskImage, maskOutline, maskPixels, segmentFrame, type SamObject, type Segmentation } from "./sam.ts";
 import { initSound, play } from "./sound.ts";
 import { FINGER_NAMES, FINGERTIPS, FingerHistory, fingerKey, handOf, type Sample } from "./taps.ts";
+import {
+  applyCorrection,
+  loadCorrections,
+  saveCorrections,
+  TapCalibration,
+  type TapCorrections,
+  type TapKind,
+} from "./tap-correction.ts";
 import { TestMode } from "./test-mode.ts";
 
 const video = document.querySelector<HTMLVideoElement>("#video")!;
@@ -17,6 +34,8 @@ const statusEl = document.querySelector<HTMLDivElement>("#status")!;
 const hintEl = document.querySelector<HTMLDivElement>("#hint")!;
 const resetBtn = document.querySelector<HTMLButtonElement>("#reset")!;
 const testBtn = document.querySelector<HTMLButtonElement>("#test")!;
+const calTapsBtn = document.querySelector<HTMLButtonElement>("#cal-taps")!;
+const tapCalStatusEl = document.querySelector<HTMLDivElement>("#tap-cal-status")!;
 const micBtn = document.querySelector<HTMLButtonElement>("#mic")!;
 const layoutSelect = document.querySelector<HTMLSelectElement>("#layout")!;
 const fingersSelect = document.querySelector<HTMLSelectElement>("#fingers")!;
@@ -38,6 +57,11 @@ let tapCount = 0;
 let handsInFrame = 0; // hands in the latest detection
 let lastTap: { hand: string; t: number } | null = null; // onset time, performance.now() ms
 const test = new TestMode();
+let corrections: TapCorrections | null = loadCorrections();
+let tapCal: TapCalibration | null = null;
+// Board-coord tap positions for the last CONFIG.taps.dotTaps taps that had a target.
+type TapDot = { p: Pt; hit: boolean };
+const dots: { guess: TapDot | null; check: TapDot | null }[] = [];
 // A SAM 3.1 surface detection waiting for Accept. The largest match is taken as the playing
 // surface; corners (raw cam coords, click order) are null if no quad could be fitted.
 type Proposal = {
@@ -69,11 +93,14 @@ function setStatus(text: string) {
   statusEl.textContent = text;
 }
 
-// Called whenever calibration changes. Test mode needs a board to put targets on.
+// Called whenever calibration changes. Test mode and tap calibration need a board to put
+// targets on.
 function updateHint() {
   canvas.classList.toggle("calibrating", !calibration.done);
   testBtn.disabled = !calibration.done;
+  calTapsBtn.disabled = !calibration.done;
   if (!calibration.done && test.active) setTesting(false);
+  if (!calibration.done && tapCal) setTapCal(false);
   hintEl.classList.toggle("error", hintError !== null);
   if (calibration.done) {
     hintEl.textContent = "Calibrated. Press Reset corners to redo.";
@@ -98,6 +125,7 @@ canvas.addEventListener("click", (e) => {
 
 resetBtn.addEventListener("click", () => {
   calibration.reset();
+  setCorrections(null);
   setProposal(null);
   samStatusEl.textContent = "";
   hintError = null;
@@ -108,16 +136,20 @@ PRESETS.forEach((preset, i) => layoutSelect.add(new Option(preset.instrument, St
 layoutSelect.addEventListener("change", () => {
   layout = PRESETS[Number(layoutSelect.value)];
   flashes.clear();
+  if (tapCal) setTapCal(false);
   if (test.active) {
     test.next(layout);
     updateTest();
   }
 });
 
-// The finger toggle writes CONFIG.fingers.allowed; its option label names the setting
-// that test scores are kept under.
+// The finger toggle writes CONFIG.fingers.allowed. Test scores are kept per finger setting
+// and tap correction, so accuracy before and after calibrating taps shows side by side.
 const FINGER_SETS: Record<string, string[]> = { index: ["index"], all: FINGER_NAMES };
-const fingerSetting = () => fingersSelect.selectedOptions[0].text;
+const fingerSetting = () => {
+  const fit = corrections ? `tap correction ${new Date(corrections.fittedAt).toLocaleTimeString()}` : "no tap correction";
+  return `${fingersSelect.selectedOptions[0].text}, ${fit}`;
+};
 fingersSelect.value = CONFIG.fingers.allowed.length === 1 && CONFIG.fingers.allowed[0] === "index" ? "index" : "all";
 fingersSelect.addEventListener("change", () => {
   CONFIG.fingers.allowed = FINGER_SETS[fingersSelect.value];
@@ -129,14 +161,62 @@ function updateTest() {
 }
 
 function setTesting(on: boolean) {
-  if (on) test.start(layout);
-  else test.stop();
+  if (on) {
+    setTapCal(false);
+    test.start(layout);
+  } else test.stop();
   testBtn.textContent = on ? "Stop test" : "Test";
   testBtn.classList.toggle("on", on);
   updateTest();
 }
 
 testBtn.addEventListener("click", () => setTesting(!test.active));
+
+// Corrections belong to the board they were fitted on: new corners clear them.
+function setCorrections(c: TapCorrections | null) {
+  corrections = c;
+  saveCorrections(c);
+  dots.length = 0;
+  showCorrections(c);
+  updateTest();
+}
+
+// While calibrating taps, positions are used raw so the new fit doesn't stack on the old.
+function setTapCal(on: boolean) {
+  if (on) setTesting(false);
+  tapCal = on ? new TapCalibration(layout) : null;
+  calTapsBtn.textContent = on ? "Cancel tap calibration" : "Calibrate taps";
+  calTapsBtn.classList.toggle("on", on);
+  updateTapCalStatus();
+}
+
+function updateTapCalStatus(done?: string) {
+  const zone = tapCal?.zone;
+  tapCalStatusEl.textContent = zone
+    ? `Calibrating taps: tap the center of ${zone.label} with an index finger (${tapCal!.progress}).`
+    : tapCal
+      ? "Calibrating taps: fitting…"
+      : (done ?? "");
+}
+
+function finishTapCal() {
+  const fit = tapCal!.fit();
+  setTapCal(false);
+  const describe = (kind: TapKind) => {
+    const c = fit[kind];
+    return c
+      ? `${kind} rms ${c.rmsBefore.toFixed(3)} → ${c.rmsAfter.toFixed(3)} (${c.pairs} taps)`
+      : `${kind} not fitted (too few taps)`;
+  };
+  if (!fit.guess && !fit.check) {
+    updateTapCalStatus(`Tap calibration failed: ${describe("guess")}, ${describe("check")}.`);
+    return;
+  }
+  setCorrections(fit);
+  updateTapCalStatus(`Tap correction saved: ${describe("guess")}; ${describe("check")}.`);
+}
+
+calTapsBtn.addEventListener("click", () => setTapCal(!tapCal));
 
 // Playing-surface corners from a SAM mask: convex hull, then the enclosing quad, in click
 // order. fit is quad area / mask area (1 = the mask is exactly a quadrilateral).
@@ -223,6 +303,7 @@ acceptBtn.addEventListener("click", () => {
     samStatusEl.textContent = `Can't use these corners: ${problem}. Retry, or click the corners.`;
     return;
   }
+  setCorrections(null);
   setProposal(null);
   samStatusEl.textContent = "Using the corners from SAM 3.1.";
   hintError = null;
@@ -249,8 +330,16 @@ micBtn.addEventListener("click", async () => {
   }
 });
 
-function zoneAt(p: Pt): Zone | null {
-  return calibration.camToBoard ? hitTest(layout, applyH(calibration.camToBoard, p)) : null;
+// A guess or check position (cam coords) on the board, with its tap correction applied.
+function tapPoint(kind: TapKind, cam: Pt): Pt | null {
+  if (!calibration.camToBoard) return null;
+  const raw = applyH(calibration.camToBoard, cam);
+  return tapCal ? raw : applyCorrection(corrections?.[kind] ?? null, raw);
+}
+
+function pushDot(dot: (typeof dots)[number]) {
+  dots.push(dot);
+  while (dots.length > CONFIG.taps.dotTaps) dots.shift();
 }
 
 function onBoard(p: Sample): boolean {
@@ -268,7 +357,8 @@ function setLastTap(finger: string, t: number) {
 // Plays right away from the best-guess finger. The finger frames for the moment of the
 // onset arrive videoLagMs later and the stop may be up to stopToleranceMs after that, so
 // the tap is checked against the stopped finger once those frames are in. In test mode
-// both are scored against the target shown at the onset, and the next target appears.
+// both are scored against the target shown at the onset, and the next target appears;
+// in tap calibration both positions are recorded against the zone being calibrated.
 function onOnset(onset: Onset) {
   const n = ++tapCount;
   if (handsInFrame === 0) {
@@ -278,7 +368,8 @@ function onOnset(onset: Onset) {
   const { videoLagMs, stopToleranceMs, settleMarginMs, flashMs } = CONFIG.taps;
   const recent = lastTap && onset.time - lastTap.t <= CONFIG.guess.lastHandMs;
   const guess = history.guess(onset.time, { onBoard, lastHand: recent ? lastTap!.hand : null });
-  const zone = guess ? zoneAt(guess.at) : null;
+  const guessAt = guess ? tapPoint("guess", guess.at) : null;
+  const zone = guessAt ? hitTest(layout, guessAt) : null;
   const latencyMs = zone ? play(zone.sound, onset.ctxTime) : null;
   const handlerMs = performance.now() - onset.receivedAt;
   if (guess) setLastTap(guess.finger, onset.time);
@@ -291,25 +382,44 @@ function onOnset(onset: Onset) {
     waitMs: onset.receivedAt - onset.time,
     handlerMs,
   });
-  const target = test.active ? test.target : null;
   const setting = fingerSetting();
-  if (target) {
+  // Taps after the last calibration zone (while its checks resolve) count for nothing.
+  const calTarget = tapCal?.take() ?? null;
+  const cal = calTarget ? tapCal : null;
+  const testTarget = !tapCal && test.active ? test.target : null;
+  const target = calTarget ?? testTarget;
+  if (testTarget) {
     test.next(layout);
     updateTest();
+  }
+  if (cal) {
+    cal.add("guess", target!, guessAt);
+    updateTapCalStatus();
+  }
+  const dot: (typeof dots)[number] = { guess: null, check: null };
+  if (target) {
+    if (guessAt) dot.guess = { p: guessAt, hit: zone?.id === target.id };
+    pushDot(dot);
   }
 
   const resolveAt = onset.time + videoLagMs + stopToleranceMs + settleMarginMs;
   setTimeout(() => {
     const pick = history.resolve(onset.time);
-    const checkZone = pick ? zoneAt(pick.at) : null;
+    const checkAt = pick ? tapPoint("check", pick.at) : null;
+    const checkZone = checkAt ? hitTest(layout, checkAt) : null;
     if (pick) setLastTap(pick.finger, onset.time);
     resolveTap(line, guess?.finger ?? null, {
       finger: pick?.finger ?? null,
       zone: checkZone?.label ?? null,
       stopOffset: pick?.stopOffset ?? null,
     });
-    if (target) {
-      logTest(line, target.label, test.record(setting, target, zone, checkZone));
+    if (target && checkAt) dot.check = { p: checkAt, hit: checkZone?.id === target.id };
+    if (cal) {
+      cal.add("check", target!, checkAt);
+      cal.settle();
+      if (cal === tapCal && cal.finished) finishTapCal();
+    } else if (testTarget) {
+      logTest(line, testTarget.label, test.record(setting, testTarget, zone, checkZone));
       updateTest();
     }
   }, Math.max(0, resolveAt - performance.now()));
@@ -350,13 +460,15 @@ async function createLandmarker() {
   });
 }
 
+// Fingertips are hit-tested like a stopped finger, through the check correction.
 function zonesUnderFingertips(result: HandLandmarkerResult | null): Set<string> {
   const hits = new Set<string>();
-  if (!result || !calibration.camToBoard) return hits;
+  if (!result) return hits;
   for (const hand of result.landmarks) {
     FINGERTIPS.forEach((i, f) => {
       if (!CONFIG.fingers.allowed.includes(FINGER_NAMES[f])) return;
-      const zone = hitTest(layout, applyH(calibration.camToBoard!, hand[i]));
+      const p = tapPoint("check", hand[i]);
+      const zone = p ? hitTest(layout, p) : null;
       if (zone) hits.add(zone.id);
     });
   }
@@ -381,7 +493,7 @@ function drawLayout(active: Set<string>, now: number) {
       ctx.fillStyle = `rgba(0, 220, 255, ${(0.85 * flashLeft) / CONFIG.taps.flashMs})`;
       ctx.fill();
     }
-    const isTarget = zone.id === test.target?.id;
+    const isTarget = zone.id === (tapCal ? tapCal.zone : test.target)?.id;
     if (isTarget) {
       ctx.fillStyle = "rgba(0, 230, 118, 0.35)";
       ctx.fill();
@@ -390,6 +502,45 @@ function drawLayout(active: Set<string>, now: number) {
     ctx.lineWidth = isTarget ? 5 : 2;
     ctx.stroke();
     drawLabel(zone, outline);
+  }
+  if (tapCal?.zone) drawCrosshair(boardToScreen(shapeCenter(tapCal.zone.shape)));
+}
+
+// The point to tap during tap calibration.
+function drawCrosshair(c: Pt) {
+  ctx.strokeStyle = "#00e676";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(c.x - 14, c.y);
+  ctx.lineTo(c.x + 14, c.y);
+  ctx.moveTo(c.x, c.y - 14);
+  ctx.lineTo(c.x, c.y + 14);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, 8, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
+// Guess positions as filled dots, check positions as rings; green hit the target, red
+// missed. Positions outside the board are drawn where they fell.
+function drawDots() {
+  if (!calibration.done) return;
+  for (const { guess, check } of dots) {
+    for (const [d, filled] of [[guess, true], [check, false]] as const) {
+      if (!d) continue;
+      const s = boardToScreen(d.p);
+      const color = d.hit ? "#00e676" : "#ff3b6b";
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, filled ? 4 : 6, 0, Math.PI * 2);
+      if (filled) {
+        ctx.fillStyle = color;
+        ctx.fill();
+      } else {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+    }
   }
 }
 
@@ -492,6 +643,7 @@ function loop(landmarker: HandLandmarker) {
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     drawLayout(zonesUnderFingertips(result), now);
+    drawDots();
     drawCorners(calibration.corners, calibration.done, "#ffd400");
     drawProposal();
     if (result) drawHands(result);
@@ -509,6 +661,8 @@ function loop(landmarker: HandLandmarker) {
 
 async function main() {
   calibration.load();
+  // A saved tap correction without the board it was fitted on is stale.
+  setCorrections(calibration.done ? corrections : null);
   try {
     setStatus("Starting camera…");
     await startCamera();

@@ -65,6 +65,13 @@ All code in this repo was written during the hackathon.
       the check. Test accuracy is kept separately per setting. The debug panel splits
       tap-to-sound into the main-thread wait for the onset message and the guess+trigger
       time.
+- [x] Tap calibration: the last 30 targeted taps are drawn on the board (guess = dot,
+      check = ring; green hit the target, red missed). "Calibrate taps" walks through each
+      zone's center, 3 taps each, and fits a per-axis scale + offset in board coords by
+      least squares, separately for guess and check positions. The fit is saved in
+      localStorage, cleared when the corners change, and applied to hit-testing. Test
+      scores are kept per finger setting and tap correction, so accuracy before and after
+      shows side by side.
 
 ## Meta models
 

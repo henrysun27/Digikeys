@@ -65,7 +65,8 @@ body {
 
 #status,
 #hint,
-#sam-status {
+#sam-status,
+#tap-cal-status {
   padding: 6px 10px;
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.6);
@@ -77,7 +78,8 @@ body {
 }
 
 #hint:empty,
-#sam-status:empty {
+#sam-status:empty,
+#tap-cal-status:empty {
   display: none;
 }
 
@@ -87,6 +89,7 @@ body {
 
 #reset,
 #test,
+#cal-taps,
 #sam-prompt,
 #detect,
 #sam-actions button,
@@ -123,6 +126,7 @@ body {
 
 #reset:hover,
 #test:hover:enabled,
+#cal-taps:hover:enabled,
 #layout:hover,
 #fingers:hover,
 #detect:hover:enabled,
@@ -131,11 +135,13 @@ body {
   background: rgba(40, 40, 40, 0.8);
 }
 
-#test.on {
+#test.on,
+#cal-taps.on {
   border-color: #00e676;
 }
 
-#test:disabled {
+#test:disabled,
+#cal-taps:disabled {
   cursor: default;
   opacity: 0.5;
 }

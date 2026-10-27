@@ -1,5 +1,6 @@
 import { CONFIG } from "./config.ts";
 import type { MicInfo, MicLevel } from "./mic.ts";
+import type { Correction, TapCorrections } from "./tap-correction.ts";
 import type { TestScore } from "./test-mode.ts";
 
 const el = (id: string) => document.querySelector<HTMLElement>(`#${id}`)!;
@@ -16,6 +17,7 @@ const medianOffsetEl = el("median-offset");
 const audioLatencyEl = el("audio-latency");
 const outputLatencyEl = el("output-latency");
 const testStatsEl = el("test-stats");
+const tapCorrectionEl = el("tap-correction");
 const logEl = el("tap-log");
 const recentOffsets: number[] = [];
 const recentLatencies: number[] = [];
@@ -123,6 +125,16 @@ export function showTest(target: string | null, setting: string, scores: Map<str
     lines.unshift(tap);
   }
   testStatsEl.replaceChildren(...lines);
+}
+
+// Board coords: x' = x * scale + offset per axis.
+export function showCorrections(c: TapCorrections | null) {
+  const signed = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(3)}`;
+  const fmt = (name: string, k: Correction | null) =>
+    k
+      ? `${name} x×${k.x.scale.toFixed(2)}${signed(k.x.offset)} y×${k.y.scale.toFixed(2)}${signed(k.y.offset)}`
+      : `${name} off`;
+  tapCorrectionEl.textContent = c ? `${fmt("guess", c.guess)} · ${fmt("check", c.check)}` : "none";
 }
 
 export function logTest(line: HTMLLIElement, target: string, hit: { guess: boolean; check: boolean }) {

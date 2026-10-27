@@ -59,6 +59,16 @@ export const CONFIG = {
     stopSpeedRatio: 0.3, // stopped once speed falls below this fraction of the peak
     flashMs: 300,
     logSize: 8,
+    dotTaps: 30, // taps with a target whose guess/check positions are drawn on the board
+  },
+  // "Calibrate taps": per-axis scale + offset in board coords, fitted separately for
+  // guess and check positions.
+  tapCalibration: {
+    storageKey: "desk-instrument.tap-correction",
+    tapsPerZone: 3,
+    minPairs: 6, // fewer usable taps than this leaves that correction off
+    minScale: 0.5, // a fitted scale outside minScale..maxScale falls back to offset only
+    maxScale: 2,
   },
   // Which fingers (FINGER_NAMES) are tap candidates, for both the guess and the check.
   // The toolbar toggle switches this between ["index"] and all fingers.
