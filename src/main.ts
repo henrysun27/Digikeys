@@ -9,6 +9,7 @@ import {
   showCamera,
   showCorrections,
   showDetection,
+  showProbe,
   showDropouts,
   showLevel,
   showMicInfo,
@@ -16,7 +17,7 @@ import {
 } from "./debug.ts";
 import { applyH, convexHull, fitQuad, polygonArea, type Pt } from "./geometry.ts";
 import { HAND_CONNECTIONS, HandTracking, type TrackedHand } from "./hand-tracking.ts";
-import type { FromWorker, HandFrame, ToWorker } from "./hand-worker.ts";
+import type { FromWorker, HandFrame, ToWorker, WorkerInfo } from "./hand-worker.ts";
 import { PRESETS, hitTest, shapeCenter, shapeOutline, type Layout, type Zone } from "./layout.ts";
 import { startMic, type Onset } from "./mic.ts";
 import { maskArea, maskImage, maskOutline, maskPixels, segmentFrame, type SamObject, type Segmentation } from "./sam.ts";
@@ -41,6 +42,7 @@ const testBtn = document.querySelector<HTMLButtonElement>("#test")!;
 const calTapsBtn = document.querySelector<HTMLButtonElement>("#cal-taps")!;
 const clearCorrectionBtn = document.querySelector<HTMLButtonElement>("#clear-correction")!;
 const resetStatsBtn = document.querySelector<HTMLButtonElement>("#reset-stats")!;
+const probeBtn = document.querySelector<HTMLButtonElement>("#probe-camera")!;
 const tapCalStatusEl = document.querySelector<HTMLDivElement>("#tap-cal-status")!;
 const micBtn = document.querySelector<HTMLButtonElement>("#mic")!;
 const layoutSelect = document.querySelector<HTMLSelectElement>("#layout")!;
@@ -498,10 +500,12 @@ function countDropouts(hands: TrackedHand[], lost: Pt[]) {
 }
 
 type CameraMode = { width: number; height: number; frameRate: number };
-export type CameraProbe = { asked: CameraMode; settings: MediaTrackSettings; fps: number; used: boolean };
-export type CameraInfo = { asked: CameraMode; settings: MediaTrackSettings; probe: CameraProbe | null };
+export type CameraInfo = { asked: CameraMode; settings: MediaTrackSettings };
+export type CameraProbe = CameraInfo & { fps: number };
+let camera: CameraInfo | null = null;
 
 async function openCamera(mode: CameraMode): Promise<MediaStream> {
+  (video.srcObject as MediaStream | null)?.getTracks().forEach((t) => t.stop());
   const stream = await navigator.mediaDevices.getUserMedia({
     video: { width: { ideal: mode.width }, height: { ideal: mode.height }, frameRate: { ideal: mode.frameRate } },
     audio: false,
@@ -526,34 +530,42 @@ function measureFps(ms: number): Promise<number> {
   });
 }
 
-// Tries the fast mode first and keeps it if it really delivers more than fastMinFps;
-// otherwise reopens in the fallback mode.
 async function startCamera(): Promise<CameraInfo> {
-  const { tryFast, fast, fallback, fastMinFps, probeMs } = CONFIG.camera;
-  let probe: CameraProbe | null = null;
-  let stream: MediaStream | null = null;
-  let asked = fallback;
-  if (tryFast) {
-    stream = await openCamera(fast);
-    const fps = await measureFps(probeMs);
-    probe = { asked: fast, settings: stream.getVideoTracks()[0].getSettings(), fps, used: fps > fastMinFps };
-    if (probe.used) asked = fast;
-    else {
-      stream.getTracks().forEach((t) => t.stop());
-      stream = null;
-    }
-  }
-  stream ??= await openCamera(fallback);
+  const asked = CONFIG.camera.mode;
+  const stream = await openCamera(asked);
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
-  return { asked, settings: stream.getVideoTracks()[0].getSettings(), probe };
+  return { asked, settings: stream.getVideoTracks()[0].getSettings() };
 }
 
-function startWorker(): Promise<Worker> {
+// Debug: what the probe mode really delivers once settled, then back to the normal mode.
+// Taps during the probe see the other mode's framing.
+probeBtn.addEventListener("click", async () => {
+  const { probe, probeWarmupMs, probeMs } = CONFIG.camera;
+  probeBtn.disabled = true;
+  showProbe("running");
+  try {
+    const stream = await openCamera(probe);
+    await new Promise((r) => setTimeout(r, probeWarmupMs));
+    const fps = await measureFps(probeMs);
+    showProbe({ asked: probe, settings: stream.getVideoTracks()[0].getSettings(), fps });
+  } catch (err) {
+    showProbe(err instanceof Error ? err.message : String(err));
+  } finally {
+    try {
+      camera = await startCamera();
+    } catch (err) {
+      setStatus(`Camera error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    probeBtn.disabled = false;
+  }
+});
+
+function startWorker(): Promise<{ worker: Worker; info: WorkerInfo }> {
   const worker = new Worker(new URL("./hand-worker.ts", import.meta.url), { type: "module" });
   return new Promise((resolve, reject) => {
     worker.onmessage = (e: MessageEvent<FromWorker>) => {
-      if (e.data.type === "ready") resolve(worker);
+      if (e.data.type === "ready") resolve({ worker, info: e.data });
       else if (e.data.type === "error") reject(new Error(`hand worker: ${e.data.message}`));
     };
     worker.onerror = (e) => reject(new Error(`hand worker: ${e.message}`));
@@ -725,7 +737,7 @@ function drawHands(hands: TrackedHand[]) {
 // transferred there, one at a time: frames arriving while the worker is busy are skipped.
 // A frame's time is when it was grabbed, so finger samples are stamped as before. The main
 // thread only draws, hit-tests and handles onsets, so those never queue behind detection.
-function loop(worker: Worker, camera: CameraInfo) {
+function loop(worker: Worker, info: WorkerInfo) {
   let hands: TrackedHand[] = [];
   let busy = false;
   let videoFrames = 0;
@@ -787,8 +799,8 @@ function loop(worker: Worker, camera: CameraInfo) {
       const secs = (now - fpsStart) / 1000;
       const fps = videoFrames / secs;
       setStatus(`${hands.length} hand(s) · ${fps.toFixed(0)} fps`);
-      showCamera(camera, fps);
-      showDetection(detections / secs, detections ? detectMs / detections : null);
+      if (camera) showCamera(camera, fps);
+      showDetection(info, detections / secs, detections ? detectMs / detections : null);
       showDropouts(dropouts);
       videoFrames = detections = detectMs = 0;
       fpsStart = now;
@@ -802,14 +814,15 @@ async function main() {
   try {
     setStatus("Starting camera and hand model…");
     const worker = startWorker();
-    const camera = await startCamera();
+    camera = await startCamera();
     showCamera(camera, null);
     calibration.load(`${video.videoWidth}x${video.videoHeight}`);
     // A saved tap correction without the board it was fitted on is stale.
     setCorrections(calibration.done ? corrections : null);
     updateHint();
     setStatus("Loading hand model…");
-    loop(await worker, camera);
+    const { worker: w, info } = await worker;
+    loop(w, info);
     setStatus("Running");
   } catch (err) {
     console.error(err);

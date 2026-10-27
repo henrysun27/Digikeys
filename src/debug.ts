@@ -1,5 +1,6 @@
 import { CONFIG } from "./config.ts";
-import type { CameraInfo } from "./main.ts";
+import type { WorkerInfo } from "./hand-worker.ts";
+import type { CameraInfo, CameraProbe } from "./main.ts";
 import type { MicInfo, MicLevel } from "./mic.ts";
 import type { Correction, TapCorrections } from "./tap-correction.ts";
 import type { TestScore } from "./test-mode.ts";
@@ -137,22 +138,32 @@ export function showTest(target: string | null, setting: string, scores: Map<str
 const fmtMode = (s: MediaTrackSettings) =>
   `${s.width ?? "?"}×${s.height ?? "?"} @ ${s.frameRate ? s.frameRate.toFixed(0) : "?"} fps`;
 
-// The mode in use vs what was asked for, and how the fast-mode probe went. measuredFps
-// counts new video frames (null until the first second has passed).
+const fmtAsked = (m: CameraInfo["asked"]) => `${m.width}×${m.height} @ ${m.frameRate}`;
+
+// The mode in use vs what was asked for. measuredFps counts new video frames (null until
+// the first second has passed).
 export function showCamera(c: CameraInfo, measuredFps: number | null) {
-  const { width, height, frameRate } = c.asked;
   const measured = measuredFps === null ? "" : `, measured ${measuredFps.toFixed(0)}`;
-  cameraEl.textContent = `${fmtMode(c.settings)}${measured} (asked ${width}×${height} @ ${frameRate})`;
-  const p = c.probe;
-  probeEl.textContent = p
-    ? `asked ${p.asked.width}×${p.asked.height} @ ${p.asked.frameRate}, got ${fmtMode(p.settings)}, ` +
-      `measured ${p.fps.toFixed(0)} fps: ${p.used ? "used" : `not used (needs > ${CONFIG.camera.fastMinFps})`}`
-    : "off";
+  cameraEl.textContent = `${fmtMode(c.settings)}${measured} (asked ${fmtAsked(c.asked)})`;
 }
 
-// Hand detection in the worker: results per second and mean detect time.
-export function showDetection(perSec: number, meanMs: number | null) {
-  detectionEl.textContent = `${perSec.toFixed(0)}/s, ${meanMs === null ? "–" : meanMs.toFixed(1)} ms each (worker)`;
+// The Probe button's result: running, an error message, or what the probe mode delivered.
+export function showProbe(p: CameraProbe | "running" | string) {
+  probeEl.textContent =
+    p === "running"
+      ? "probing…"
+      : typeof p === "string"
+        ? `failed: ${p}`
+        : `asked ${fmtAsked(p.asked)}, got ${fmtMode(p.settings)}, measured ${p.fps.toFixed(0)} fps`;
+}
+
+// Hand detection in the worker: delegate and WebGL renderer, results per second and mean
+// detect time.
+export function showDetection(info: WorkerInfo, perSec: number, meanMs: number | null) {
+  const delegate = info.gpuError ? `CPU (GPU failed: ${info.gpuError})` : info.delegate;
+  detectionEl.textContent =
+    `${delegate} on ${info.renderer} · ${perSec.toFixed(0)}/s, ` +
+    `${meanMs === null ? "–" : meanMs.toFixed(1)} ms each (worker)`;
 }
 
 export type Dropouts = { lost: number[]; frames: number[]; offLost: number; offFrames: number };

@@ -197,7 +197,8 @@ body {
   display: none;
 }
 
-#reset-stats {
+#reset-stats,
+#probe-camera {
   flex: none;
   padding: 2px 8px;
   border: 1px solid rgba(255, 255, 255, 0.4);
@@ -209,7 +210,8 @@ body {
   cursor: pointer;
 }
 
-#reset-stats:hover {
+#reset-stats:hover,
+#probe-camera:hover:enabled {
   background: rgba(40, 40, 40, 0.8);
 }
 
