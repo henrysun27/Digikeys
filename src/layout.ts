@@ -31,8 +31,9 @@ const whiteKeys = (octave: number): Cell[] =>
 
 const pad = (sample: string, label: string): Cell => ({ id: sample, label, sound: { type: "drum", sample } });
 
-// 2x7 white keys: the higher octave on the top row.
-export const PIANO_LAYOUT: Layout = grid("piano", [whiteKeys(5), whiteKeys(4)]);
+// One row of 8 white keys, C4 to C5, each the full depth of the board: a single row
+// leaves no front/back zone confusion.
+export const PIANO_LAYOUT: Layout = grid("piano", [[...whiteKeys(4), whiteKeys(5)[0]]]);
 
 export const DRUM_LAYOUT: Layout = grid("drums", [
   [pad("hihat", "Hi-hat"), pad("tom1", "Tom 1"), pad("tom2", "Tom 2")],

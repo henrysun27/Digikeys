@@ -127,13 +127,11 @@ export function showTest(target: string | null, setting: string, scores: Map<str
   testStatsEl.replaceChildren(...lines);
 }
 
-// Board coords: x' = x * scale + offset per axis.
+// Offsets in board coords.
 export function showCorrections(c: TapCorrections | null) {
   const signed = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(3)}`;
   const fmt = (name: string, k: Correction | null) =>
-    k
-      ? `${name} x×${k.x.scale.toFixed(2)}${signed(k.x.offset)} y×${k.y.scale.toFixed(2)}${signed(k.y.offset)}`
-      : `${name} off`;
+    k ? `${name} dx ${signed(k.dx)} dy ${signed(k.dy)}` : `${name} off`;
   tapCorrectionEl.textContent = c ? `${fmt("guess", c.guess)} · ${fmt("check", c.check)}` : "none";
 }
 

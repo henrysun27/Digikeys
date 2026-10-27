@@ -35,6 +35,7 @@ const hintEl = document.querySelector<HTMLDivElement>("#hint")!;
 const resetBtn = document.querySelector<HTMLButtonElement>("#reset")!;
 const testBtn = document.querySelector<HTMLButtonElement>("#test")!;
 const calTapsBtn = document.querySelector<HTMLButtonElement>("#cal-taps")!;
+const clearCorrectionBtn = document.querySelector<HTMLButtonElement>("#clear-correction")!;
 const tapCalStatusEl = document.querySelector<HTMLDivElement>("#tap-cal-status")!;
 const micBtn = document.querySelector<HTMLButtonElement>("#mic")!;
 const layoutSelect = document.querySelector<HTMLSelectElement>("#layout")!;
@@ -176,6 +177,7 @@ testBtn.addEventListener("click", () => setTesting(!test.active));
 function setCorrections(c: TapCorrections | null) {
   corrections = c;
   saveCorrections(c);
+  clearCorrectionBtn.disabled = c === null;
   dots.length = 0;
   showCorrections(c);
   updateTest();
@@ -199,24 +201,28 @@ function updateTapCalStatus(done?: string) {
       : (done ?? "");
 }
 
+// The new calibration replaces any old correction, even when neither fit is good enough
+// to use: it was measured on raw positions, so it's the latest word on the bias.
 function finishTapCal() {
   const fit = tapCal!.fit();
   setTapCal(false);
   const describe = (kind: TapKind) => {
-    const c = fit[kind];
-    return c
-      ? `${kind} rms ${c.rmsBefore.toFixed(3)} → ${c.rmsAfter.toFixed(3)} (${c.pairs} taps)`
-      : `${kind} not fitted (too few taps)`;
+    const r = fit[kind];
+    const rms = Number.isFinite(r.rmsBefore) ? ` rms ${r.rmsBefore.toFixed(3)} → ${r.rmsAfter.toFixed(3)}` : "";
+    return `${kind}${rms} (${r.pairs} taps)${r.why ? `, not applied: ${r.why}` : ", applied"}`;
   };
-  if (!fit.guess && !fit.check) {
-    updateTapCalStatus(`Tap calibration failed: ${describe("guess")}, ${describe("check")}.`);
-    return;
-  }
-  setCorrections(fit);
-  updateTapCalStatus(`Tap correction saved: ${describe("guess")}; ${describe("check")}.`);
+  const guess = fit.guess.correction;
+  const check = fit.check.correction;
+  setCorrections(guess || check ? { guess, check, fittedAt: Date.now() } : null);
+  const what = guess || check ? "Tap correction saved" : "No tap correction";
+  updateTapCalStatus(`${what}: ${describe("guess")}; ${describe("check")}.`);
 }
 
 calTapsBtn.addEventListener("click", () => setTapCal(!tapCal));
+clearCorrectionBtn.addEventListener("click", () => {
+  setCorrections(null);
+  updateTapCalStatus("Tap correction cleared.");
+});
 
 // Playing-surface corners from a SAM mask: convex hull, then the enclosing quad, in click
 // order. fit is quad area / mask area (1 = the mask is exactly a quadrilateral).

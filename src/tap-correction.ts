@@ -2,35 +2,25 @@ import { CONFIG } from "./config.ts";
 import type { Pt } from "./geometry.ts";
 import { shapeCenter, type Layout, type Zone } from "./layout.ts";
 
-// Per-axis correction in board coords: corrected = raw * scale + offset. Fitted by least
-// squares from calibration taps (raw tap position vs the zone center aimed at), separately
-// for guess and check positions, since they come from different frames of the tap.
-export type AxisFit = { scale: number; offset: number };
-export type Correction = { x: AxisFit; y: AxisFit; pairs: number; rmsBefore: number; rmsAfter: number };
+// Offset correction in board coords: corrected = raw + (dx, dy), the mean of (zone center
+// aimed at - raw tap position) over calibration taps, fitted separately for guess and
+// check positions since they come from different frames of the tap. Used only if it cuts
+// the rms error by more than minImprovement; otherwise the taps are noise, not bias.
+export type Correction = { dx: number; dy: number };
 export type TapCorrections = { guess: Correction | null; check: Correction | null; fittedAt: number };
 export type TapKind = "guess" | "check";
+// correction null: too few taps, or too little improvement (why says which).
+export type FitReport = {
+  pairs: number;
+  rmsBefore: number;
+  rmsAfter: number;
+  correction: Correction | null;
+  why: string | null;
+};
 type Pair = { raw: Pt; target: Pt };
 
 export function applyCorrection(c: Correction | null, p: Pt): Pt {
-  return c ? { x: p.x * c.x.scale + c.x.offset, y: p.y * c.y.scale + c.y.offset } : p;
-}
-
-// Falls back to offset only if the fitted scale is outside minScale..maxScale (too little
-// spread in the taps to trust it).
-function fitAxis(raw: number[], target: number[]): AxisFit {
-  const { minScale, maxScale } = CONFIG.tapCalibration;
-  const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
-  const mr = mean(raw);
-  const mt = mean(target);
-  let sxy = 0;
-  let sxx = 0;
-  raw.forEach((r, i) => {
-    sxy += (r - mr) * (target[i] - mt);
-    sxx += (r - mr) ** 2;
-  });
-  const scale = sxx > 1e-9 ? sxy / sxx : NaN;
-  if (!(scale >= minScale && scale <= maxScale)) return { scale: 1, offset: mt - mr };
-  return { scale, offset: mt - scale * mr };
+  return c ? { x: p.x + c.dx, y: p.y + c.dy } : p;
 }
 
 function rms(pairs: Pair[], c: Correction | null): number {
@@ -41,24 +31,24 @@ function rms(pairs: Pair[], c: Correction | null): number {
   return Math.sqrt(sq.reduce((a, b) => a + b, 0) / sq.length);
 }
 
-// null if there are fewer than minPairs taps to fit.
-export function fitCorrection(pairs: Pair[]): Correction | null {
-  if (pairs.length < CONFIG.tapCalibration.minPairs) return null;
+export function fitCorrection(pairs: Pair[]): FitReport {
+  const { minPairs, minImprovement } = CONFIG.tapCalibration;
+  const n = pairs.length;
+  if (n < minPairs) return { pairs: n, rmsBefore: NaN, rmsAfter: NaN, correction: null, why: "too few taps" };
   const c: Correction = {
-    x: fitAxis(pairs.map((p) => p.raw.x), pairs.map((p) => p.target.x)),
-    y: fitAxis(pairs.map((p) => p.raw.y), pairs.map((p) => p.target.y)),
-    pairs: pairs.length,
-    rmsBefore: rms(pairs, null),
-    rmsAfter: 0,
+    dx: pairs.reduce((a, p) => a + p.target.x - p.raw.x, 0) / n,
+    dy: pairs.reduce((a, p) => a + p.target.y - p.raw.y, 0) / n,
   };
-  c.rmsAfter = rms(pairs, c);
-  return c;
+  const rmsBefore = rms(pairs, null);
+  const rmsAfter = rms(pairs, c);
+  const ok = rmsAfter < rmsBefore * (1 - minImprovement);
+  const why = ok ? null : `rms improved less than ${(minImprovement * 100).toFixed(0)}%`;
+  return { pairs: n, rmsBefore, rmsAfter, correction: ok ? c : null, why };
 }
 
-const isAxis = (a: unknown): a is AxisFit =>
-  typeof a === "object" && a !== null && Number.isFinite((a as AxisFit).scale) && Number.isFinite((a as AxisFit).offset);
 const isCorrection = (c: unknown): c is Correction | null =>
-  c === null || (typeof c === "object" && isAxis((c as Correction).x) && isAxis((c as Correction).y));
+  c === null ||
+  (typeof c === "object" && Number.isFinite((c as Correction).dx) && Number.isFinite((c as Correction).dy));
 
 export function loadCorrections(): TapCorrections | null {
   try {
@@ -125,7 +115,7 @@ export class TapCalibration {
     return this.zone === null && this.pending === 0;
   }
 
-  fit(): TapCorrections {
-    return { guess: fitCorrection(this.pairs.guess), check: fitCorrection(this.pairs.check), fittedAt: Date.now() };
+  fit(): Record<TapKind, FitReport> {
+    return { guess: fitCorrection(this.pairs.guess), check: fitCorrection(this.pairs.check) };
   }
 }

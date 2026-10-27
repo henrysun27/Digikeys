@@ -72,6 +72,11 @@ All code in this repo was written during the hackathon.
       localStorage, cleared when the corners change, and applied to hit-testing. Test
       scores are kept per finger setting and tap correction, so accuracy before and after
       shows side by side.
+- [x] Fixes after testing: the tap correction is offset only (a per-axis scale fit came
+      out degenerate, shrinking taps toward the center) and is applied only if it cuts the
+      rms error by more than 25%; "Clear correction" removes it. The piano is now one row
+      of 8 white keys, C4 to C5, spanning the whole board, since most spatial misses were
+      confusion between the two rows of the old 2x7 layout.
 
 ## Meta models
 
