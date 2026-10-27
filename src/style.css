@@ -86,6 +86,7 @@ body {
 }
 
 #reset,
+#test,
 #sam-prompt,
 #detect,
 #sam-actions button,
@@ -119,11 +120,21 @@ body {
 }
 
 #reset:hover,
+#test:hover:enabled,
 #layout:hover,
 #detect:hover:enabled,
 #sam-actions button:hover:enabled,
 #mic:hover:enabled {
   background: rgba(40, 40, 40, 0.8);
+}
+
+#test.on {
+  border-color: #00e676;
+}
+
+#test:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 
 #accept:enabled {
@@ -160,6 +171,12 @@ body {
   padding: 6px 8px;
   border-radius: 4px;
   background: #ff3b6b;
+}
+
+#test-stats {
+  margin-top: 10px;
+  font-size: 15px;
+  font-weight: 600;
 }
 
 .meter {

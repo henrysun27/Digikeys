@@ -55,6 +55,11 @@ All code in this repo was written during the hackathon.
     click order for the mirrored view and shown over the mask; Accept feeds them to the
     same homography and validation as clicked corners, Retry asks SAM again, Discard keeps
     the current calibration. Clicking 4 corners still works as the fallback.
+- [x] Test mode: "Test" highlights a random target zone; each tap is scored against it
+      twice, for the instant guess (what played) and the stop-based check, with session
+      accuracy for both in the debug panel and per-tap ✓/✗ in the log. The guess scores
+      fingers by lift weighted by `CONFIG.guess`: thumbs count less unless they travel far,
+      and fingers already on the board or on the hand that tapped last count more.
 
 ## Meta models
 

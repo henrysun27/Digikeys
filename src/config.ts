@@ -60,6 +60,14 @@ export const CONFIG = {
     flashMs: 300,
     logSize: 8,
   },
+  // Best-guess finger scoring: vertical travel times these weights.
+  guess: {
+    thumbWeight: 0.4, // thumbs, unless clearly striking...
+    thumbStrikeLift: 0.04, // ...i.e. travelling at least this far (frame heights)
+    onBoardWeight: 1.5, // fingers whose latest frame is inside the board
+    lastHandWeight: 1.3, // fingers on the hand of the last tap...
+    lastHandMs: 1500, // ...if it was at most this long ago
+  },
   // The Node server in server/ (holds the API key; the browser only talks to it via /api).
   server: {
     port: 8787,

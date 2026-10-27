@@ -1,5 +1,6 @@
 import { CONFIG } from "./config.ts";
 import type { MicInfo, MicLevel } from "./mic.ts";
+import type { TestScore } from "./test-mode.ts";
 
 const el = (id: string) => document.querySelector<HTMLElement>(`#${id}`)!;
 const levelEl = el("mic-level");
@@ -14,6 +15,7 @@ const offsetEl = el("stop-offset");
 const medianOffsetEl = el("median-offset");
 const audioLatencyEl = el("audio-latency");
 const outputLatencyEl = el("output-latency");
+const testStatsEl = el("test-stats");
 const logEl = el("tap-log");
 const recentOffsets: number[] = [];
 const recentLatencies: number[] = [];
@@ -85,6 +87,21 @@ export function logPlayed(t: PlayedTap): HTMLLIElement {
   }
   const played = t.latencyMs !== null ? ` · ${t.latencyMs.toFixed(0)} ms` : t.finger ? " · silent" : "";
   return appendLog(`#${t.n} ${t.finger ? where(t.finger, t.zone) : "no finger moving"}${played}`);
+}
+
+// Session accuracy of the instant guess and the stop-based check; target null when the
+// test isn't running.
+export function showTest(target: string | null, s: TestScore) {
+  testStatsEl.hidden = target === null && s.taps === 0;
+  const pct = (hits: number) => (s.taps ? ` (${((hits / s.taps) * 100).toFixed(0)}%)` : "");
+  const tap = target !== null ? `Tap ${target} · ` : "";
+  testStatsEl.textContent =
+    `${tap}guess ${s.guessHits}/${s.taps}${pct(s.guessHits)} · check ${s.checkHits}/${s.taps}${pct(s.checkHits)}`;
+}
+
+export function logTest(line: HTMLLIElement, target: string, hit: { guess: boolean; check: boolean }) {
+  const mark = (ok: boolean) => (ok ? "✓" : "✗");
+  line.textContent += ` · target ${target}: guess ${mark(hit.guess)} check ${mark(hit.check)}`;
 }
 
 export function resolveTap(line: HTMLLIElement, playedFinger: string | null, r: ResolvedTap) {

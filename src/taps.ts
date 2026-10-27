@@ -3,6 +3,11 @@ import { CONFIG } from "./config.ts";
 export const FINGERTIPS = [4, 8, 12, 16, 20];
 export const FINGER_NAMES = ["thumb", "index", "middle", "ring", "pinky"];
 
+// Fingers are keyed "<hand> <finger>", e.g. "Left index". Hand labels may contain spaces.
+export const fingerKey = (hand: string, finger: string) => `${hand} ${finger}`;
+export const handOf = (key: string) => key.slice(0, key.lastIndexOf(" "));
+const fingerOf = (key: string) => key.slice(key.lastIndexOf(" ") + 1);
+
 // t is when the frame's landmarks were detected, performance.now() ms. x, y are raw
 // camera coords (0-1).
 export type Sample = { t: number; x: number; y: number };
@@ -13,6 +18,10 @@ export type FingerPick = {
   at: Sample; // where the finger stopped, or where it should land if still moving
   stopOffset: number | null; // stop time minus expected stop time (onset + videoLagMs), ms
 };
+
+// What the guess knows besides finger motion: whether a camera point is on the board, and
+// the hand of the last tap if it was recent.
+export type GuessContext = { onBoard: (p: Sample) => boolean; lastHand: string | null };
 
 // prev is the frame before last, for extrapolating a stroke that is still moving.
 type Stroke = { peak: number; stop: Sample | null; last: Sample; prev: Sample | null };
@@ -50,23 +59,31 @@ export class FingerHistory {
   }
 
   // Best guess at onset time, from the frames so far. With webcam lag the latest frames
-  // often still show the finger raised, before any down-stroke, so this picks the finger
-  // with the most vertical travel in the window (the one that lifted to strike) and
-  // predicts where it lands: its stop if already seen, the extrapolated stroke if it is
-  // coming down, or its resting height (lowest point in the window) if still raised.
-  guess(onset: number): FingerPick | null {
+  // often still show the finger raised, before any down-stroke, so fingers are scored by
+  // vertical travel in the window (the one that lifted to strike), weighted by
+  // CONFIG.guess: thumbs count less unless they travel far, and fingers already on the
+  // board or on the hand that tapped last count more. The winner's landing is predicted:
+  // its stop if already seen, the extrapolated stroke if it is coming down, or its
+  // resting height (lowest point in the window) if still raised.
+  guess(onset: number, c: GuessContext): FingerPick | null {
     const { historyMs, stopToleranceMs, videoLagMs, minLift } = CONFIG.taps;
+    const g = CONFIG.guess;
     const expected = onset + videoLagMs;
     const from = expected - stopToleranceMs - historyMs;
     let best: FingerPick | null = null;
-    let bestTravel = minLift;
+    let bestScore = 0;
     for (const [finger, track] of this.tracks) {
       const s = track.filter((p) => p.t >= from);
       if (s.length < 2) continue;
       const restY = Math.max(...s.map((p) => p.y));
       const travel = restY - Math.min(...s.map((p) => p.y));
-      if (travel < bestTravel) continue;
-      bestTravel = travel;
+      if (travel < minLift) continue;
+      let score = travel;
+      if (fingerOf(finger) === "thumb" && travel < g.thumbStrikeLift) score *= g.thumbWeight;
+      if (c.onBoard(s[s.length - 1])) score *= g.onBoardWeight;
+      if (c.lastHand !== null && handOf(finger) === c.lastHand) score *= g.lastHandWeight;
+      if (score <= bestScore) continue;
+      bestScore = score;
       const stroke = downStrokes(s).at(-1);
       let at: Sample;
       if (stroke?.stop && stroke.stop.t >= expected - stopToleranceMs) at = stroke.stop;

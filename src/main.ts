@@ -2,19 +2,21 @@ import "./style.css";
 import { FilesetResolver, HandLandmarker, type HandLandmarkerResult } from "@mediapipe/tasks-vision";
 import { Calibration, CORNER_NAMES, checkCorners, orderCorners } from "./calibration.ts";
 import { CONFIG } from "./config.ts";
-import { logIgnored, logPlayed, resolveTap, showLevel, showMicInfo } from "./debug.ts";
+import { logIgnored, logPlayed, logTest, resolveTap, showLevel, showMicInfo, showTest } from "./debug.ts";
 import { applyH, convexHull, fitQuad, polygonArea, type Pt } from "./geometry.ts";
 import { PRESETS, hitTest, shapeCenter, shapeOutline, type Layout, type Zone } from "./layout.ts";
 import { startMic, type Onset } from "./mic.ts";
 import { maskArea, maskImage, maskOutline, maskPixels, segmentFrame, type SamObject, type Segmentation } from "./sam.ts";
 import { initSound, play } from "./sound.ts";
-import { FINGER_NAMES, FINGERTIPS, FingerHistory } from "./taps.ts";
+import { FINGER_NAMES, FINGERTIPS, FingerHistory, fingerKey, handOf, type Sample } from "./taps.ts";
+import { TestMode } from "./test-mode.ts";
 
 const video = document.querySelector<HTMLVideoElement>("#video")!;
 const canvas = document.querySelector<HTMLCanvasElement>("#view")!;
 const statusEl = document.querySelector<HTMLDivElement>("#status")!;
 const hintEl = document.querySelector<HTMLDivElement>("#hint")!;
 const resetBtn = document.querySelector<HTMLButtonElement>("#reset")!;
+const testBtn = document.querySelector<HTMLButtonElement>("#test")!;
 const micBtn = document.querySelector<HTMLButtonElement>("#mic")!;
 const layoutSelect = document.querySelector<HTMLSelectElement>("#layout")!;
 const detectBtn = document.querySelector<HTMLButtonElement>("#detect")!;
@@ -33,6 +35,8 @@ const flashes = new Map<string, number>(); // zone id -> flash end, performance.
 let hintError: string | null = null;
 let tapCount = 0;
 let handsInFrame = 0; // hands in the latest detection
+let lastTap: { hand: string; t: number } | null = null; // onset time, performance.now() ms
+const test = new TestMode();
 // A SAM 3.1 surface detection waiting for Accept. The largest match is taken as the playing
 // surface; corners (raw cam coords, click order) are null if no quad could be fitted.
 type Proposal = {
@@ -64,8 +68,11 @@ function setStatus(text: string) {
   statusEl.textContent = text;
 }
 
+// Called whenever calibration changes. Test mode needs a board to put targets on.
 function updateHint() {
   canvas.classList.toggle("calibrating", !calibration.done);
+  testBtn.disabled = !calibration.done;
+  if (!calibration.done && test.active) setTesting(false);
   hintEl.classList.toggle("error", hintError !== null);
   if (calibration.done) {
     hintEl.textContent = "Calibrated. Press Reset corners to redo.";
@@ -100,7 +107,21 @@ PRESETS.forEach((preset, i) => layoutSelect.add(new Option(preset.instrument, St
 layoutSelect.addEventListener("change", () => {
   layout = PRESETS[Number(layoutSelect.value)];
   flashes.clear();
+  if (test.active) {
+    test.next(layout);
+    showTest(test.target?.label ?? null, test.score);
+  }
 });
+
+function setTesting(on: boolean) {
+  if (on) test.start(layout);
+  else test.stop();
+  testBtn.textContent = on ? "Stop test" : "Test";
+  testBtn.classList.toggle("on", on);
+  showTest(test.target?.label ?? null, test.score);
+}
+
+testBtn.addEventListener("click", () => setTesting(!test.active));
 
 // Playing-surface corners from a SAM mask: convex hull, then the enclosing quad, in click
 // order. fit is quad area / mask area (1 = the mask is exactly a quadrilateral).
@@ -217,9 +238,22 @@ function zoneAt(p: Pt): Zone | null {
   return calibration.camToBoard ? hitTest(layout, applyH(calibration.camToBoard, p)) : null;
 }
 
+function onBoard(p: Sample): boolean {
+  if (!calibration.camToBoard) return false;
+  const b = applyH(calibration.camToBoard, p);
+  return b.x >= 0 && b.x <= 1 && b.y >= 0 && b.y <= 1;
+}
+
+// Remembers the tapping hand for the next guess. The stop-based check, known later,
+// overrides the guess unless a newer tap has come in since.
+function setLastTap(finger: string, t: number) {
+  if (!lastTap || t >= lastTap.t) lastTap = { hand: handOf(finger), t };
+}
+
 // Plays right away from the best-guess finger. The finger frames for the moment of the
 // onset arrive videoLagMs later and the stop may be up to stopToleranceMs after that, so
-// the tap is checked against the stopped finger once those frames are in.
+// the tap is checked against the stopped finger once those frames are in. In test mode
+// both are scored against the target shown at the onset, and the next target appears.
 function onOnset(onset: Onset) {
   const n = ++tapCount;
   if (handsInFrame === 0) {
@@ -227,20 +261,33 @@ function onOnset(onset: Onset) {
     return;
   }
   const { videoLagMs, stopToleranceMs, settleMarginMs, flashMs } = CONFIG.taps;
-  const guess = history.guess(onset.time);
+  const recent = lastTap && onset.time - lastTap.t <= CONFIG.guess.lastHandMs;
+  const guess = history.guess(onset.time, { onBoard, lastHand: recent ? lastTap!.hand : null });
+  if (guess) setLastTap(guess.finger, onset.time);
   const zone = guess ? zoneAt(guess.at) : null;
   const latencyMs = zone ? play(zone.sound, onset.ctxTime) : null;
   if (zone) flashes.set(zone.id, performance.now() + flashMs);
   const line = logPlayed({ n, finger: guess?.finger ?? null, zone: zone?.label ?? null, latencyMs });
+  const target = test.active ? test.target : null;
+  if (target) {
+    test.next(layout);
+    showTest(test.target?.label ?? null, test.score);
+  }
 
   const resolveAt = onset.time + videoLagMs + stopToleranceMs + settleMarginMs;
   setTimeout(() => {
     const pick = history.resolve(onset.time);
+    const checkZone = pick ? zoneAt(pick.at) : null;
+    if (pick) setLastTap(pick.finger, onset.time);
     resolveTap(line, guess?.finger ?? null, {
       finger: pick?.finger ?? null,
-      zone: pick ? (zoneAt(pick.at)?.label ?? null) : null,
+      zone: checkZone?.label ?? null,
       stopOffset: pick?.stopOffset ?? null,
     });
+    if (target) {
+      logTest(line, target.label, test.record(target, zone, checkZone));
+      showTest(test.active ? (test.target?.label ?? null) : null, test.score);
+    }
   }, Math.max(0, resolveAt - performance.now()));
 }
 
@@ -249,7 +296,7 @@ function recordFingers(result: HandLandmarkerResult, detectedAt: number) {
   result.landmarks.forEach((hand, h) => {
     const side = result.handedness[h]?.[0]?.categoryName ?? `Hand ${h + 1}`;
     FINGERTIPS.forEach((tip, f) => {
-      history.add(`${side} ${FINGER_NAMES[f]}`, { t: detectedAt, x: hand[tip].x, y: hand[tip].y });
+      history.add(fingerKey(side, FINGER_NAMES[f]), { t: detectedAt, x: hand[tip].x, y: hand[tip].y });
     });
   });
 }
@@ -309,8 +356,13 @@ function drawLayout(active: Set<string>, now: number) {
       ctx.fillStyle = `rgba(0, 220, 255, ${(0.85 * flashLeft) / CONFIG.taps.flashMs})`;
       ctx.fill();
     }
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
-    ctx.lineWidth = 2;
+    const isTarget = zone.id === test.target?.id;
+    if (isTarget) {
+      ctx.fillStyle = "rgba(0, 230, 118, 0.35)";
+      ctx.fill();
+    }
+    ctx.strokeStyle = isTarget ? "#00e676" : "rgba(255, 255, 255, 0.85)";
+    ctx.lineWidth = isTarget ? 5 : 2;
     ctx.stroke();
     drawLabel(zone, outline);
   }
