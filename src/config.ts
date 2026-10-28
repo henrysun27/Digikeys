@@ -120,10 +120,11 @@ export const CONFIG = {
     // tap log shows the measured values of fingers that fall short.
     minStrokeDepth: 0.02, // real presses measured ~0.025
     minStrikeSpeed: 0.25,
-    // Chords: an accepted onset plays every striking finger whose score is at least this
-    // fraction of the best one's (one note per zone). Lower catches more of a chord, and
-    // more sympathetic finger motion.
-    chordRatio: 0.8,
+    // Chords: an accepted onset plays every striking finger landing on the board whose
+    // score is at least this fraction of the best such finger's (one note per zone). Lower
+    // catches more of a chord, and more sympathetic finger motion; each note must still
+    // pass the strike test on its own. Real chord fingers measured 0.45-0.53.
+    chordRatio: 0.4,
     zoneRefractoryMs: 80, // a zone can't play again sooner than this; other zones can
     flashMs: 300,
     logSize: 8,

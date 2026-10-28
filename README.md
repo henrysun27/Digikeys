@@ -265,3 +265,11 @@ with `latencyHint: "interactive"` and `lookAhead: 0`, and notes trigger at
       `taps.visionHoldFrames` (2) frames after the stop frame, so a finger bouncing
       straight back up doesn't play. That adds about 2 frames (67 ms at 30 fps) to vision
       tap latency. Hybrid stays the default.
+- [x] Off-board guesses: taps #152-157 played nothing because the instant guess picked a
+      finger whose projected landing point was off the board (silent), while the other
+      index finger was striking on the board and the stop check found A+B chords there.
+      Fingers whose landing point (after tap correction) is outside the board are no longer
+      chord candidates, for the guess and the check alike, and the chord ratio is taken
+      against the best on-board finger. The tap log lists them as "lands off board (x, y)".
+      `chordRatio` is now 0.4: real chord fingers scored 0.45-0.53 of the best and were
+      blocked at 0.8. Each chord note still has to pass the strike test on its own.

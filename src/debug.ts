@@ -101,12 +101,12 @@ export function logIgnored(n: number, reason: string) {
   appendLog(`#${n} ignored (${reason})`);
 }
 
-// Hybrid mode: an onset with no striking finger; rejected says why each moving one
-// fell short.
+// Hybrid mode: an onset with no striking finger landing on the board; rejected says why
+// each moving one fell short or can't play.
 export function logRejected(n: number, o: Onset, rejected: string[]) {
   const why = rejected.length ? rejected.join("; ") : "no finger moving down";
   const rise = `rise ${(20 * Math.log10(o.rise)).toFixed(0)} dB`;
-  appendLog(`#${n} rejected (no strike: ${why}) · ${fmtDb(o.level)} vs threshold ${fmtDb(o.threshold)}, ${rise}`);
+  appendLog(`#${n} rejected (no strike on the board: ${why}) · ${fmtDb(o.level)} vs threshold ${fmtDb(o.threshold)}, ${rise}`);
 }
 
 // Test mode: a finger came down and stopped on the board but no onset was accepted

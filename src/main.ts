@@ -686,13 +686,23 @@ function setLastTap(finger: string, t: number) {
 // lateStopMs, so at is the finger's guess position instead.
 type Note = { pick: FingerPick; at: Pt | null; zone: Zone | null; late: boolean };
 
-// The chord in a ranked list of fingers: every strike (each must pass on its own) scoring
-// at least chordRatio of the best strike (the best first), one per zone. Fingers off the
-// board stay in, with no zone. rejected: why each other finger isn't in it, with the
-// measured value.
+const insideBoard = (p: Pt | null) => !!p && p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1;
+
+// The chord in a ranked list of fingers: every strike (each must pass on its own) landing
+// on the board and scoring at least chordRatio of the best such strike (the best first),
+// one per zone. A finger landing off the board can't play, so it is no candidate and
+// doesn't set the ratio; one landing in a gap between zones stays in, with no zone.
+// rejected: why each other finger isn't in it, with the measured value.
 function chordOf(notes: Note[]): { chord: Note[]; rejected: string[] } {
-  const strikes = notes.filter((x) => !x.pick.why);
-  const rejected = notes.filter((x) => x.pick.why).map((x) => `${x.pick.finger} ${x.pick.why}`);
+  const rejected: string[] = [];
+  const strikes = notes.filter(({ pick, at }) => {
+    if (pick.why) rejected.push(`${pick.finger} ${pick.why}`);
+    else if (!insideBoard(at)) {
+      const where = at ? ` (${at.x.toFixed(2)}, ${at.y.toFixed(2)})` : "";
+      rejected.push(`${pick.finger} lands off board${where}`);
+    } else return true;
+    return false;
+  });
   if (strikes.length === 0) return { chord: [], rejected };
   const best = strikes[0].pick.score;
   const { chordRatio } = CONFIG.taps;
@@ -716,7 +726,9 @@ const zoneList = (notes: Note[]) => notes.map((x) => x.zone?.label ?? "off board
 
 // Plays right away from the best-guess fingers: every striking finger whose score is at
 // least chordRatio of the best one's, one note per zone, except zones still in their
-// refractory. Fingers that move but fall short are listed in the tap log with why. The ratio is always taken against the best finger, refractory or not,
+// refractory. Only fingers whose projected landing point is on the board are candidates.
+// Fingers that move but fall short or land off the board are listed in the tap log with
+// why. The ratio is always taken against the best on-board finger, refractory or not,
 // so a second onset from the same tap can't promote a weaker finger, while the second
 // finger of a slightly staggered chord plays on its own onset if it would have joined
 // the chord anyway.
