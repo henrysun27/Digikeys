@@ -35,9 +35,12 @@ All code in this repo was written during the hackathon.
       that moved down fastest and then stopped is chosen, and its key flashes. The debug
       panel shows mic level, floor, threshold, chosen finger, stop offset and a tap log.
       Onset times come from the audio clock (`getOutputTimestamp`, minus output latency
-      clamped to 0-100 ms; input latency taken as 0), and the finger search is centered on
-      `videoLagMs`, which absorbs any constant offset; tune it with the median stop offset
-      shown in the panel. Onsets with no hand in frame are logged as ignored.
+      clamped to 0-100 ms; input latency taken as 0). The audio clock drifts against
+      `performance.now()`, so the pair is re-taken on every worklet message and the offset
+      is the median over the last second; the panel's "Audio clock" row shows the offset,
+      its change since start and the drift rate (ms/min, ppm, fitted over 2 min). The
+      finger search is centered on `videoLagMs`, which absorbs any constant offset; tune
+      it with the median stop offset shown in the panel. Onsets with no hand in frame are logged as ignored.
 - [x] Milestone 4: sound. Tone.js runs on the same AudioContext as the onset detector,
       with lookahead 0: a sampled Salamander piano and an acoustic drum kit (samples from
       tonejs.github.io), loaded and warmed up (muted) on "Enable mic". Each onset plays

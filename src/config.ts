@@ -80,6 +80,10 @@ export const CONFIG = {
   },
   mic: {
     maxLatencyCorrectionMs: 100, // any latency correction is clamped to 0..this
+    // Audio clock -> performance.now(): re-synced on every worklet message, the offset is
+    // the median over smoothMs; the drift rate is fitted over driftWindowS, one point per
+    // driftSampleMs.
+    clock: { smoothMs: 1000, driftSampleMs: 1000, driftWindowS: 120 },
   },
   sound: {
     pianoBaseUrl: "https://tonejs.github.io/audio/salamander/",

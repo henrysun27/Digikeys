@@ -20,6 +20,7 @@ const offsetEl = el("stop-offset");
 const medianOffsetEl = el("median-offset");
 const audioLatencyEl = el("audio-latency");
 const outputLatencyEl = el("output-latency");
+const audioClockEl = el("audio-clock");
 const testPanelEl = el("test-panel");
 const testStatsEl = el("test-stats");
 const tapCorrectionEl = el("tap-correction");
@@ -85,8 +86,15 @@ export function showMicInfo(i: MicInfo) {
   outputLatencyEl.textContent =
     `Output latency ${i.outputRawMs.toFixed(0)} ms` + (slow ? " · Bluetooth audio? switch to wired" : "");
   audioLatencyEl.textContent =
-    `out ${i.outputMs.toFixed(0)} ms applied (raw ${i.outputRawMs.toFixed(1)} ms, ${i.clock}) · ` +
+    `out ${i.outputMs.toFixed(0)} ms applied (raw ${i.outputRawMs.toFixed(1)} ms) · ` +
     `in 0 ms applied (stats raw ${raw(i.inputStatsRaw)} ms, settings raw ${raw(i.inputSettingsRaw)} s) · ${rates}`;
+  // Offset: performance.now() ms at audio-clock 0, smoothed. Drift in ms per minute and ppm.
+  const c = i.clock;
+  const drift =
+    c.driftMsPerMin === null
+      ? "drift measuring…"
+      : `drift ${c.driftMsPerMin >= 0 ? "+" : ""}${c.driftMsPerMin.toFixed(2)} ms/min (${((c.driftMsPerMin / 60_000) * 1e6).toFixed(0)} ppm)`;
+  audioClockEl.textContent = `offset ${c.offsetMs.toFixed(1)} ms (${fmtMs(c.sinceStartMs)} since start) · ${drift} · ${c.source}`;
 }
 
 function appendLog(text: string): HTMLLIElement {

@@ -1,3 +1,4 @@
+import { ClockSync, type ClockStats } from "./clock-sync.ts";
 import { CONFIG } from "./config.ts";
 import type { OnsetMessage } from "./onset-worklet.ts";
 import workletUrl from "./onset-worklet.ts?worker&url";
@@ -15,7 +16,7 @@ export type MicLevel = { time: number; level: number; floor: number; threshold: 
 export type MicInfo = {
   outputRawMs: number; // baseLatency + outputLatency as reported
   outputMs: number; // the clamped correction actually applied
-  clock: "output timestamp" | "currentTime";
+  clock: ClockStats; // audio clock -> performance.now() mapping, refreshed once a second
   // Reported by the track for reference only; not used for correction.
   inputStatsRaw: number | null; // track.stats.latency (spec unit: ms)
   inputSettingsRaw: number | null; // getSettings().latency (spec unit: s)
@@ -54,46 +55,51 @@ export async function startMic(ctx: AudioContext, h: MicHandlers) {
   // The node writes silence; connecting it to the destination keeps it pulled.
   node.connect(ctx.destination);
 
-  // Converts the worklet's audio-clock time for a block to performance.now() when it was
+  // Maps the worklet's audio-clock time for a block to performance.now() when it was
   // rendered. getOutputTimestamp pairs a context time with the moment it is heard, and a
   // block is rendered baseLatency + outputLatency before that. Input latency is taken as
   // 0; config.taps.videoLagMs absorbs any constant offset. Falls back to the currentTime
-  // mapping if the output timestamp is missing or disagrees by more than the clamp.
-  const toPerf = (ctxTime: number): { time: number; info: MicInfo } => {
-    const settings: AudioSettings = track.getSettings();
-    const { rawMs: outputRawMs, ms: outputMs } = outputLatency(ctx);
-    const byCurrentTime = performance.now() - (ctx.currentTime - ctxTime) * 1000;
+  // pairing if the output timestamp is missing or disagrees by more than the clamp.
+  // The audio clock runs off the sound card's crystal and drifts against performance.now()
+  // (tens of ppm, hundreds of ms over hours), so the pair is re-taken on every worklet
+  // message and ClockSync smooths it and measures the drift.
+  const clock = new ClockSync(CONFIG.mic.clock);
+  const sync = (): boolean => {
+    const { ms: outputMs } = outputLatency(ctx);
+    const now = performance.now();
+    const byCurrentTime = now - ctx.currentTime * 1000;
     const ts = ctx.getOutputTimestamp();
     const byOutput =
-      ts.performanceTime && ts.contextTime !== undefined
-        ? ts.performanceTime + (ctxTime - ts.contextTime) * 1000 - outputMs
-        : null;
+      ts.performanceTime && ts.contextTime !== undefined ? ts.performanceTime - ts.contextTime * 1000 - outputMs : null;
     const useOutput = byOutput !== null && Math.abs(byOutput - byCurrentTime) <= CONFIG.mic.maxLatencyCorrectionMs;
+    return clock.sample(useOutput ? byOutput : byCurrentTime, useOutput ? "output timestamp" : "currentTime", now);
+  };
+  const info = (): MicInfo => {
+    const settings: AudioSettings = track.getSettings();
+    const { rawMs: outputRawMs, ms: outputMs } = outputLatency(ctx);
     return {
-      time: useOutput ? byOutput : byCurrentTime,
-      info: {
-        outputRawMs,
-        outputMs,
-        clock: useOutput ? "output timestamp" : "currentTime",
-        inputStatsRaw: track.stats?.latency ?? null,
-        inputSettingsRaw: settings.latency ?? null,
-        ctxRate: ctx.sampleRate,
-        micRate: settings.sampleRate ?? null,
-      },
+      outputRawMs,
+      outputMs,
+      clock: clock.stats(),
+      inputStatsRaw: track.stats?.latency ?? null,
+      inputSettingsRaw: settings.latency ?? null,
+      ctxRate: ctx.sampleRate,
+      micRate: settings.sampleRate ?? null,
     };
   };
 
-  h.onInfo(toPerf(ctx.currentTime).info);
+  sync();
+  h.onInfo(info());
   // Onsets are handled before the debug-panel info: the sound can't wait, the panel can.
   node.port.onmessage = (e: MessageEvent<OnsetMessage>) => {
     const receivedAt = performance.now();
+    const logged = sync();
     const msg = e.data;
-    if (msg.type === "level") {
-      h.onLevel({ ...msg, time: toPerf(msg.time).time });
-      return;
+    if (msg.type === "level") h.onLevel({ ...msg, time: clock.toPerf(msg.time) });
+    else {
+      const time = clock.toPerf(msg.time);
+      h.onOnset({ time, ctxTime: msg.time, receivedAt, level: msg.level, threshold: msg.threshold, rise: msg.rise });
     }
-    const { time, info } = toPerf(msg.time);
-    h.onOnset({ time, ctxTime: msg.time, receivedAt, level: msg.level, threshold: msg.threshold, rise: msg.rise });
-    h.onInfo(info);
+    if (logged) h.onInfo(info());
   };
 }
