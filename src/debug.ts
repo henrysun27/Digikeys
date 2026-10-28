@@ -3,6 +3,7 @@ import type { DetectorKind } from "./detectors.ts";
 import type { DetectorInfo } from "./hand-detector.ts";
 import type { CameraInfo, CameraProbe } from "./main.ts";
 import type { MicInfo, MicLevel, Onset } from "./mic.ts";
+import type { Edge } from "./orientation.ts";
 import type { Correction, TapCorrections } from "./tap-correction.ts";
 import type { TestScore } from "./test-mode.ts";
 
@@ -22,6 +23,7 @@ const outputLatencyEl = el("output-latency");
 const testPanelEl = el("test-panel");
 const testStatsEl = el("test-stats");
 const tapCorrectionEl = el("tap-correction");
+const playerEdgeEl = el("player-edge");
 const cameraEl = el("camera-info");
 const cameraWarningEl = el("camera-warning");
 const probeEl = el("camera-probe");
@@ -194,6 +196,29 @@ const fmtAsked = (m: CameraInfo["asked"]) => `${m.width}×${m.height} @ ${m.fram
 
 // The mode in use vs what was asked for. measuredFps counts new video frames (null until
 // the first second has passed).
+// Where the player sits and where that is on screen. detected: from hand pose (else the
+// edge nearest the top of the camera image is assumed); samples and agreement: the hand
+// frames in the detection window and how well their wrist directions agree (0-1).
+export function showPlayer(p: {
+  near: Edge;
+  left: Edge;
+  board: boolean;
+  detected: boolean;
+  nearSide: string | null;
+  leftSide: string | null;
+  samples: number;
+  agreement: number;
+}) {
+  if (!p.board) {
+    playerEdgeEl.textContent = "no board";
+    return;
+  }
+  const how = p.detected ? "from hands" : "assumed, waiting for hands";
+  playerEdgeEl.textContent =
+    `near ${p.near} (${p.nearSide}), left ${p.left} (${p.leftSide}) · ${how} · ` +
+    `${p.samples} hand frames, agreement ${p.agreement.toFixed(2)}`;
+}
+
 // Below camera.lowFpsWarn measured fps, a warning shows under the mic button.
 export function showCamera(c: CameraInfo, measuredFps: number | null) {
   const measured = measuredFps === null ? "" : `, measured ${measuredFps.toFixed(0)}`;

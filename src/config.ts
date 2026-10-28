@@ -1,5 +1,7 @@
 // All tunables live here. Later milestones add onset, refractory, finger history,
 // videoLagMs and layout validation limits.
+import type { Edge } from "./orientation.ts";
+
 export const CONFIG = {
   camera: {
     mode: { width: 1280, height: 720, frameRate: 30 },
@@ -31,6 +33,18 @@ export const CONFIG = {
     autoWarmupMs: 1500, // auto: settle time before measuring each option...
     autoMeasureMs: 3000, // ...and how long to measure it
     powerPreference: "high-performance" as WebGLPowerPreference, // GPU asked for
+  },
+  // Where the player sits: a board edge ("1-2" runs from corner 1 to corner 2), detected
+  // from hand pose and stored here; null until detected, when the edge nearest the top of
+  // the camera image is assumed. Layouts are written near/far and left/right from the
+  // player (low notes on their left, piano sharps on the far edge) and placed by it.
+  playerEdge: null as Edge | null,
+  player: {
+    windowMs: 3000, // hand frames averaged
+    minSamples: 30, // hand frames needed in the window before deciding
+    minAgreement: 0.5, // length of the mean of the unit wrist directions, 0-1
+    minReach: 0.05, // board units: shorter fingertips-to-wrist spans are skipped
+    boardMargin: 0.15, // fingertips this far outside the board (board units) still count
   },
   // One Euro filter on fingertip positions for display and hit-testing; tap detection's
   // motion history stays raw. Positions are 0-1 camera coords.
@@ -96,6 +110,10 @@ export const CONFIG = {
     medianTaps: 20, // taps in the debug panel's medians (stop offset, tap-to-sound)
     keepMs: 1000,
     stopSpeedRatio: 0.3, // stopped once speed falls below this fraction of the peak
+    // Vision-only: the stop must hold (frame-to-frame speed, up or down, still under
+    // stopSpeedRatio of the peak) for this many frames after the stop frame, so a finger
+    // bouncing straight back up isn't a tap.
+    visionHoldFrames: 2,
     // A finger strikes only if it went down at least minStrokeDepth (board units, start to
     // end of the stroke) at a mean speed of at least minStrikeSpeed (board units/s), then
     // stopped. Applies to every played note, the check, vision taps and the miss log; the
@@ -175,6 +193,9 @@ export const CONFIG = {
     maxZones: 24,
     maxPolyPts: 16,
     minZoneSide: 0.05, // each zone's bounding box, along both axes
+    // ...and at least this wide across the player's view (left to right), about one finger.
+    // Caps how many zones fit side by side: a piano gets about one octave.
+    minZoneWidth: 0.07,
     minZoneArea: 0.004,
     boundsTolerance: 0.005, // coords this far outside 0-1 are clamped, not rejected
     maxOverlap: 0.02, // fraction of the smaller zone two zones may share (rounding slop)

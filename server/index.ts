@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { decodeMaskToRaster, parseImageStream, recordsOfKind, type ResponsesEvent } from "@meta-sam/parser";
 import { CONFIG } from "../src/config.ts";
 import { LAYOUT_INSTRUCTIONS, LAYOUT_SCHEMA, layoutRequestText, toZones, type Corner } from "./layout-prompt.ts";
+import { EDGES, type Edge, type Orientation } from "../src/orientation.ts";
 
 const apiKey = process.env.MODEL_API_KEY?.trim() || null;
 
@@ -110,7 +111,14 @@ async function segment(image: string, prompt: string) {
 
 // Asks Muse Spark for the board's aspect and a Layout, as schema-constrained JSON. The
 // layout is returned as the model gave it; the browser validates it.
-async function generateLayout(image: string, request: string, width: number, height: number, corners: Corner[]) {
+async function generateLayout(
+  image: string,
+  request: string,
+  width: number,
+  height: number,
+  corners: Corner[],
+  orientation: Orientation,
+) {
   const m = CONFIG.muse;
   const upstream = await fetch(`${CONFIG.server.apiBaseUrl}/chat/completions`, {
     method: "POST",
@@ -122,7 +130,7 @@ async function generateLayout(image: string, request: string, width: number, hei
         {
           role: "user",
           content: [
-            { type: "text", text: layoutRequestText(request, width, height, corners) },
+            { type: "text", text: layoutRequestText(request, width, height, corners, orientation) },
             { type: "image_url", image_url: { url: image } },
           ],
         },
@@ -163,6 +171,15 @@ async function generateLayout(image: string, request: string, width: number, hei
 const isCorner = (c: unknown): c is Corner =>
   typeof c === "object" && c !== null && Number.isFinite((c as Corner).x) && Number.isFinite((c as Corner).y);
 
+// The left edge must be next to the near edge: not the same edge, not the opposite one.
+function isOrientation(o: unknown): o is Orientation {
+  if (typeof o !== "object" || o === null) return false;
+  const { near, left } = o as Record<string, unknown>;
+  const i = EDGES.indexOf(near as Edge);
+  const j = EDGES.indexOf(left as Edge);
+  return i >= 0 && j >= 0 && (i - j + 4) % 2 === 1;
+}
+
 async function handle(req: IncomingMessage, res: ServerResponse) {
   const path = new URL(req.url ?? "/", "http://localhost").pathname;
   if (req.method === "GET" && path === "/api/health") {
@@ -188,8 +205,15 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   }
   if (req.method === "POST" && path === "/api/layout") {
     if (!apiKey) throw new HttpError(500, "MODEL_API_KEY is not set in .env");
-    const body = (await readJson(req)) as { image?: unknown; request?: unknown; width?: unknown; height?: unknown; corners?: unknown };
-    const { image, request, width, height, corners } = body ?? {};
+    const body = (await readJson(req)) as {
+      image?: unknown;
+      request?: unknown;
+      width?: unknown;
+      height?: unknown;
+      corners?: unknown;
+      orientation?: unknown;
+    };
+    const { image, request, width, height, corners, orientation } = body ?? {};
     if (typeof image !== "string" || !image.startsWith("data:image/")) {
       throw new HttpError(400, "image must be an image data URL");
     }
@@ -202,8 +226,11 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     if (!Array.isArray(corners) || corners.length !== 4 || !corners.every(isCorner)) {
       throw new HttpError(400, "corners must be 4 {x, y} pixel positions");
     }
+    if (!isOrientation(orientation)) {
+      throw new HttpError(400, `orientation must be {near, left}, adjacent edges of ${EDGES.join(", ")}`);
+    }
     const started = performance.now();
-    const out = await generateLayout(image, request.trim(), width, height, corners);
+    const out = await generateLayout(image, request.trim(), width, height, corners, orientation);
     const ms = Math.round(performance.now() - started);
     const zones = Array.isArray(out.layout.zones) ? out.layout.zones.length : "no";
     console.log(`layout "${request}": ${zones} zone(s), aspect ${String(out.aspect)}, ${ms} ms`);

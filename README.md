@@ -232,3 +232,36 @@ with `latencyHint: "interactive"` and `lookAhead: 0`, and notes trigger at
       measured frame interval over nominal (never shrinks), so it stays valid if the frame
       rate drops: at 15 fps it is -600 to +300 ms. Below 25 measured fps
       (`camera.lowFpsWarn`) the debug panel warns "low light? camera fps dropped".
+- [x] Player orientation (`src/orientation.ts`). Which board edge the player sits at is
+      detected from hand pose: a wrist is nearer the player than its fingertips, so each
+      hand frame over the board votes with its fingertips-to-wrist direction (board
+      coords). Over 3 s (`CONFIG.player`) the mean picks the edge once 30 frames agree
+      (mean unit vector length at least 0.5), and it is stored in `CONFIG.playerEdge`.
+      Until then the edge nearest the top of the camera image is assumed, where a laptop
+      webcam facing the player sees them. The player's left follows from the edge and the
+      board mapping's handedness (the camera sees the desk from above; clicked corners
+      follow the mirrored view). The debug panel's "Player edge" row shows the near and
+      left edges, where they are on screen, and whether they come from the hands.
+      Layouts are now written in the player's frame (x from their left to right, y from
+      the far edge to the near edge) and placed on the board by `orientLayout`; they are
+      re-placed when the edge changes, and new corners forget it.
+      - The piano preset is one octave, C4 to C5, with low notes on the player's left and
+        the five sharps on the far half of the board (drawn dark), white keys notched
+        around them. The drum preset has the toms across the far side and hi-hat, snare
+        and kick nearest the player.
+      - Muse Spark gets the near and left edges and which numbered corner is far-left,
+        far-right, near-right and near-left, and designs in the player's frame: low notes
+        on the left, black keys on the far side.
+- [x] Zone width cap: every zone must be at least `layoutLimits.minZoneWidth` (0.07 of the
+      board width, about a finger) wide across the player's view. The prompt states the
+      resulting cap (14 zones side by side, so a piano gets one octave, not two) and
+      `checkLayout` rejects narrower zones. Asked for "piano" on a synthetic A4-landscape
+      frame, Muse Spark (10 s) returned C4-C5 with the sharps 0.07 wide on the far side,
+      which passed the checks and lands low notes on the screen's left and sharps at the
+      bottom for a player at the top of the image.
+- [x] Vision-only taps use the same strike test as hybrid (`minStrokeDepth`,
+      `minStrikeSpeed`, a stop) and now also need the stop to hold: the finger must stay
+      still (speed either way under `stopSpeedRatio` of the stroke's peak) for
+      `taps.visionHoldFrames` (2) frames after the stop frame, so a finger bouncing
+      straight back up doesn't play. That adds about 2 frames (67 ms at 30 fps) to vision
+      tap latency. Hybrid stays the default.

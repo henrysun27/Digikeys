@@ -69,8 +69,18 @@ export type GuessContext = {
 };
 
 // start: the frame the stroke started from. prev is the frame before last, for
-// extrapolating a stroke that is still moving.
-type Stroke = { peak: number; start: Sample; stop: Sample | null; last: Sample; prev: Sample | null };
+// extrapolating a stroke that is still moving. held: frames after the stop frame the finger
+// stayed still (speed either way at most stopSpeedRatio of the peak); holdEnded: a frame
+// after those moved, so held won't grow.
+type Stroke = {
+  peak: number;
+  start: Sample;
+  stop: Sample | null;
+  last: Sample;
+  prev: Sample | null;
+  held: number;
+  holdEnded: boolean;
+};
 
 const raw = (s: Sample): Pt => ({ x: s.x, y: s.y });
 
@@ -120,17 +130,22 @@ export class FingerHistory {
     }
   }
 
-  // Strikes that stopped inside the board since the last call, each stroke reported once.
-  // Call after every frame's samples are added.
-  newStops(toBoard: ToBoard, onBoard: (p: Pt) => boolean): FingerPick[] {
+  // Strikes that stopped inside the board since the last call and stayed still for
+  // holdFrames frames after the stop frame, each stroke reported once (a stroke whose hold
+  // is cut short is dropped). Call after every frame's samples are added.
+  newStops(toBoard: ToBoard, onBoard: (p: Pt) => boolean, holdFrames: number): FingerPick[] {
     const out: FingerPick[] = [];
     for (const [finger, track] of this.tracks) {
-      if (!isAllowed(finger) || track.length < 2) continue;
-      const from = track[track.length - 1].t - CONFIG.taps.historyMs;
+      if (!isAllowed(finger) || track.length < holdFrames + 2) continue;
+      // The window reaches historyMs before the latest possible stop frame, so waiting for
+      // the hold doesn't cut off the start of the stroke.
+      const from = track[track.length - 1 - holdFrames].t - CONFIG.taps.historyMs;
       const after = this.reported.get(finger) ?? -Infinity;
       for (const k of downStrokes(track.filter((s) => s.t >= from))) {
         if (!k.stop || k.stop.t <= after) continue;
+        if (k.held < holdFrames && !k.holdEnded) continue; // still holding: decide later
         this.reported.set(finger, k.stop.t);
+        if (k.held < holdFrames) continue;
         const m = judge(finger, k.start, k.stop, true, toBoard);
         if (!m.why && onBoard(landing(m.at))) out.push(m);
       }
@@ -215,11 +230,17 @@ function downStrokes(s: Sample[]): Stroke[] {
     } else if (v > peak) {
       peak = v;
     } else if (v <= peak * stopSpeedRatio) {
-      strokes.push({ peak, start, stop: s[i - 1], last: s[i - 1], prev: null });
+      // From the step that ended the stroke: a finger that slowed by lifting isn't held.
+      let held = 0;
+      while (i + held < s.length && Math.abs(speed(s[i + held - 1], s[i + held])) <= peak * stopSpeedRatio) held++;
+      const holdEnded = i + held < s.length;
+      strokes.push({ peak, start, stop: s[i - 1], last: s[i - 1], prev: null, held, holdEnded });
       peak = 0;
     }
   }
-  if (peak > 0) strokes.push({ peak, start, stop: null, last: s[s.length - 1], prev: s[s.length - 2] });
+  if (peak > 0) {
+    strokes.push({ peak, start, stop: null, last: s[s.length - 1], prev: s[s.length - 2], held: 0, holdEnded: false });
+  }
   return strokes;
 }
 

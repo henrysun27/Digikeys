@@ -16,6 +16,7 @@ import {
   showDropouts,
   showLevel,
   showMicInfo,
+  showPlayer,
   showTest,
 } from "./debug.ts";
 import { applyH, convexHull, fitQuad, polygonArea, type Pt } from "./geometry.ts";
@@ -26,6 +27,7 @@ import {
   PRESETS,
   checkLayout,
   hitTest,
+  isAccidental,
   presetFor,
   shapeCenter,
   shapeOutline,
@@ -33,6 +35,14 @@ import {
   type Zone,
 } from "./layout.ts";
 import { startMic, type MicLevel, type Onset } from "./mic.ts";
+import {
+  leftEdge,
+  orientLayout,
+  PlayerEdgeDetector,
+  screenSide,
+  topEdge,
+  type Orientation,
+} from "./orientation.ts";
 import { requestLayout } from "./muse.ts";
 import { maskArea, maskImage, maskOutline, maskPixels, segmentFrame, type SamObject, type Segmentation } from "./sam.ts";
 import { initSound, playNow } from "./sound.ts";
@@ -84,7 +94,12 @@ const layoutStatusEl = document.querySelector<HTMLDivElement>("#layout-status")!
 const ctx = canvas.getContext("2d")!;
 
 const calibration = new Calibration();
-let layout: Layout = PRESETS[0];
+// source: the chosen layout in the player's frame; layout: it placed on the board for where
+// the player sits (orientation), which hit-testing, drawing and sound use.
+let source: Layout = PRESETS[0];
+let orientation: Orientation = { near: "1-2", left: "4-1" };
+let layout: Layout = orientLayout(source, orientation);
+const playerEdges = new PlayerEdgeDetector();
 let generated: Layout | null = null; // the last layout from Muse Spark that passed the checks
 let generating = false;
 const history = new FingerHistory();
@@ -149,6 +164,7 @@ function setStatus(text: string) {
 // Called whenever calibration changes. Test mode and tap calibration need a board to put
 // targets on.
 function updateHint() {
+  syncOrientation();
   canvas.classList.toggle("calibrating", !calibration.done);
   testBtn.disabled = !calibration.done;
   generateBtn.disabled = !calibration.done || generating;
@@ -179,6 +195,7 @@ canvas.addEventListener("click", (e) => {
 
 resetBtn.addEventListener("click", () => {
   calibration.reset();
+  forgetPlayerEdge();
   setCorrections(null);
   setProposal(null);
   samStatusEl.textContent = "";
@@ -200,13 +217,67 @@ function setLayout(l: Layout) {
     if (!generatedOption.parentElement) layoutSelect.add(generatedOption);
   }
   layoutSelect.value = PRESETS.includes(l) ? String(PRESETS.indexOf(l)) : "generated";
-  layout = l;
+  source = l;
   flashes.clear();
+  placeLayout();
+}
+
+// Places the source layout on the board for the current orientation. Targets and tap
+// calibration refer to zones of the old placement, so they start over.
+function placeLayout() {
+  layout = orientLayout(source, orientation);
   if (tapCal) setTapCal(false);
   if (test.active) {
     test.next(layout);
     updateTest();
   }
+}
+
+// Where the player sits: CONFIG.playerEdge once the hands have shown it, else the edge
+// nearest the top of the camera image. Their left follows from the board's mapping.
+// Re-places the layout when that changes. Called on calibration changes and hand results.
+function syncOrientation() {
+  const H = calibration.boardToCam;
+  const near = H ? (CONFIG.playerEdge ?? topEdge(H)) : "1-2";
+  const left = H ? leftEdge(near, H) : "4-1";
+  if (near === orientation.near && left === orientation.left) return;
+  orientation = { near, left };
+  placeLayout();
+  updatePlayerPanel();
+}
+
+function updatePlayerPanel() {
+  const H = calibration.boardToCam;
+  const { count, agreement } = playerEdges.estimate();
+  showPlayer({
+    ...orientation,
+    board: H !== null,
+    detected: CONFIG.playerEdge !== null,
+    nearSide: H ? screenSide(orientation.near, H) : null,
+    leftSide: H ? screenSide(orientation.left, H) : null,
+    samples: count,
+    agreement,
+  });
+}
+
+// New corners make the detected edge meaningless: it names an edge of the old board.
+function forgetPlayerEdge() {
+  CONFIG.playerEdge = null;
+  playerEdges.reset();
+}
+
+// Each hand over the board votes for the edge its wrist points at; the window's verdict is
+// stored in CONFIG.playerEdge (kept when the window is undecided).
+function trackPlayerEdge(hands: TrackedHand[], t: number) {
+  if (!calibration.camToBoard) return;
+  for (const { raw } of hands) {
+    const wrist = toBoard(raw[0]);
+    const tips = [8, 12, 16, 20].map((i) => toBoard(raw[i]));
+    if (wrist && tips.every((p) => p)) playerEdges.add(t, wrist, tips as Pt[]);
+  }
+  const { edge } = playerEdges.estimate();
+  if (edge) CONFIG.playerEdge = edge;
+  syncOrientation();
 }
 
 // Muse Spark gets the request, the current frame and the accepted corners, and answers with
@@ -224,7 +295,7 @@ async function generateLayout() {
   updateHint();
   layoutStatusEl.textContent = `Asking Muse Spark for "${request}"…`;
   try {
-    const reply = await requestLayout(video, calibration.corners, request);
+    const reply = await requestLayout(video, calibration.corners, request, orientation);
     const took = `${(reply.ms / 1000).toFixed(1)} s`;
     const [lo, hi] = CONFIG.layoutLimits.aspectRange;
     const aspect = reply.aspect;
@@ -441,6 +512,7 @@ acceptBtn.addEventListener("click", () => {
     return;
   }
   setCorrections(null);
+  forgetPlayerEdge();
   setProposal(null);
   samStatusEl.textContent = "Using the corners from SAM 3.1.";
   hintError = null;
@@ -532,7 +604,7 @@ function visionTap(m: FingerPick) {
     attempt.played.add(zone.id);
     attempt.checked.add(zone.id);
   }
-  if (at) pushDot({ guess: { p: at, hit: !!zone && attempt.target.zones.includes(zone) }, check: null });
+  if (at) pushDot({ guess: { p: at, hit: !!zone && attempt.target.zones.some((z) => z.id === zone.id) }, check: null });
   if (opened) {
     attempt.line = line;
     closeAttemptAt(attempt, attempt.start + attempt.window);
@@ -725,7 +797,7 @@ function onOnset(onset: Onset) {
     updateTest();
   }
   const targetHas = (zone: Zone | null) =>
-    !!zone && (calTarget ? zone.id === calTarget.id : !!attempt?.target.zones.includes(zone));
+    !!zone && (calTarget ? zone.id === calTarget.id : !!attempt?.target.zones.some((z) => z.id === zone.id));
   if (cal) {
     cal.add("guess", calTarget!, best?.at ?? null);
     updateTapCalStatus();
@@ -895,7 +967,9 @@ function useDetector(d: Detector) {
     }
     hands = tracked.hands;
     recordFingers(hands, t);
-    for (const m of history.newStops(toBoard, onBoard)) onStop(m);
+    trackPlayerEdge(hands, t);
+    const hold = CONFIG.taps.mode === "vision" ? CONFIG.taps.visionHoldFrames : 0;
+    for (const m of history.newStops(toBoard, onBoard, hold)) onStop(m);
     countDropouts(hands, tracked.lost);
     handsInFrame = hands.length;
     dirty = true;
@@ -964,7 +1038,8 @@ function drawLayout(active: Set<string>, now: number) {
   for (const zone of layout.zones) {
     const outline = shapeOutline(zone.shape).map(boardToScreen);
     tracePath(outline, true);
-    ctx.fillStyle = active.has(zone.id) ? "rgba(255, 196, 0, 0.55)" : "rgba(255, 255, 255, 0.12)";
+    const idle = isAccidental(zone) ? "rgba(0, 0, 0, 0.45)" : "rgba(255, 255, 255, 0.12)";
+    ctx.fillStyle = active.has(zone.id) ? "rgba(255, 196, 0, 0.55)" : idle;
     ctx.fill();
     const flashLeft = (flashes.get(zone.id) ?? 0) - now;
     if (flashLeft > 0) {
@@ -1171,6 +1246,7 @@ function loop() {
         showDetection(detector.kind, detector.info, n / secs, meanMs, detectorChoice);
       }
       showDropouts(dropouts);
+      updatePlayerPanel();
       last = { ...counts };
       fpsStart = now;
     }

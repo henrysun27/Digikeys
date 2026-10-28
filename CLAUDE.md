@@ -62,7 +62,11 @@ type Layout = { instrument: string; zones: Zone[] };
 
 
 
-The piano is just the first Layout (`PIANO_LAYOUT`, one row of 8 white keys, C4-C5).
+The piano is just the first Layout (`PIANO_LAYOUT`, one octave C4-C5 with sharps).
+
+Layouts are written in the player's frame (x: player's left to right, y: far edge to near
+
+edge) and placed on the board by `orientLayout` for the detected `CONFIG.playerEdge`.
 
 Hit-testing, rendering and sound all read from the active Layout; never hardcode keys
 

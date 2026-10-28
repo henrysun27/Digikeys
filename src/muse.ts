@@ -1,5 +1,6 @@
 import { CONFIG } from "./config.ts";
 import type { Pt } from "./geometry.ts";
+import type { Orientation } from "./orientation.ts";
 
 export type LayoutReply = {
   aspect: unknown; // the model's board width / depth; unchecked
@@ -44,14 +45,20 @@ function captureBoardFrame(video: HTMLVideoElement, corners: Pt[]) {
   return { image: c.toDataURL("image/jpeg", CONFIG.muse.jpegQuality), width: c.width, height: c.height, corners: px };
 }
 
-// Asks Muse Spark, through the server, for a layout for the request on this board.
-export async function requestLayout(video: HTMLVideoElement, corners: Pt[], request: string): Promise<LayoutReply> {
+// Asks Muse Spark, through the server, for a layout for the request on this board, in the
+// frame of a player sitting as `orientation` says.
+export async function requestLayout(
+  video: HTMLVideoElement,
+  corners: Pt[],
+  request: string,
+  orientation: Orientation,
+): Promise<LayoutReply> {
   const started = performance.now();
   const frame = captureBoardFrame(video, corners);
   const res = await fetch("/api/layout", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...frame, request }),
+    body: JSON.stringify({ ...frame, request, orientation }),
   });
   const body = await res.json().catch(() => ({ error: `server returned ${res.status}` }));
   if (!res.ok) throw new Error(body.error ?? `server returned ${res.status}`);
