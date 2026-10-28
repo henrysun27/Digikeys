@@ -72,6 +72,12 @@ Hit-testing, rendering and sound all read from the active Layout; never hardcode
 
 anywhere else. Milestones 6-7 generate Layouts from Meta models, so this must stay generic.
 
+Muse Spark does not place keyboard or pad geometry: it returns an `InstrumentSpec` (kind
+keyboard/pads/freeform, noteRange, scale, root, includeSharps, rows, sounds, notes) and the
+layout engine in `src/instrument.ts` builds the Zones (presets are specs too). Only
+"freeform" specs carry model-placed zones. Explicit requests win: narrow zones are built
+with a warning, never silently shrunk.
+
 
 
 ## Milestones (one at a time, commit after each)

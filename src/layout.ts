@@ -14,78 +14,13 @@ export type Layout = { instrument: string; zones: Zone[] };
 // Every drum sample sound.ts loads; generated layouts may only use these.
 export const DRUM_SAMPLES = ["kick", "snare", "hihat", "tom1", "tom2", "tom3"];
 
-type Cell = Omit<Zone, "shape">;
-
-// Layouts here, presets and generated alike, are in the player's frame: x from the
-// player's left (0) to right (1), y from the far edge (0) to the near edge (1).
-// orientLayout (orientation.ts) places them on the board for where the player sits.
-
-// Equal-size rect zones, rows far to near.
-function grid(instrument: string, rows: Cell[][]): Layout {
-  const zones = rows.flatMap((row, r) =>
-    row.map((cell, c): Zone => ({
-      ...cell,
-      shape: { kind: "rect", x: c / row.length, y: r / rows.length, w: 1 / row.length, h: 1 / rows.length },
-    })),
-  );
-  return { instrument, zones };
-}
-
-const pad = (sample: string, label: string): Cell => ({ id: sample, label, sound: { type: "drum", sample } });
-
-// One octave, C4 to C5, low notes on the player's left: 8 white keys the full depth of the
-// board, and the 5 sharps over the far part of the boundaries between them, like a real
-// keyboard seen from the bench. White keys are notched around the sharps so no zones
-// overlap. Sharps are minZoneWidth wide.
-function piano(): Layout {
-  const names = ["C", "D", "E", "F", "G", "A", "B"];
-  const whites = [...names.map((n) => `${n}4`), "C5"];
-  const kw = 1 / whites.length;
-  const bw = CONFIG.layoutLimits.minZoneWidth;
-  const depth = 0.5; // of the board, from the far edge
-  // A sharp sits at the right edge of these white keys (C, D, F, G, A).
-  const sharpAfter = (i: number) => ["C", "D", "F", "G", "A"].includes(whites[i][0]) && i < whites.length - 1;
-  const zones: Zone[] = whites.map((note, i) => {
-    const x0 = i * kw;
-    const x1 = x0 + kw;
-    const l = i > 0 && sharpAfter(i - 1) ? bw / 2 : 0; // notch on the left...
-    const r = sharpAfter(i) ? bw / 2 : 0; // ...and right
-    const pts: [number, number][] = [[x0 + l, 0], [x1 - r, 0]];
-    if (r) pts.push([x1 - r, depth], [x1, depth]);
-    pts.push([x1, 1], [x0, 1]);
-    if (l) pts.push([x0, depth], [x0 + l, depth]);
-    return { id: note, label: note, shape: { kind: "poly", pts }, sound: { type: "note", note } };
-  });
-  whites.forEach((white, i) => {
-    if (!sharpAfter(i)) return;
-    const note = `${white[0]}#4`;
-    const x = (i + 1) * kw - bw / 2;
-    zones.push({ id: note, label: note, shape: { kind: "rect", x, y: 0, w: bw, h: depth }, sound: { type: "note", note } });
-  });
-  return { instrument: "piano", zones };
-}
-
-export const PIANO_LAYOUT: Layout = piano();
-
-// Like a kit from the drummer's seat: toms across the far side, high to low, and
-// hi-hat, snare and kick nearest the player.
-export const DRUM_LAYOUT: Layout = grid("drums", [
-  [pad("tom1", "Tom 1"), pad("tom2", "Tom 2"), pad("tom3", "Tom 3")],
-  [pad("hihat", "Hi-hat"), pad("snare", "Snare"), pad("kick", "Kick")],
-]);
+// Layouts, presets and generated alike, are in the player's frame: x from the player's
+// left (0) to right (1), y from the far edge (0) to the near edge (1). orientLayout
+// (orientation.ts) places them on the board for where the player sits. The presets and
+// every spec-built layout come from the layout engine in instrument.ts.
 
 // Sharps and flats: drawn dark, like black keys.
 export const isAccidental = (z: Zone) => z.sound.type === "note" && /^[A-G][#b]/.test(z.sound.note);
-
-export const PRESETS: Layout[] = [PIANO_LAYOUT, DRUM_LAYOUT];
-
-// The preset closest to a free-text instrument request: drums for anything percussive,
-// otherwise the piano (every pitched instrument plays through the piano sampler).
-export function presetFor(request: string): Layout {
-  return /\b(drum|kit|percussion|beat|snare|kick|hi-?hat|toms?\b|cymbal|cajon|bongo|conga|tabla)/i.test(request)
-    ? DRUM_LAYOUT
-    : PIANO_LAYOUT;
-}
 
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
@@ -124,7 +59,7 @@ function checkShape(v: unknown): Shape | string {
   return `has an unknown shape kind "${String(v.kind)}"`;
 }
 
-function checkSound(v: unknown): Sound | string {
+export function checkSound(v: unknown): Sound | string {
   if (!isObj(v)) return "has no sound";
   if (v.type === "drum") {
     const sample = v.sample;
@@ -140,12 +75,13 @@ function checkSound(v: unknown): Sound | string {
   return `has an unknown sound type "${String(v.type)}"`;
 }
 
-// Checks an untrusted layout (from a model, in the player's frame) and returns it cleaned
-// up, or why it can't be used: zones inside 0-1, at least the minimum size (minZoneSide
-// both ways, minZoneWidth across the player's view), and not overlapping. Areas and
-// overlaps are measured by hit-testing a checkGrid x checkGrid grid of sample points, so
-// rects and polys are treated alike and zones sharing an edge don't count as overlapping.
-export function checkLayout(v: unknown): { layout: Layout } | { problem: string } {
+// Checks a layout (from a model, or built from a spec, in the player's frame) and returns
+// it cleaned up, or why it can't be used: zones inside 0-1, at least minZoneSide deep and
+// minZoneArea in area, and not overlapping. Zones narrower than minZoneWidth are allowed,
+// since explicit requests win, but reported as a warning. Areas and overlaps are measured
+// by hit-testing a checkGrid x checkGrid grid of sample points, so rects and polys are
+// treated alike and zones sharing an edge don't count as overlapping.
+export function checkLayout(v: unknown): { layout: Layout; warning: string | null } | { problem: string } {
   const { maxZones, minZoneSide, minZoneWidth, minZoneArea, maxOverlap, checkGrid } = CONFIG.layoutLimits;
   if (!isObj(v) || !Array.isArray(v.zones)) return { problem: "no zones" };
   if (v.zones.length === 0 || v.zones.length > maxZones) {
@@ -166,6 +102,8 @@ export function checkLayout(v: unknown): { layout: Layout } | { problem: string 
     zones.push({ id, label, shape, sound });
   }
 
+  let narrow = 0;
+  let narrowest = Infinity;
   for (const z of zones) {
     const pts = shapeOutline(z.shape);
     const xs = pts.map((p) => p.x);
@@ -173,13 +111,15 @@ export function checkLayout(v: unknown): { layout: Layout } | { problem: string 
     const w = Math.max(...xs) - Math.min(...xs);
     const h = Math.max(...ys) - Math.min(...ys);
     // The epsilon lets a zone sized exactly at the minimum through despite float rounding.
-    if (w < minZoneSide - 1e-6 || h < minZoneSide - 1e-6) {
-      return { problem: `"${z.label}" is ${w.toFixed(3)} x ${h.toFixed(3)}, under the ${minZoneSide} minimum side` };
+    if (h < minZoneSide - 1e-6) {
+      return { problem: `"${z.label}" is ${h.toFixed(3)} deep, under the ${minZoneSide} minimum` };
     }
-    if (w < minZoneWidth - 1e-6) {
-      return { problem: `"${z.label}" is ${w.toFixed(3)} wide, under the ${minZoneWidth} minimum width (too many zones side by side)` };
-    }
+    if (w < minZoneWidth - 1e-6) narrow++;
+    narrowest = Math.min(narrowest, w);
   }
+  const warning = narrow
+    ? `${narrow} of ${zones.length} zones are narrower than a finger (${minZoneWidth} of the board; narrowest ${narrowest.toFixed(3)})`
+    : null;
 
   const n = zones.length;
   const area = new Array<number>(n).fill(0); // in grid samples
@@ -213,7 +153,7 @@ export function checkLayout(v: unknown): { layout: Layout } | { problem: string 
     }
   }
   const instrument = typeof v.instrument === "string" && v.instrument.trim() ? v.instrument.trim() : "generated";
-  return { layout: { instrument, zones } };
+  return { layout: { instrument, zones }, warning };
 }
 
 export function shapeOutline(shape: Shape): Pt[] {

@@ -23,17 +23,8 @@ import { applyH, convexHull, fitQuad, polygonArea, type Pt } from "./geometry.ts
 import { HAND_CONNECTIONS, HandTracking, type TrackedHand } from "./hand-tracking.ts";
 import { createDetector, type Detector } from "./detectors.ts";
 import type { HandFrame } from "./hand-detector.ts";
-import {
-  PRESETS,
-  checkLayout,
-  hitTest,
-  isAccidental,
-  presetFor,
-  shapeCenter,
-  shapeOutline,
-  type Layout,
-  type Zone,
-} from "./layout.ts";
+import { describeSpec, layoutFromSpec, PRESETS, presetFor } from "./instrument.ts";
+import { hitTest, isAccidental, shapeCenter, shapeOutline, type Layout, type Zone } from "./layout.ts";
 import { startMic, type MicLevel, type Onset } from "./mic.ts";
 import {
   leftEdge,
@@ -289,9 +280,10 @@ function trackPlayerEdge(hands: TrackedHand[], t: number) {
 }
 
 // Muse Spark gets the request, the current frame and the accepted corners, and answers with
-// the board's estimated aspect and a layout for it. Anything unusable falls back to the
-// preset matching the request, with the reason in the layout status line, after `heard`
-// (the voice transcript and its timings, when the request was spoken).
+// the board's estimated aspect and an InstrumentSpec, which the layout engine builds.
+// Anything unusable falls back to the preset matching the request, with the reason in the
+// layout status line, after `heard` (the voice transcript and its timings, when the request
+// was spoken). The status line shows the spec, the model's notes and any narrow-zone warning.
 async function generateLayout(heard = "") {
   if (!calibration.done || video.videoWidth === 0 || generating) return;
   const request = instrumentInput.value.trim() || CONFIG.muse.defaultRequest;
@@ -305,20 +297,27 @@ async function generateLayout(heard = "") {
   layoutStatusEl.textContent = `${heard}Asking Muse Spark for "${request}"…`;
   try {
     const reply = await requestLayout(video, calibration.corners, request, orientation);
-    const took = `${(reply.ms / 1000).toFixed(1)} s`;
+    const reasoning = reply.usage?.completion_tokens_details?.reasoning_tokens;
+    const tokens = reply.usage?.completion_tokens;
+    const took =
+      `${(reply.ms / 1000).toFixed(1)} s` +
+      (tokens !== undefined ? `, ${tokens} tokens${reasoning !== undefined ? ` (${reasoning} reasoning)` : ""}` : "");
     const [lo, hi] = CONFIG.layoutLimits.aspectRange;
-    const aspect = reply.aspect;
-    const checked = checkLayout(reply.layout);
-    if (typeof aspect !== "number" || !(aspect >= lo && aspect <= hi)) {
-      fallback(`board aspect ${String(aspect)} is outside ${lo}-${hi} (${took})`);
-    } else if ("problem" in checked) {
-      fallback(`${checked.problem} (${took})`);
+    const aspect = typeof reply.aspect === "number" && reply.aspect >= lo && reply.aspect <= hi ? reply.aspect : null;
+    const built = layoutFromSpec(reply.spec);
+    if ("problem" in built) {
+      fallback(`${built.problem} (${took})`);
+    } else if (built.spec.kind === "freeform" && aspect === null) {
+      // Freeform zones were placed for the model's aspect; without a plausible one they're guesses.
+      fallback(`board aspect ${String(reply.aspect)} is outside ${lo}-${hi} (${took})`);
     } else {
-      setLayout(checked.layout);
-      const why = typeof reply.aspectReasoning === "string" ? ` (${reply.aspectReasoning})` : "";
+      setLayout(built.layout);
+      const { spec, layout: l, warning } = built;
+      const board = aspect !== null ? ` Board ≈ ${aspect.toFixed(2)}:1.` : "";
+      const notes = spec.notes ? ` Muse Spark: "${spec.notes}".` : "";
       layoutStatusEl.textContent =
-        `${heard}Muse Spark: ${checked.layout.instrument}, ${checked.layout.zones.length} zones in ${took}. ` +
-        `Board ≈ ${aspect.toFixed(2)}:1${why}.`;
+        `${heard}Muse Spark spec in ${took}: ${l.instrument}, ${describeSpec(spec, l)}.${board}${notes}` +
+        (warning ? ` ⚠ ${warning}.` : "");
     }
   } catch (err) {
     console.error(err);

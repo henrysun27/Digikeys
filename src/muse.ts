@@ -4,8 +4,8 @@ import type { Orientation } from "./orientation.ts";
 
 export type LayoutReply = {
   aspect: unknown; // the model's board width / depth; unchecked
-  aspectReasoning: unknown;
-  layout: unknown; // { instrument, zones } as the model gave it; unchecked
+  spec: unknown; // an InstrumentSpec as the model gave it; unchecked
+  usage: { completion_tokens?: number; completion_tokens_details?: { reasoning_tokens?: number } } | null;
   model: string;
   ms: number; // round trip as seen by the browser
   serverMs: number;
@@ -45,8 +45,8 @@ function captureBoardFrame(video: HTMLVideoElement, corners: Pt[]) {
   return { image: c.toDataURL("image/jpeg", CONFIG.muse.jpegQuality), width: c.width, height: c.height, corners: px };
 }
 
-// Asks Muse Spark, through the server, for a layout for the request on this board, in the
-// frame of a player sitting as `orientation` says.
+// Asks Muse Spark, through the server, for an instrument spec for the request on this board,
+// in the frame of a player sitting as `orientation` says.
 export async function requestLayout(
   video: HTMLVideoElement,
   corners: Pt[],

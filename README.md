@@ -116,7 +116,8 @@ All code in this repo was written during the hackathon.
       polygons are treated alike), known notes and drum samples, a plausible aspect. A
       layout that fails, or a failed request, falls back to the matching preset (drums for
       percussive requests, otherwise piano) with the reason in the layout status line. The
-      generated layout joins the instrument picker. Generation takes about 5-15 s.
+      generated layout joins the instrument picker. Generation took about 5-15 s; Muse Spark
+      now returns an InstrumentSpec instead of zones (see "Instrument specs" below).
       The shape schema is one flat object with `kind` plus all fields rather than an
       `anyOf` of rect and poly: the API writes keys in alphabetical order, so with `anyOf`
       the first key picked the branch and a model starting with `kind` was forced into a
@@ -217,6 +218,28 @@ All code in this repo was written during the hackathon.
         redrew ~3000/s and starved detection entirely; the new one held 30/s.
       The status line shows the main thread's time per hand result, redraws per second
       and time per redraw, next to the detection rate and time in the debug panel.
+- [x] Instrument specs and a layout engine: "two octave keyboard" used to come back as one
+      octave (13 zones), because the width cap overrode the request without saying so, and
+      Muse Spark spent 12.7 s placing geometry by hand. Now Muse Spark returns an
+      InstrumentSpec (`kind` keyboard/pads/freeform, `noteRange`, `scale` + `root`,
+      `includeSharps`, `rows`, `sounds`, `notes` explaining any compromise) and
+      `src/instrument.ts` builds the zones from it deterministically. Keyboard: the notes of
+      the scale in the range; chromatic with sharps is a piano (white keys to the near edge,
+      black keys on the far half centered on the boundaries, white keys notched around them;
+      black key width is `minZoneWidth` kept within 0.5-0.7 of a white key), chromatic
+      without sharps is the white keys, any other scale one equal key per note (flat-key
+      roots are labeled with flats). Pads: an even grid of `rows` rows, a short last row
+      centered, playing `sounds` or the scale's notes. Only "freeform" specs carry zones
+      placed by Muse Spark (for a ring-shaped steel drum, say), and only those need a
+      plausible board aspect. Explicit requests win: zones narrower than `minZoneWidth` are
+      built anyway, and the status line shows Muse Spark's `notes` ("2 octaves: keys are
+      narrow on this board") and the measured warning ("10 of 24 zones are narrower than a
+      finger"). Depth, area, overlap and count (now 49, a 4-octave piano) are still hard
+      limits. The presets are specs built by the same engine (geometry identical to the old
+      hand-built ones). The status line shows the spec, Muse Spark's time and tokens. With
+      `reasoning_effort: "minimal"` and 4000 max tokens, keyboard and pad specs took
+      2.8-3.9 s (270-590 reasoning tokens) on a synthetic desk frame, against 3.5-6.1 s with
+      "low" for the same specs; freeform layouts took 4.4-6.6 s.
 
 ## Meta models
 
@@ -225,8 +248,9 @@ All code in this repo was written during the hackathon.
   from `server/index.ts`; the output is parsed with Meta's `@meta-sam/parser`.
 - **Muse Spark 1.3** (`muse-spark-1.3`, Chat Completions at
   `https://api.meta.ai/v1/chat/completions`, image input, `response_format` JSON schema,
-  `reasoning_effort: "low"`): estimates the board's aspect ratio from a camera frame and
-  generates instrument Layouts for it (milestone 6). Called only from `server/index.ts`.
+  `reasoning_effort: "minimal"`): estimates the board's aspect ratio from a camera frame and
+  turns the instrument request into an InstrumentSpec, which `src/instrument.ts` builds
+  into a Layout (milestone 6). Called only from `server/index.ts`.
 - **Muse Voice Transcribe** (`muse-voice-transcribe-1.0`, `POST
   https://api.meta.ai/v1/asr/transcribe`, multipart: a JSON `request` part and a 16 kHz mono
   16-bit WAV `audio` part, PUSH_TO_TALK mode): turns the spoken instrument request into
@@ -270,7 +294,7 @@ with `latencyHint: "interactive"` and `lookAhead: 0`, and notes trigger at
 - [x] Zone width cap: every zone must be at least `layoutLimits.minZoneWidth` (0.07 of the
       board width, about a finger) wide across the player's view. The prompt states the
       resulting cap (14 zones side by side, so a piano gets one octave, not two) and
-      `checkLayout` rejects narrower zones. Asked for "piano" on a synthetic A4-landscape
+      `checkLayout` rejected narrower zones (now a warning: see "Instrument specs"). Asked for "piano" on a synthetic A4-landscape
       frame, Muse Spark (10 s) returned C4-C5 with the sharps 0.07 wide on the far side,
       which passed the checks and lands low notes on the screen's left and sharps at the
       bottom for a player at the top of the image.

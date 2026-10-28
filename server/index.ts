@@ -115,8 +115,9 @@ async function segment(image: string, prompt: string) {
   return { outcome: result.outcome.status, diagnostics: result.diagnostics.length, objects };
 }
 
-// Asks Muse Spark for the board's aspect and a Layout, as schema-constrained JSON. The
-// layout is returned as the model gave it; the browser validates it.
+// Asks Muse Spark for the board's aspect and an InstrumentSpec, as schema-constrained JSON.
+// The spec is returned as the model gave it (freeform zones in Layout form); the browser
+// validates it and builds the layout.
 async function generateLayout(
   image: string,
   request: string,
@@ -143,7 +144,7 @@ async function generateLayout(
       ],
       response_format: {
         type: "json_schema",
-        json_schema: { name: "desk_layout", strict: true, schema: LAYOUT_SCHEMA },
+        json_schema: { name: "instrument_spec", strict: true, schema: LAYOUT_SCHEMA },
       },
       reasoning_effort: m.reasoningEffort,
       max_completion_tokens: m.maxCompletionTokens,
@@ -160,18 +161,14 @@ async function generateLayout(
   }
   const content = choice?.message?.content;
   if (!content) throw new HttpError(502, `${m.model} returned no content (finish_reason ${choice?.finish_reason})`);
-  let out: { aspectReasoning?: unknown; boardAspect?: unknown; instrument?: unknown; zones?: unknown };
+  let out: { boardAspect?: unknown; zones?: unknown } & Record<string, unknown>;
   try {
     out = JSON.parse(content);
   } catch {
     throw new HttpError(502, `${m.model} returned invalid JSON`);
   }
-  return {
-    aspect: out.boardAspect,
-    aspectReasoning: out.aspectReasoning,
-    layout: { instrument: out.instrument, zones: toZones(out.zones) },
-    usage: body.usage ?? null,
-  };
+  const { boardAspect, ...spec } = out;
+  return { aspect: boardAspect, spec: { ...spec, zones: toZones(out.zones) }, usage: body.usage ?? null };
 }
 
 // Muse Voice Transcribe, one buffered request per push-to-talk clip (PUSH_TO_TALK mode: the
@@ -260,8 +257,9 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     const started = performance.now();
     const out = await generateLayout(image, request.trim(), width, height, corners, orientation);
     const ms = Math.round(performance.now() - started);
-    const zones = Array.isArray(out.layout.zones) ? out.layout.zones.length : "no";
-    console.log(`layout "${request}": ${zones} zone(s), aspect ${String(out.aspect)}, ${ms} ms`);
+    const { zones: _, ...brief } = out.spec;
+    console.log(`layout "${request}": ${ms} ms, aspect ${String(out.aspect)}, ${JSON.stringify(brief)}`);
+    console.log(`  usage ${JSON.stringify(out.usage)}`);
     send(res, 200, { ...out, model: CONFIG.muse.model, ms });
     return;
   }

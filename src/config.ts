@@ -179,13 +179,14 @@ export const CONFIG = {
     minSurfaceFrac: 0.05, // reject a surface mask smaller than this fraction of the frame
     looseFitRatio: 1.3, // warn when the fitted quad's area exceeds the mask's by this ratio
   },
-  // Instrument layouts from Muse Spark, through Chat Completions with a JSON schema
-  // (model ID from https://dev.meta.ai/docs/models).
+  // Instrument specs from Muse Spark, through Chat Completions with a JSON schema (model ID
+  // from https://dev.meta.ai/docs/models). It picks what to build; instrument.ts builds it.
   muse: {
     model: "muse-spark-1.3",
     defaultRequest: "drum kit", // default for the instrument box
-    reasoningEffort: "low", // minimal | low | medium | high | xhigh ("none" is a 400)
-    maxCompletionTokens: 8000, // reasoning plus the JSON
+    reasoningEffort: "minimal", // minimal | low | medium | high | xhigh ("none" is a 400)
+    // Reasoning plus the JSON. A spec is ~150 tokens; freeform zones need more.
+    maxCompletionTokens: 4000,
     jpegQuality: 0.85,
   },
   // Push-to-talk instrument requests through Muse Voice Transcribe (POST /v1/asr/transcribe,
@@ -204,21 +205,28 @@ export const CONFIG = {
     keywords: ["drum kit", "piano", "xylophone", "marimba", "bongos", "glockenspiel", "kalimba", "steel drum"],
     maxWavBytes: 1_000_000, // 5 s at 16 kHz is 160 kB
   },
+  // The layout engine (instrument.ts) for keyboards: black keys are blackKeyDepth of the
+  // board deep from the far edge, and minZoneWidth wide, kept within blackKeyWidth (fractions
+  // of a white key) so narrow white keys keep a usable neck between them.
+  keyboard: {
+    blackKeyDepth: 0.5,
+    blackKeyWidth: [0.5, 0.7] as [number, number],
+  },
   // Checks on generated layouts, in board coords (0-1 on both axes). A layout that fails
   // any of them is replaced by the matching preset.
   layoutLimits: {
-    maxZones: 24,
+    maxZones: 49, // a 4-octave piano, C to C
     maxPolyPts: 16,
-    minZoneSide: 0.05, // each zone's bounding box, along both axes
-    // ...and at least this wide across the player's view (left to right), about one finger.
-    // Caps how many zones fit side by side: a piano gets about one octave.
+    minZoneSide: 0.05, // each zone's depth (y)
+    // About one finger across the player's view (left to right). Narrower zones are still
+    // built when the request asks for them (explicit requests win), with a warning.
     minZoneWidth: 0.07,
     minZoneArea: 0.004,
     boundsTolerance: 0.005, // coords this far outside 0-1 are clamped, not rejected
     maxOverlap: 0.02, // fraction of the smaller zone two zones may share (rounding slop)
     checkGrid: 200, // samples per axis when measuring zone areas and overlaps
     noteOctaves: [1, 7], // allowed octaves for note zones
-    aspectRange: [0.2, 5], // plausible board width / depth
+    aspectRange: [0.2, 5], // plausible board width / depth; checked for freeform layouts
   },
 };
 
