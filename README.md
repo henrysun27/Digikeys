@@ -137,28 +137,38 @@ All code in this repo was written during the hackathon.
       line shows the transcript and timings (audio length, WAV encoding, transcription,
       round trip), then the Muse Spark result. A 1.8 s clip took about 1.2 s to transcribe.
 - [x] Milestone 7: object pads. "Scan objects" (after calibration) captures a frame and
-      `POST /api/objects/segment` runs SAM 3.1 on it. SAM 3.1 has no prompt-free mode (one
-      noun phrase, or box/point prompts, per request), and no single generic phrase found
-      everything on test desk photos ("object" and "objects" find nothing), so four phrases
-      run in parallel ("objects on the desk", "desk items", "everyday objects", "electronic
-      device") and `src/objects.ts` merges their matches: specks under 0.15% and matches
-      over 30% of the frame are dropped, as is the calibrated board itself (IoU over 0.6),
-      and a match sharing over half of the smaller one's area with a more confident match is
-      the same object. Each object's outline is its mask's convex hull, simplified to 16
-      points and mapped onto the desk plane through the board's homography (objects may lie
-      off the board; points too close to the plane's horizon are refused). Each object's
-      crop, with everything outside its mask dimmed, goes to Muse Spark in parallel
-      (`POST /api/objects/describe`, structured output: isObject, name, material, sound,
-      pitch). Sounds are the drum samples plus synthesized voices for objects: bell
-      (ceramic), chime (glass), metal, woodblock (wood), pluck (plastic), shaker (soft);
-      paper gets the snare. Every object becomes a poly Zone labeled with its name, above
-      every instrument zone (smaller objects above larger ones), and plays through the same
-      tap pipeline: "on the board" now also means "on an object pad". With no scan, taps and
-      keys behave exactly as before; new corners clear the objects. On two CC0 desk photos
-      the scan took about 1.5 s for SAM (19-25 matches) and 2-2.5 s for 8-10 parallel Muse
-      Spark calls, and found every object (mug → bell, phone → hi-hat, sticky notes and a
-      printed sheet → snare, pencils → woodblock, highlighters → pluck, crumpled paper →
-      shaker, laptop → tom). Not yet tried on the camera.
+      runs three steps, each shown with its time in the object status line:
+      1. Muse Spark lists the kinds of objects on the desk (`POST /api/objects/list`,
+         structured output: name and count per kind), from the frame with the board
+         outlined in magenta. It leaves out the board, hands, arms, the desk and what is on
+         screens, and names each kind with a short common noun phrase for the segmenter
+         ("tablet", not "iPad").
+      2. SAM 3.1 runs each name as a text prompt, all in parallel
+         (`POST /api/objects/segment`). SAM 3.1 has no prompt-free mode (one noun phrase,
+         or box/point prompts, per request); an earlier version used four fixed generic
+         phrases, which missed objects and matched pictures on screens. The status line
+         shows how many matches each name got. `src/objects.ts` merges them: nothing is
+         dropped for its size or shape, only the calibrated board itself (IoU over 0.6) and
+         a match sharing over half of the smaller one's area with a more confident match
+         (one object under two names). Each object's outline is its mask's convex hull,
+         simplified to 16 points and mapped onto the desk plane through the board's
+         homography (objects may lie off the board; points too close to the plane's horizon
+         are refused).
+      3. Each object's crop, with everything outside its mask dimmed, goes to Muse Spark in
+         parallel with the name SAM found it under (`POST /api/objects/describe`,
+         structured output: name, material, sound, pitch).
+      Sounds are the drum samples plus synthesized voices for objects: bell (ceramic), chime
+      (glass), metal, woodblock (wood), pluck (plastic), shaker (soft); paper gets the
+      snare. Every object becomes a poly Zone labeled with its name, above every instrument
+      zone (smaller objects above larger ones), and plays through the same tap pipeline: a
+      landing counts if it is on the board or on an object pad, and a landing off both says
+      how far outside the nearest pad it fell. The status line lists every SAM match not
+      used and why. With no scan, taps and keys behave exactly as before; new corners clear
+      the objects. On four CC0 desk photos a scan took 5-8 s (listing 1.9-4 s, SAM 1-2.6 s,
+      sounds 1.9-2.9 s for 5-16 objects in parallel) and found tablets, laptops, monitors,
+      keyboards, mice and a mouse pad, phones, mugs, notebooks, sticky notes, pens and
+      pencils, crumpled paper; a few listed names got no SAM match (in one photo "pencil"
+      and "dice", in another "printed paper"). Camera test: mug → bell G5.
 - [x] Two-hand tracking: hands are followed frame to frame by wrist position instead of
       MediaPipe's hand index or handedness label, which could swap between frames and mix
       the two hands' finger histories. Each detection pairs with the nearest tracked wrist
@@ -282,14 +292,15 @@ All code in this repo was written during the hackathon.
 
 - **SAM 3.1** (`sam-3.1`, Responses API at `https://api.meta.ai/v1/responses`, streamed,
   one-bit masks): finds the playing surface in a camera frame (milestone 5) and the objects
-  on the desk, with four generic phrases in parallel (milestone 7). Called only from
-  `server/index.ts`; the output is parsed with Meta's `@meta-sam/parser`.
+  on the desk, with each name Muse Spark listed as a text prompt (milestone 7). Called
+  only from `server/index.ts`; the output is parsed with Meta's `@meta-sam/parser`.
 - **Muse Spark 1.3** (`muse-spark-1.3`, Chat Completions at
   `https://api.meta.ai/v1/chat/completions`, image input, `response_format` JSON schema,
   `reasoning_effort: "minimal"`): estimates the board's aspect ratio from a camera frame and
   turns the instrument request into an InstrumentSpec, which `src/instrument.ts` builds
-  into a Layout (milestone 6). For object pads, it names each object from its crop, with
-  its material and a fitting sound and pitch (milestone 7). Called only from
+  into a Layout (milestone 6). For object pads, it lists the kinds of objects on the desk
+  for SAM 3.1 to segment, then names each object from its crop, with its material and a
+  fitting sound and pitch (milestone 7). Called only from
   `server/index.ts`.
 - **Muse Voice Transcribe** (`muse-voice-transcribe-1.0`, `POST
   https://api.meta.ai/v1/asr/transcribe`, multipart: a JSON `request` part and a 16 kHz mono

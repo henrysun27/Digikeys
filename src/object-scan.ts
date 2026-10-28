@@ -1,18 +1,21 @@
-// "Scan objects": one frame goes to SAM 3.1 with every generic phrase, the matches are merged
-// into distinct objects (objects.ts), and each object's crop goes to Muse Spark, all at
-// once, for its name, material and sound. Each object becomes a poly Zone on the desk plane.
+// "Scan objects": Muse Spark lists the kinds of objects on the desk in one frame, SAM 3.1
+// segments each listed name (all in parallel), the matches are merged into distinct objects
+// (objects.ts), and each object's crop goes to Muse Spark, all at once, for its name,
+// material and sound. Each object becomes a poly Zone on the desk plane.
 import { CONFIG } from "./config.ts";
 import type { Mat3, Pt } from "./geometry.ts";
 import type { Zone } from "./layout.ts";
-import { describeObjectCrop } from "./muse.ts";
+import { describeObjectCrop, listObjectsIn } from "./muse.ts";
 import {
   checkDescription,
+  checkObjectList,
   matchName,
   objectOutline,
   objectZones,
   outlineToBoard,
   selectObjects,
   soundName,
+  type ListedObject,
   type ObjectDescription,
   type ObjectMatch,
 } from "./objects.ts";
@@ -20,13 +23,30 @@ import { captureFrame, maskImage, maskPixels, segmentObjectsIn } from "./sam.ts"
 
 export type ScanReport = {
   zones: Zone[];
+  listed: (ListedObject & { matches: number })[]; // Muse Spark's list, with SAM matches per name
   found: string[]; // per object pad: "coffee mug (ceramic) → bell C6"
-  skipped: string[]; // per match not used, and why
-  matches: number; // SAM matches over all phrases
-  failedPhrases: string[];
-  segmentMs: number; // SAM round trip
-  describeMs: number; // all Muse Spark calls, in parallel
+  skipped: string[]; // per SAM match not used, and why
+  failedNames: string[]; // names whose SAM request failed, with the error
+  listMs: number; // Muse Spark listing round trip
+  segmentMs: number; // SAM round trip, all names in parallel
+  describeMs: number; // all Muse Spark descriptions, in parallel
 };
+
+// The frame with the board outlined in magenta, as Muse Spark is told; corners in pixels.
+function withBoard(frame: HTMLCanvasElement, corners: Pt[]): string {
+  const c = document.createElement("canvas");
+  c.width = frame.width;
+  c.height = frame.height;
+  const g = c.getContext("2d")!;
+  g.drawImage(frame, 0, 0);
+  g.strokeStyle = "#ff00ff";
+  g.lineWidth = Math.max(2, c.height / 300);
+  g.beginPath();
+  corners.forEach((p, i) => (i === 0 ? g.moveTo(p.x, p.y) : g.lineTo(p.x, p.y)));
+  g.closePath();
+  g.stroke();
+  return c.toDataURL("image/jpeg", CONFIG.muse.jpegQuality);
+}
 
 // The match's box plus a margin, from the unmirrored frame, with everything outside its mask
 // dimmed so the model knows which thing is meant.
@@ -67,15 +87,35 @@ export async function scanObjects(
 ): Promise<ScanReport> {
   const frame = captureFrame(video);
   const { width, height } = frame;
-  const phrases = CONFIG.objects.prompts.length;
-  progress(`Scanning objects: SAM 3.1 with ${phrases} phrases…`);
-  const segStarted = performance.now();
-  const seg = await segmentObjectsIn(frame.image);
-  const segmentMs = performance.now() - segStarted;
-
   const board = corners.map((p) => ({ x: p.x * width, y: p.y * height }));
+
+  progress("Scanning objects: Muse Spark listing what is on the desk…");
+  let started = performance.now();
+  const reply = await listObjectsIn(withBoard(frame.canvas, board));
+  const listMs = performance.now() - started;
+  const names = checkObjectList(reply.list);
+  if (typeof names === "string") throw new Error(`Muse Spark's object list: ${names}`);
+  const report: ScanReport = {
+    zones: [],
+    listed: names.map((n) => ({ ...n, matches: 0 })),
+    found: [],
+    skipped: [],
+    failedNames: [],
+    listMs,
+    segmentMs: 0,
+    describeMs: 0,
+  };
+  if (names.length === 0) return report;
+
+  progress(`Scanning objects: SAM 3.1 segmenting ${names.map((n) => n.name).join(", ")}…`);
+  started = performance.now();
+  const seg = await segmentObjectsIn(frame.image, names.map((n) => n.name));
+  report.segmentMs = performance.now() - started;
+  for (const l of report.listed) l.matches = seg.objects.filter((o) => o.prompt === l.name).length;
+  report.failedNames = seg.failed.map((f) => `"${f.prompt}": ${f.error}`);
+
   const { kept, dropped } = selectObjects(seg.objects, width, height, board);
-  const skipped = dropped.map((d) => `${matchName(d.match)}: ${d.why}`);
+  report.skipped = dropped.map((d) => `${matchName(d.match)}: ${d.why}`);
   const camCenter = {
     x: corners.reduce((s, p) => s + p.x, 0) / corners.length,
     y: corners.reduce((s, p) => s + p.y, 0) / corners.length,
@@ -83,18 +123,18 @@ export async function scanObjects(
   const placed: { match: ObjectMatch; pts: [number, number][] }[] = [];
   for (const match of kept) {
     const pts = outlineToBoard(objectOutline(match), width, height, camToBoard, camCenter);
-    if (typeof pts === "string") skipped.push(`${matchName(match)}: ${pts}`);
+    if (typeof pts === "string") report.skipped.push(`${matchName(match)}: ${pts}`);
     else placed.push({ match, pts });
   }
 
   let named = 0;
-  const show = () => progress(`Scanning objects: Muse Spark naming ${named} of ${placed.length}…`);
+  const show = () => progress(`Scanning objects: Muse Spark picking sounds, ${named} of ${placed.length}…`);
   show();
-  const descStarted = performance.now();
+  started = performance.now();
   const replies = await Promise.all(
     placed.map(async ({ match }) => {
       try {
-        const r = await describeObjectCrop(cropOf(frame.canvas, match));
+        const r = await describeObjectCrop(cropOf(frame.canvas, match), match.prompt);
         return checkDescription(r.description);
       } catch (err) {
         return err instanceof Error ? err.message : String(err);
@@ -104,36 +144,22 @@ export async function scanObjects(
       }
     }),
   );
-  const describeMs = performance.now() - descStarted;
+  report.describeMs = performance.now() - started;
 
-  // An object Muse Spark couldn't describe stays playable under a plain name and sound.
+  // An object Muse Spark couldn't describe stays playable under its listed name and a plain
+  // sound.
   const items: { pts: [number, number][]; area: number; desc: ObjectDescription }[] = [];
-  const found: string[] = [];
   placed.forEach(({ match, pts }, i) => {
-    let desc = replies[i];
-    if (typeof desc === "string") {
-      skipped.push(`${matchName(match)}: Muse Spark failed (${desc}), kept as a plain woodblock`);
-      desc = {
-        isObject: true,
-        name: `object ${items.length + 1}`,
-        material: "",
-        sound: { type: "voice", voice: "woodblock", note: "G5" },
-      };
-    } else if (!desc.isObject) {
-      skipped.push(`${matchName(match)}: Muse Spark says not an object (${desc.name})`);
-      return;
-    }
+    const reply = replies[i];
+    const failed = typeof reply === "string";
+    const desc: ObjectDescription = failed
+      ? { name: match.prompt, material: "", sound: { type: "voice", voice: "woodblock", note: "G5" } }
+      : reply;
     items.push({ pts, area: maskPixels(match), desc });
     const material = desc.material ? ` (${desc.material})` : "";
-    found.push(`${desc.name}${material} → ${soundName(desc.sound)}`);
+    const why = failed ? ` (no sound from Muse Spark: ${reply})` : "";
+    report.found.push(`${desc.name}${material} → ${soundName(desc.sound)}${why}`);
   });
-  return {
-    zones: objectZones(items),
-    found,
-    skipped,
-    matches: seg.objects.length,
-    failedPhrases: seg.failed.map((f) => `"${f.prompt}": ${f.error}`),
-    segmentMs,
-    describeMs,
-  };
+  report.zones = objectZones(items);
+  return report;
 }

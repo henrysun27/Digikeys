@@ -44,9 +44,12 @@ const toSamObject = (o: WireObject): SamObject => ({
   mask: { width: o.mask.width, height: o.mask.height, data: unpackBits(o.mask.bits, o.mask.width * o.mask.height) },
 });
 
-// Object pads: every generic phrase in CONFIG.objects.prompts on one frame, through the
-// server. Matches are tagged with their phrase; failed lists phrases that errored.
-export async function segmentObjectsIn(image: string): Promise<{
+// Object pads: each name as a text prompt on one frame, in parallel, through the server.
+// Matches are tagged with their name; failed lists names that errored.
+export async function segmentObjectsIn(
+  image: string,
+  prompts: string[],
+): Promise<{
   objects: (SamObject & { prompt: string })[];
   failed: { prompt: string; error: string }[];
   serverMs: number;
@@ -54,7 +57,7 @@ export async function segmentObjectsIn(image: string): Promise<{
   const res = await fetch("/api/objects/segment", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ image }),
+    body: JSON.stringify({ image, prompts }),
   });
   const body = await res.json().catch(() => ({ error: `server returned ${res.status}` }));
   if (!res.ok) throw new Error(body.error ?? `server returned ${res.status}`);

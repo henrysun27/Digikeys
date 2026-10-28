@@ -1,13 +1,34 @@
-// Object pads (milestone 7): SAM 3.1 matches for generic desk-object phrases are merged into
-// distinct objects, each object's outline goes onto the desk plane through the board's
-// homography, and Muse Spark's description of its crop picks the sound. Free of DOM calls so
-// it runs on recorded matches in Node too; the browser side is object-scan.ts.
+// Object pads (milestone 7): Muse Spark lists the kinds of objects on the desk, SAM 3.1's
+// matches for those names are merged into distinct objects, each object's outline goes onto
+// the desk plane through the board's homography, and Muse Spark's description of its crop
+// picks the sound. Free of DOM calls so it runs on recorded matches in Node too; the browser
+// side is object-scan.ts.
 import { CONFIG } from "./config.ts";
 import { convexHull, cross, pointInPolygon, type Mat3, type Pt } from "./geometry.ts";
 import { DRUM_SAMPLES, OBJECT_VOICES, type Sound, type Zone } from "./layout.ts";
-import { maskOutline, maskPixels, type SamObject } from "./sam.ts";
+import { maskOutline, type SamObject } from "./sam.ts";
 
-// A SAM match and the phrase that found it.
+// A kind of object Muse Spark saw on the desk: the name is SAM 3.1's text prompt.
+export type ListedObject = { name: string; count: number };
+
+// Checks Muse Spark's list ({objects: [{name, count}]}): names trimmed, lowercased for
+// comparison and deduplicated, at most maxNames and maxPromptChars each; a count under 1
+// becomes 1.
+export function checkObjectList(v: unknown): ListedObject[] | string {
+  const list = typeof v === "object" && v !== null ? (v as Record<string, unknown>).objects : null;
+  if (!Array.isArray(list)) return "no object list";
+  const out: ListedObject[] = [];
+  for (const item of list) {
+    if (typeof item !== "object" || item === null) continue;
+    const { name, count } = item as Record<string, unknown>;
+    const n = typeof name === "string" ? name.trim().slice(0, CONFIG.server.maxPromptChars) : "";
+    if (!n || out.some((o) => o.name.toLowerCase() === n.toLowerCase())) continue;
+    out.push({ name: n, count: typeof count === "number" && count >= 1 ? Math.round(count) : 1 });
+  }
+  return out.slice(0, CONFIG.objects.maxNames);
+}
+
+// A SAM match and the name that found it.
 export type ObjectMatch = SamObject & { prompt: string };
 
 const confidence = (m: ObjectMatch) => m.confidence ?? 0;
@@ -42,17 +63,18 @@ function shared(a: Set<number>, b: Set<number>): number {
   return n;
 }
 
-// Picks distinct objects from all phrases' matches (frame width x height pixels): drops
-// specks and desk-sized matches, the board itself (board: its corners in frame pixels, or
-// null), and matches that repeat a more confident one (sharing more than maxOverlap of the
-// smaller), then keeps the maxObjects most confident. dropped says why for each other match.
+// Picks distinct objects from all names' matches (frame width x height pixels). Size and
+// shape never count: only the board itself is dropped (board: its corners in frame pixels,
+// or null), along with matches that repeat a more confident one (sharing more than
+// maxOverlap of the smaller: one object under two names), past maxObjects. dropped says
+// why for each other match.
 export function selectObjects(
   matches: ObjectMatch[],
   width: number,
   height: number,
   board: Pt[] | null,
 ): { kept: ObjectMatch[]; dropped: { match: ObjectMatch; why: string }[] } {
-  const { minFrac, maxFrac, maxOverlap, boardIoU, overlapGrid, maxObjects } = CONFIG.objects;
+  const { maxOverlap, boardIoU, overlapGrid, maxObjects } = CONFIG.objects;
   const cols = overlapGrid;
   const cell = width / cols;
   const rows = Math.ceil(height / cell);
@@ -67,20 +89,13 @@ export function selectObjects(
   const dropped: { match: ObjectMatch; why: string }[] = [];
   const kept: { match: ObjectMatch; cells: Set<number> }[] = [];
   for (const match of [...matches].sort((a, b) => confidence(b) - confidence(a))) {
-    const frac = maskPixels(match) / (width * height);
-    const pct = `${(frac * 100).toFixed(2)}% of the frame`;
-    if (frac < minFrac) {
-      dropped.push({ match, why: `too small (${pct})` });
-      continue;
-    }
-    if (frac > maxFrac) {
-      dropped.push({ match, why: `too large (${pct}): the desk or a group` });
-      continue;
-    }
     const mine = cells(match, cols, rows, cell);
+    // A mask smaller than a grid cell still takes part, as the cell at its center.
     if (mine.size === 0) {
-      dropped.push({ match, why: "empty mask" });
-      continue;
+      const b = match.bounds;
+      const gx = Math.min(cols - 1, Math.floor((b.left + b.right) / 2 / cell));
+      const gy = Math.min(rows - 1, Math.floor((b.top + b.bottom) / 2 / cell));
+      mine.add(gy * cols + gx);
     }
     if (boardCells.size) {
       const inter = shared(mine, boardCells);
@@ -151,13 +166,12 @@ export function outlineToBoard(
   return pts;
 }
 
-// What Muse Spark says about one crop, checked. isObject false: not a distinct object
-// (the desk, a hand, a shadow, a fragment).
-export type ObjectDescription = { isObject: boolean; name: string; material: string; sound: Sound };
+// What Muse Spark says about one object's crop, checked.
+export type ObjectDescription = { name: string; material: string; sound: Sound };
 
 const PITCH = /^[A-G](?:#|b)?\d$/;
 
-// Checks the model's reply ({isObject, name, material, sound, pitch}). sound is one of
+// Checks the model's reply ({name, material, sound, pitch}). sound is one of
 // OBJECT_VOICES or DRUM_SAMPLES; a pitched voice without a usable pitch gets its default.
 export function checkDescription(v: unknown): ObjectDescription | string {
   if (typeof v !== "object" || v === null) return "no description";
@@ -175,7 +189,7 @@ export function checkDescription(v: unknown): ObjectDescription | string {
     const ok = PITCH.test(pitch) && octave >= lo && octave <= hi;
     out = { type: "voice", voice: sound, note: ok ? pitch : (OBJECT_VOICES[sound] ?? "C5") };
   } else return `unknown sound "${sound}"`;
-  return { isObject: r.isObject !== false, name, material: str(r.material, 24), sound: out };
+  return { name, material: str(r.material, 24), sound: out };
 }
 
 // A sound's short name for labels and the status line: "bell C6", "snare".

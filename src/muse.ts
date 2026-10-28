@@ -45,18 +45,30 @@ function captureBoardFrame(video: HTMLVideoElement, corners: Pt[]) {
   return { image: c.toDataURL("image/jpeg", CONFIG.muse.jpegQuality), width: c.width, height: c.height, corners: px };
 }
 
-// Asks Muse Spark, through the server, what one object crop is and what it should sound
-// like. description is unchecked (checkDescription in objects.ts).
-export async function describeObjectCrop(image: string): Promise<{ description: unknown; ms: number; serverMs: number }> {
-  const started = performance.now();
-  const res = await fetch("/api/objects/describe", {
+async function postObjects(path: string, body: unknown) {
+  const res = await fetch(`/api/objects/${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ image }),
+    body: JSON.stringify(body),
   });
-  const body = await res.json().catch(() => ({ error: `server returned ${res.status}` }));
-  if (!res.ok) throw new Error(body.error ?? `server returned ${res.status}`);
-  return { description: body.description, ms: performance.now() - started, serverMs: body.ms };
+  const out = await res.json().catch(() => ({ error: `server returned ${res.status}` }));
+  if (!res.ok) throw new Error(out.error ?? `server returned ${res.status}`);
+  return out;
+}
+
+// Asks Muse Spark, through the server, which kinds of objects are on the desk. image: the
+// frame with the board outlined. list is unchecked (checkObjectList in objects.ts).
+export async function listObjectsIn(image: string): Promise<{ list: unknown; serverMs: number }> {
+  const body = await postObjects("list", { image });
+  return { list: body.list, serverMs: body.ms };
+}
+
+// Asks Muse Spark, through the server, what one object crop is and what it should sound
+// like; prompt is the name SAM found it under. description is unchecked (checkDescription
+// in objects.ts).
+export async function describeObjectCrop(image: string, prompt: string): Promise<{ description: unknown; serverMs: number }> {
+  const body = await postObjects("describe", { image, prompt });
+  return { description: body.description, serverMs: body.ms };
 }
 
 // Asks Muse Spark, through the server, for an instrument spec for the request on this board,

@@ -635,9 +635,10 @@ function clearObjects() {
   objectStatusEl.textContent = "";
 }
 
-// "Scan objects": SAM 3.1 finds the objects in the current frame and Muse Spark names each
-// one and picks its sound (object-scan.ts). The status line lists the pads, then each SAM
-// match not used and why, one per line.
+// "Scan objects": Muse Spark lists the objects on the desk, SAM 3.1 segments each name, and
+// Muse Spark picks each object's sound (object-scan.ts). The status line shows the list with
+// SAM's matches per name, each step's time, the pads, then every SAM match not used and why,
+// one per line.
 async function scanForObjects() {
   const H = calibration.camToBoard;
   if (!calibration.done || !H || video.videoWidth === 0 || scanning) return;
@@ -647,18 +648,21 @@ async function scanForObjects() {
   try {
     const r = await scanObjects(video, H, calibration.corners, (text) => (objectStatusEl.textContent = text));
     setObjects(r.zones);
-    const secs = ((performance.now() - started) / 1000).toFixed(1);
-    const timing =
-      `${secs} s: SAM 3.1 ${r.segmentMs.toFixed(0)} ms (${r.matches} matches), ` +
-      `Muse Spark ${r.describeMs.toFixed(0)} ms`;
-    const failed = r.failedPhrases.length ? ` Phrases that failed: ${r.failedPhrases.join("; ")}.` : "";
-    const skipped = r.skipped.length
-      ? `\n${r.skipped.length} match(es) not used:\n${r.skipped.map((s) => `· ${s}`).join("\n")}`
-      : "";
-    objectStatusEl.textContent = r.zones.length
-      ? `${r.zones.length} object pad(s) in ${timing}: ${r.found.join(", ")}.${failed}${skipped}`
-      : `No objects found in ${timing}.${failed}${skipped}`;
-    console.info("object scan", { found: r.found, skipped: r.skipped, zones: r.zones });
+    const s = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
+    const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "es"}`;
+    const listed = r.listed.map((l) => `${l.name}${l.count > 1 ? ` ×${l.count}` : ""} → ${plural(l.matches, "match")}`);
+    const lines = [
+      r.listed.length
+        ? `Muse Spark listed ${r.listed.length} kind(s) of object: ${listed.join(", ")}.`
+        : "Muse Spark listed no objects on the desk.",
+      `Times: listing ${s(r.listMs)}, SAM 3.1 ${s(r.segmentMs)}, sounds ${s(r.describeMs)}, ` +
+        `total ${s(performance.now() - started)}.`,
+      r.zones.length ? `${r.zones.length} object pad(s): ${r.found.join(", ")}.` : "No object pads.",
+    ];
+    if (r.failedNames.length) lines.push(`SAM 3.1 failed for ${r.failedNames.join("; ")}.`);
+    if (r.skipped.length) lines.push(`${r.skipped.length} SAM match(es) not used:`, ...r.skipped.map((x) => `· ${x}`));
+    objectStatusEl.textContent = lines.join("\n");
+    console.info("object scan", r);
   } catch (err) {
     console.error(err);
     objectStatusEl.textContent = `Object scan failed: ${err instanceof Error ? err.message : String(err)}`;

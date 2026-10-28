@@ -4,7 +4,7 @@ import { decodeMaskToRaster, parseImageStream, recordsOfKind, type ResponsesEven
 import { CONFIG } from "../src/config.ts";
 import { LAYOUT_INSTRUCTIONS, LAYOUT_SCHEMA, layoutRequestText, toZones, type Corner } from "./layout-prompt.ts";
 import { EDGES, type Edge, type Orientation } from "../src/orientation.ts";
-import { OBJECT_INSTRUCTIONS, OBJECT_SCHEMA } from "./object-prompt.ts";
+import { describeText, LIST_INSTRUCTIONS, LIST_SCHEMA, OBJECT_INSTRUCTIONS, OBJECT_SCHEMA } from "./object-prompt.ts";
 
 const apiKey = process.env.MODEL_API_KEY?.trim() || null;
 
@@ -189,11 +189,23 @@ async function generateLayout(
   return { aspect: boardAspect, spec: { ...spec, zones: toZones(out.zones) }, usage };
 }
 
-// Object pads: SAM 3.1 has no prompt-free mode, so every generic phrase in
-// CONFIG.objects.prompts runs on the frame in parallel. Matches come back tagged with their
-// phrase; the browser merges them. A phrase that fails is reported, unless all do.
-async function segmentObjects(image: string) {
-  const prompts = CONFIG.objects.prompts;
+// Object pads, step 1: Muse Spark lists the kinds of objects on the desk (the board
+// outlined in the image), as {objects: [{name, count}]}, unchecked.
+async function listObjects(image: string) {
+  const { out, usage } = await museJson(
+    LIST_INSTRUCTIONS,
+    "List the objects on this desk.",
+    image,
+    { name: "desk_objects", schema: LIST_SCHEMA },
+    CONFIG.objects.listMaxCompletionTokens,
+  );
+  return { list: out, usage };
+}
+
+// Step 2: SAM 3.1 has no prompt-free mode, so each listed name runs as a text prompt, all in
+// parallel. Matches come back tagged with their name; the browser merges them. A name that
+// fails is reported, unless all do.
+async function segmentObjects(image: string, prompts: string[]) {
   const runs = await Promise.allSettled(prompts.map((p) => segment(image, p)));
   const objects = runs.flatMap((r, i) =>
     r.status === "fulfilled" ? r.value.objects.map((o) => ({ ...o, prompt: prompts[i] })) : [],
@@ -203,15 +215,16 @@ async function segmentObjects(image: string) {
       ? [{ prompt: prompts[i], error: r.reason instanceof Error ? r.reason.message : String(r.reason) }]
       : [],
   );
-  if (failed.length === runs.length) throw new HttpError(502, `every phrase failed: ${failed[0].error}`);
+  if (failed.length === runs.length) throw new HttpError(502, `every name failed: ${failed[0].error}`);
   return { objects, failed };
 }
 
-// Muse Spark names one object crop, its material and a sound (unchecked; the browser checks).
-async function describeObject(image: string) {
+// Step 3: Muse Spark names one object's crop, its material and a sound (unchecked; the
+// browser checks). prompt: the name SAM found it under.
+async function describeObject(image: string, prompt: string) {
   const { out, usage } = await museJson(
     OBJECT_INSTRUCTIONS,
-    "Describe the highlighted object and pick its sound.",
+    describeText(prompt),
     image,
     { name: "object_pad", schema: OBJECT_SCHEMA },
     CONFIG.objects.maxCompletionTokens,
@@ -276,26 +289,38 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     send(res, 200, { ...out, ms });
     return;
   }
-  if (req.method === "POST" && (path === "/api/objects/segment" || path === "/api/objects/describe")) {
+  if (req.method === "POST" && path.startsWith("/api/objects/")) {
     if (!apiKey) throw new HttpError(500, "MODEL_API_KEY is not set in .env");
-    const body = (await readJson(req)) as { image?: unknown };
-    const image = body?.image;
+    const body = (await readJson(req)) as { image?: unknown; prompts?: unknown; prompt?: unknown };
+    const { image, prompts, prompt } = body ?? {};
     if (typeof image !== "string" || !image.startsWith("data:image/")) {
       throw new HttpError(400, "image must be an image data URL");
     }
+    const { maxPromptChars } = CONFIG.server;
+    const isPrompt = (p: unknown): p is string => typeof p === "string" && p.trim() !== "" && p.length <= maxPromptChars;
     const started = performance.now();
-    if (path === "/api/objects/segment") {
-      const out = await segmentObjects(image);
+    if (path === "/api/objects/list") {
+      const out = await listObjects(image);
+      const ms = Math.round(performance.now() - started);
+      console.log(`object list: ${JSON.stringify(out.list)}, ${ms} ms`);
+      send(res, 200, { ...out, model: CONFIG.muse.model, ms });
+    } else if (path === "/api/objects/segment") {
+      const max = CONFIG.objects.maxNames;
+      if (!Array.isArray(prompts) || prompts.length < 1 || prompts.length > max || !prompts.every(isPrompt)) {
+        throw new HttpError(400, `prompts must be 1-${max} names of 1-${maxPromptChars} characters`);
+      }
+      const out = await segmentObjects(image, prompts.map((p) => p.trim()));
       const ms = Math.round(performance.now() - started);
       const failed = out.failed.map((f) => `; "${f.prompt}" failed: ${f.error}`).join("");
-      console.log(`objects: ${out.objects.length} match(es) from ${CONFIG.objects.prompts.length} phrases, ${ms} ms${failed}`);
+      console.log(`objects: ${out.objects.length} match(es) from ${prompts.length} names, ${ms} ms${failed}`);
       send(res, 200, { ...out, ms });
-    } else {
-      const out = await describeObject(image);
+    } else if (path === "/api/objects/describe") {
+      if (!isPrompt(prompt)) throw new HttpError(400, `prompt must be 1-${maxPromptChars} characters`);
+      const out = await describeObject(image, prompt.trim());
       const ms = Math.round(performance.now() - started);
-      console.log(`object: ${JSON.stringify(out.description)}, ${ms} ms`);
+      console.log(`object "${prompt}": ${JSON.stringify(out.description)}, ${ms} ms`);
       send(res, 200, { ...out, model: CONFIG.muse.model, ms });
-    }
+    } else throw new HttpError(404, `no route for ${req.method} ${path}`);
     return;
   }
   if (req.method === "POST" && path === "/api/layout") {

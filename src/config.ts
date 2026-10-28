@@ -194,20 +194,17 @@ export const CONFIG = {
     jpegQuality: 0.85,
   },
   // Object pads (milestone 7). SAM 3.1 has no prompt-free mode (one noun phrase, or
-  // box/point prompts, per request), so each scan runs these generic phrases in parallel
-  // and merges the matches; tested on desk photos, no one phrase found everything.
+  // box/point prompts, per request), so Muse Spark first lists the kinds of objects on the
+  // desk and each name becomes a SAM 3.1 text prompt, all run in parallel.
   objects: {
-    prompts: ["objects on the desk", "desk items", "everyday objects", "electronic device"],
-    // Per match, as a fraction of the frame: smaller is a speck, larger is the desk or a
-    // group of things.
-    minFrac: 0.0015,
-    maxFrac: 0.3,
+    maxNames: 12, // kinds of objects Muse Spark may list
+    listMaxCompletionTokens: 2000,
     // Two matches sharing more than this fraction of the smaller one are the same object
-    // (or one is part of the other): the more confident one is kept.
+    // (listed under two names, or one is part of the other): the more confident one is kept.
     maxOverlap: 0.5,
     boardIoU: 0.6, // a match overlapping the calibrated board this much is the board itself
     overlapGrid: 320, // cells across the frame when measuring overlaps
-    maxObjects: 12, // most confident first
+    maxObjects: 24, // pads at most, most confident first
     maxPts: 16, // outline vertices (convex hull, simplified)
     // Outline points may be at most 1/minDepthRatio times as far (along the desk plane, in
     // perspective) as the board's center; nearer the plane's horizon the homography blows up.
