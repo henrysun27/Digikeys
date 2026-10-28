@@ -24,7 +24,7 @@ import { HAND_CONNECTIONS, HandTracking, type TrackedHand } from "./hand-trackin
 import { createDetector, type Detector } from "./detectors.ts";
 import type { HandFrame } from "./hand-detector.ts";
 import { describeSpec, layoutFromSpec, PRESETS, presetFor } from "./instrument.ts";
-import { hitTest, isAccidental, shapeCenter, shapeOutline, type Layout, type Zone } from "./layout.ts";
+import { hitTest, isAccidental, shapeOutline, zoneAnchor, zStack, type Layout, type Zone } from "./layout.ts";
 import { startMic, type MicLevel, type Onset } from "./mic.ts";
 import {
   leftEdge,
@@ -1138,10 +1138,25 @@ function tracePath(pts: Pt[], close: boolean) {
   if (close) ctx.closePath();
 }
 
+// Low z first, each zone clipped to what the zones above it leave visible (even-odd: the
+// whole canvas minus their outlines), so black keys sit on top of the white keys under them
+// and white keys' outlines stop at their edges. Labels go on afterwards, at each zone's
+// visible anchor.
 function drawLayout(active: Set<string>, now: number) {
   if (!calibration.done) return;
-  for (const zone of layout.zones) {
-    const outline = shapeOutline(zone.shape).map(boardToScreen);
+  const outlines = new Map(layout.zones.map((z) => [z.id, shapeOutline(z.shape).map(boardToScreen)]));
+  for (const { zone, above } of zStack(layout)) {
+    const outline = outlines.get(zone.id)!;
+    ctx.save();
+    if (above.length) {
+      ctx.beginPath();
+      ctx.rect(0, 0, canvas.width, canvas.height);
+      for (const o of above) {
+        outlines.get(o.id)!.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+        ctx.closePath();
+      }
+      ctx.clip("evenodd");
+    }
     tracePath(outline, true);
     const idle = isAccidental(zone) ? "rgba(0, 0, 0, 0.45)" : "rgba(255, 255, 255, 0.12)";
     ctx.fillStyle = active.has(zone.id) ? "rgba(255, 196, 0, 0.55)" : idle;
@@ -1159,9 +1174,10 @@ function drawLayout(active: Set<string>, now: number) {
     ctx.strokeStyle = isTarget ? "#00e676" : "rgba(255, 255, 255, 0.85)";
     ctx.lineWidth = isTarget ? 5 : 2;
     ctx.stroke();
-    drawLabel(zone, outline);
+    ctx.restore();
   }
-  if (tapCal?.zone) drawCrosshair(boardToScreen(shapeCenter(tapCal.zone.shape)));
+  for (const zone of layout.zones) drawLabel(zone, outlines.get(zone.id)!);
+  if (tapCal?.zone) drawCrosshair(boardToScreen(zoneAnchor(layout, tapCal.zone)));
 }
 
 // The point to tap during tap calibration.
@@ -1204,7 +1220,7 @@ function drawDots() {
 
 // Text stays upright in screen space, sized to the key's on-screen footprint.
 function drawLabel(zone: Zone, outline: Pt[]) {
-  const c = boardToScreen(shapeCenter(zone.shape));
+  const c = boardToScreen(zoneAnchor(layout, zone));
   const xs = outline.map((p) => p.x);
   const ys = outline.map((p) => p.y);
   const extent = Math.min(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));

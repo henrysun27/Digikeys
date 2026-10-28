@@ -1,6 +1,6 @@
 import { CONFIG } from "./config.ts";
 import type { Pt } from "./geometry.ts";
-import { shapeCenter, type Layout, type Zone } from "./layout.ts";
+import { zoneAnchor, type Layout, type Zone } from "./layout.ts";
 
 // Offset correction in board coords: corrected = raw + (dx, dy), the mean of (zone center
 // aimed at - raw tap position) over calibration taps, fitted separately for guess and
@@ -71,6 +71,7 @@ export function saveCorrections(c: TapCorrections | null) {
 // Walks through the layout's zones, tapsPerZone taps each. Positions are recorded raw
 // (uncorrected board coords): the guess at the onset, the check once it resolves.
 export class TapCalibration {
+  private readonly layout: Layout;
   private readonly zones: Zone[];
   private index = 0;
   private tapsOnZone = 0;
@@ -78,6 +79,7 @@ export class TapCalibration {
   private readonly pairs: Record<TapKind, Pair[]> = { guess: [], check: [] };
 
   constructor(layout: Layout) {
+    this.layout = layout;
     this.zones = [...layout.zones];
   }
 
@@ -103,7 +105,8 @@ export class TapCalibration {
   }
 
   add(kind: TapKind, zone: Zone, raw: Pt | null) {
-    if (raw) this.pairs[kind].push({ raw, target: shapeCenter(zone.shape) });
+    // The target is where the crosshair is drawn: the middle of the zone's visible part.
+    if (raw) this.pairs[kind].push({ raw, target: zoneAnchor(this.layout, zone) });
   }
 
   // The tap's check has resolved (with or without a position).

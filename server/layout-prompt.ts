@@ -92,6 +92,10 @@ export const LAYOUT_SCHEMA = closed({
       label: { type: "string", description: "short text drawn on the zone, e.g. C4 or Snare" },
       shape: SHAPE,
       sound: { anyOf: [NOTE, DRUM] },
+      z: {
+        type: "integer",
+        description: "priority where zones overlap: the higher z wins taps and is drawn on top (usually 0)",
+      },
     }),
   },
 });
@@ -134,7 +138,9 @@ use still need a value: noteRange "" and "", rows 1, sounds [], zones [], root "
 Freeform zones only: coordinates are in the player's frame. x runs 0-1 from the player's left
 to right along the near edge; y runs 0-1 from the far edge (0) to the near edge (1). A zone w
 wide and h deep is (w * boardAspect) : h in real proportions, so a square is w = h / boardAspect.
-Zones lie inside 0-1, don't overlap, are at least ${minZoneWidth} wide and ${minZoneSide} deep. Prefer
+Zones lie inside 0-1 and are at least ${minZoneWidth} wide and ${minZoneSide} deep. Zones at the same z
+must not overlap; a zone with a higher z may lie on top of lower ones and wins taps there
+(e.g. black keys z 1 over full white keys z 0), as long as each lower zone stays mostly uncovered. Prefer
 "rect"; "poly" (${maxPolyPts} points at most) only when a shape really helps. Labels are short, ids unique.`;
 export function layoutRequestText(
   request: string,

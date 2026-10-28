@@ -72,25 +72,25 @@ const DRUM_LABELS: Record<string, string> = {
   tom3: "Tom 3",
 };
 
-// Zones with unique ids (the sound's name, suffixed on repeats).
-function zonesOf(cells: { sound: Sound; shape: Shape }[]): Zone[] {
+// Zones with unique ids (the sound's name, suffixed on repeats); z 0 unless given.
+function zonesOf(cells: { sound: Sound; shape: Shape; z?: number }[]): Zone[] {
   const ids = new Set<string>();
-  return cells.map(({ sound, shape }) => {
+  return cells.map(({ sound, shape, z = 0 }) => {
     const name = sound.type === "note" ? sound.note : sound.sample;
     let id = name;
     for (let n = 2; ids.has(id); n++) id = `${name}-${n}`;
     ids.add(id);
     const label = sound.type === "note" ? sound.note : (DRUM_LABELS[sound.sample] ?? sound.sample);
-    return { id, label, shape, sound };
+    return { id, label, shape, sound, z };
   });
 }
 
 const note = (m: number, flats = false): Sound => ({ type: "note", note: noteName(m, flats) });
 const rect = (x: number, y: number, w: number, h: number): Shape => ({ kind: "rect", x, y, w, h });
 
-// A piano from lo to hi, widened to start and end on white keys: white keys the full depth,
-// black keys over the far part of the boundaries, white keys notched around them so no
-// zones overlap.
+// A piano from lo to hi, widened to start and end on white keys: white keys the full depth
+// at z 0, black keys over the far part of the boundaries at z 1, so a tap where they
+// overlap plays the black key.
 function piano(lo: number, hi: number): Zone[] {
   if (isBlack(lo)) lo--;
   if (isBlack(hi)) hi++;
@@ -99,20 +99,11 @@ function piano(lo: number, hi: number): Zone[] {
   const kw = 1 / whites.length;
   const { blackKeyDepth: depth, blackKeyWidth } = CONFIG.keyboard;
   const bw = Math.min(blackKeyWidth[1] * kw, Math.max(blackKeyWidth[0] * kw, CONFIG.layoutLimits.minZoneWidth));
-  const sharpAfter = (m: number) => m < hi && isBlack(m + 1);
-  const cells = whites.map((m, i) => {
-    const x0 = i * kw;
-    const x1 = x0 + kw;
-    const l = i > 0 && sharpAfter(whites[i - 1]) ? bw / 2 : 0; // notch on the left...
-    const r = sharpAfter(m) ? bw / 2 : 0; // ...and right
-    const pts: [number, number][] = [[x0 + l, 0], [x1 - r, 0]];
-    if (r) pts.push([x1 - r, depth], [x1, depth]);
-    pts.push([x1, 1], [x0, 1]);
-    if (l) pts.push([x0, depth], [x0 + l, depth]);
-    return { sound: note(m), shape: { kind: "poly", pts } as Shape };
-  });
+  const cells = whites.map((m, i) => ({ sound: note(m), shape: rect(i * kw, 0, kw, 1), z: 0 }));
   whites.forEach((m, i) => {
-    if (sharpAfter(m)) cells.push({ sound: note(m + 1), shape: rect((i + 1) * kw - bw / 2, 0, bw, depth) });
+    if (m < hi && isBlack(m + 1)) {
+      cells.push({ sound: note(m + 1), shape: rect((i + 1) * kw - bw / 2, 0, bw, depth), z: 1 });
+    }
   });
   return zonesOf(cells);
 }

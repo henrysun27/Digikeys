@@ -54,7 +54,9 @@ type Sound =
 
   | { type: "drum"; sample: string };   // e.g. "snare"
 
-type Zone = { id: string; label: string; shape: Shape; sound: Sound };
+// z: hit-test priority where zones overlap; the highest z under a point wins and is drawn
+// on top (black keys z 1 over full white keys z 0). Zones at the same z must not overlap.
+type Zone = { id: string; label: string; shape: Shape; sound: Sound; z: number };
 
 type Layout = { instrument: string; zones: Zone[] };
 

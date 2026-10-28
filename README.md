@@ -240,6 +240,17 @@ All code in this repo was written during the hackathon.
       `reasoning_effort: "minimal"` and 4000 max tokens, keyboard and pad specs took
       2.8-3.9 s (270-590 reasoning tokens) on a synthetic desk frame, against 3.5-6.1 s with
       "low" for the same specs; freeform layouts took 4.4-6.6 s.
+- [x] Zone z-order: every Zone has a `z`; where zones overlap, the highest z wins the
+      hit-test (regardless of zone order) and is drawn on top. The engine's pianos now
+      use full-depth white key rects at z 0 with the black keys over them at z 1, instead
+      of white keys notched around the black keys. `checkLayout` allows overlaps between
+      different z, still rejects them within the same z, and requires each zone's part
+      left uncovered by higher zones to meet `minZoneArea`. Freeform zones from Muse Spark
+      carry `z` too (asked for a toy piano with black keys on top, it returned exactly
+      that: white keys z 0, black keys z 1). Zones are drawn low z first, each clipped
+      to what higher zones leave visible, and labels, the tap-calibration crosshair and
+      its fit target sit at the middle of each zone's visible part (`zoneAnchor`), so a
+      white key's label and target are on its uncovered near part.
 
 ## Meta models
 

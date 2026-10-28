@@ -225,6 +225,7 @@ export const CONFIG = {
     boundsTolerance: 0.005, // coords this far outside 0-1 are clamped, not rejected
     maxOverlap: 0.02, // fraction of the smaller zone two zones may share (rounding slop)
     checkGrid: 200, // samples per axis when measuring zone areas and overlaps
+    anchorGrid: 60, // samples per axis when finding where to label and aim at a zone
     noteOctaves: [1, 7], // allowed octaves for note zones
     aspectRange: [0.2, 5], // plausible board width / depth; checked for freeform layouts
   },

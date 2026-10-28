@@ -8,7 +8,9 @@ export type Shape =
 export type Sound =
   | { type: "note"; note: string } // e.g. "C4"
   | { type: "drum"; sample: string }; // e.g. "snare"
-export type Zone = { id: string; label: string; shape: Shape; sound: Sound };
+// z: hit-test priority where zones overlap; the highest z under a point wins and is drawn on
+// top (black keys z 1 over white keys z 0). Zones at the same z must not overlap.
+export type Zone = { id: string; label: string; shape: Shape; sound: Sound; z: number };
 export type Layout = { instrument: string; zones: Zone[] };
 
 // Every drum sample sound.ts loads; generated layouts may only use these.
@@ -76,11 +78,12 @@ export function checkSound(v: unknown): Sound | string {
 }
 
 // Checks a layout (from a model, or built from a spec, in the player's frame) and returns
-// it cleaned up, or why it can't be used: zones inside 0-1, at least minZoneSide deep and
-// minZoneArea in area, and not overlapping. Zones narrower than minZoneWidth are allowed,
-// since explicit requests win, but reported as a warning. Areas and overlaps are measured
-// by hit-testing a checkGrid x checkGrid grid of sample points, so rects and polys are
-// treated alike and zones sharing an edge don't count as overlapping.
+// it cleaned up, or why it can't be used: zones inside 0-1, at least minZoneSide deep, at
+// least minZoneArea left visible by the zones above them, and not overlapping zones at the
+// same z (a higher z may cover a lower one: it wins taps there). Zones narrower than
+// minZoneWidth are allowed, since explicit requests win, but reported as a warning. Areas
+// and overlaps are measured by hit-testing a checkGrid x checkGrid grid of sample points,
+// so rects and polys are treated alike and zones sharing an edge don't count as overlapping.
 export function checkLayout(v: unknown): { layout: Layout; warning: string | null } | { problem: string } {
   const { maxZones, minZoneSide, minZoneWidth, minZoneArea, maxOverlap, checkGrid } = CONFIG.layoutLimits;
   if (!isObj(v) || !Array.isArray(v.zones)) return { problem: "no zones" };
@@ -99,7 +102,8 @@ export function checkLayout(v: unknown): { layout: Layout; warning: string | nul
     let id = isObj(z) && typeof z.id === "string" && z.id ? z.id : label;
     for (let n = 2; ids.has(id); n++) id = `${id}-${n}`;
     ids.add(id);
-    zones.push({ id, label, shape, sound });
+    const zv = isObj(z) && isNum(z.z) ? Math.round(z.z) : 0;
+    zones.push({ id, label, shape, sound, z: zv });
   }
 
   let narrow = 0;
@@ -123,7 +127,8 @@ export function checkLayout(v: unknown): { layout: Layout; warning: string | nul
 
   const n = zones.length;
   const area = new Array<number>(n).fill(0); // in grid samples
-  const shared = new Array<number>(n * n).fill(0);
+  const visible = new Array<number>(n).fill(0); // samples where no higher zone covers it
+  const shared = new Array<number>(n * n).fill(0); // same-z pairs only
   const inside: number[] = [];
   for (let gy = 0; gy < checkGrid; gy++) {
     for (let gx = 0; gx < checkGrid; gx++) {
@@ -132,16 +137,19 @@ export function checkLayout(v: unknown): { layout: Layout; warning: string | nul
       zones.forEach((z, i) => {
         if (inShape(p, z.shape)) inside.push(i);
       });
+      const top = Math.max(...inside.map((i) => zones[i].z));
       for (const i of inside) {
         area[i]++;
-        for (const j of inside) if (j > i) shared[i * n + j]++;
+        if (zones[i].z === top) visible[i]++;
+        for (const j of inside) if (j > i && zones[j].z === zones[i].z) shared[i * n + j]++;
       }
     }
   }
   const samples = checkGrid * checkGrid;
   for (let i = 0; i < n; i++) {
-    if (area[i] / samples < minZoneArea) {
-      return { problem: `"${zones[i].label}" covers ${((area[i] / samples) * 100).toFixed(2)}% of the board, under the ${minZoneArea * 100}% minimum` };
+    if (visible[i] / samples < minZoneArea) {
+      const covered = visible[i] < area[i] ? " left uncovered by the zones above it" : "";
+      return { problem: `"${zones[i].label}" has ${((visible[i] / samples) * 100).toFixed(2)}% of the board${covered}, under the ${minZoneArea * 100}% minimum` };
     }
   }
   for (let i = 0; i < n; i++) {
@@ -183,7 +191,66 @@ function inShape(p: Pt, shape: Shape): boolean {
   return pointInPolygon(p, shapeOutline(shape));
 }
 
-// p is in board coordinates.
+// The highest-z zone under p (board coordinates); the earliest on a tie.
 export function hitTest(layout: Layout, p: Pt): Zone | null {
-  return layout.zones.find((z) => inShape(p, z.shape)) ?? null;
+  let hit: Zone | null = null;
+  for (const z of layout.zones) if ((!hit || z.z > hit.z) && inShape(p, z.shape)) hit = z;
+  return hit;
+}
+
+type Box = { x0: number; y0: number; x1: number; y1: number };
+function bounds(shape: Shape): Box {
+  const pts = shapeOutline(shape);
+  const xs = pts.map((p) => p.x);
+  const ys = pts.map((p) => p.y);
+  return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
+}
+
+// Zones low z first, each with the higher-z zones whose bounds overlap it, for drawing:
+// each zone is drawn clipped to what those leave visible. Cached per layout.
+const stacks = new WeakMap<Layout, { zone: Zone; above: Zone[] }[]>();
+export function zStack(layout: Layout): { zone: Zone; above: Zone[] }[] {
+  let stack = stacks.get(layout);
+  if (!stack) {
+    const boxes = new Map(layout.zones.map((z) => [z, bounds(z.shape)]));
+    const meets = (a: Box, b: Box) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+    stack = [...layout.zones]
+      .sort((a, b) => a.z - b.z)
+      .map((zone) => ({
+        zone,
+        above: layout.zones.filter((o) => o.z > zone.z && meets(boxes.get(o)!, boxes.get(zone)!)),
+      }));
+    stacks.set(layout, stack);
+  }
+  return stack;
+}
+
+// Where to label a zone and aim taps at it: the middle of its part that wins hit-tests
+// (sampled on an anchorGrid grid), or its shape's center if that misses. A white key's
+// anchor sits on its uncovered near part, below the black keys. Cached per layout.
+const anchors = new WeakMap<Layout, Map<string, Pt>>();
+export function zoneAnchor(layout: Layout, zone: Zone): Pt {
+  let map = anchors.get(layout);
+  if (!map) {
+    const g = CONFIG.layoutLimits.anchorGrid;
+    const sums = new Map<string, { x: number; y: number; n: number }>();
+    for (let gy = 0; gy < g; gy++) {
+      for (let gx = 0; gx < g; gx++) {
+        const p = { x: (gx + 0.5) / g, y: (gy + 0.5) / g };
+        const hit = hitTest(layout, p);
+        if (!hit) continue;
+        const s = sums.get(hit.id) ?? { x: 0, y: 0, n: 0 };
+        s.x += p.x;
+        s.y += p.y;
+        s.n++;
+        sums.set(hit.id, s);
+      }
+    }
+    map = new Map([...sums].map(([id, s]) => [id, { x: s.x / s.n, y: s.y / s.n }]));
+    anchors.set(layout, map);
+  }
+  const a = map.get(zone.id) ?? shapeCenter(zone.shape);
+  // A concave visible part (a white key between two black keys) can have its mean outside
+  // itself; then the shape's center is used.
+  return hitTest(layout, a)?.id === zone.id ? a : shapeCenter(zone.shape);
 }
