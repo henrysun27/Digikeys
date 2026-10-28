@@ -44,6 +44,7 @@ import {
   type Orientation,
 } from "./orientation.ts";
 import { requestLayout } from "./muse.ts";
+import { Recording, transcribe } from "./voice.ts";
 import { maskArea, maskImage, maskOutline, maskPixels, segmentFrame, type SamObject, type Segmentation } from "./sam.ts";
 import { initSound, playNow } from "./sound.ts";
 import {
@@ -90,6 +91,7 @@ const retryBtn = document.querySelector<HTMLButtonElement>("#retry")!;
 const discardBtn = document.querySelector<HTMLButtonElement>("#discard")!;
 const instrumentInput = document.querySelector<HTMLInputElement>("#instrument")!;
 const generateBtn = document.querySelector<HTMLButtonElement>("#generate")!;
+const talkBtn = document.querySelector<HTMLButtonElement>("#talk")!;
 const layoutStatusEl = document.querySelector<HTMLDivElement>("#layout-status")!;
 const ctx = canvas.getContext("2d")!;
 
@@ -102,6 +104,11 @@ let layout: Layout = orientLayout(source, orientation);
 const playerEdges = new PlayerEdgeDetector();
 let generated: Layout | null = null; // the last layout from Muse Spark that passed the checks
 let generating = false;
+// Push-to-talk: the recording in progress, whether its transcript is pending, and when taps
+// resume after it (performance.now() ms).
+let talk: { rec: Recording; ticker: number; cutoff: number } | null = null;
+let transcribing = false;
+let tapsResumeAt = 0;
 const history = new FingerHistory();
 const flashes = new Map<string, number>(); // zone id -> flash end, performance.now() ms
 const zonePlayedAt = new Map<string, number>(); // zone id -> last played, performance.now() ms
@@ -168,6 +175,7 @@ function updateHint() {
   canvas.classList.toggle("calibrating", !calibration.done);
   testBtn.disabled = !calibration.done;
   generateBtn.disabled = !calibration.done || generating;
+  talkBtn.disabled = !calibration.done || generating || transcribing;
   calTapsBtn.disabled = !calibration.done;
   if (!calibration.done && test.active) setTesting(false);
   if (!calibration.done && tapCal) setTapCal(false);
@@ -282,18 +290,19 @@ function trackPlayerEdge(hands: TrackedHand[], t: number) {
 
 // Muse Spark gets the request, the current frame and the accepted corners, and answers with
 // the board's estimated aspect and a layout for it. Anything unusable falls back to the
-// preset matching the request, with the reason in the layout status line.
-async function generateLayout() {
+// preset matching the request, with the reason in the layout status line, after `heard`
+// (the voice transcript and its timings, when the request was spoken).
+async function generateLayout(heard = "") {
   if (!calibration.done || video.videoWidth === 0 || generating) return;
   const request = instrumentInput.value.trim() || CONFIG.muse.defaultRequest;
   const fallback = (why: string) => {
     const preset = presetFor(request);
     setLayout(preset);
-    layoutStatusEl.textContent = `Muse Spark layout not used: ${why}. Using the ${preset.instrument} preset.`;
+    layoutStatusEl.textContent = `${heard}Muse Spark layout not used: ${why}. Using the ${preset.instrument} preset.`;
   };
   generating = true;
   updateHint();
-  layoutStatusEl.textContent = `Asking Muse Spark for "${request}"…`;
+  layoutStatusEl.textContent = `${heard}Asking Muse Spark for "${request}"…`;
   try {
     const reply = await requestLayout(video, calibration.corners, request, orientation);
     const took = `${(reply.ms / 1000).toFixed(1)} s`;
@@ -308,7 +317,7 @@ async function generateLayout() {
       setLayout(checked.layout);
       const why = typeof reply.aspectReasoning === "string" ? ` (${reply.aspectReasoning})` : "";
       layoutStatusEl.textContent =
-        `Muse Spark: ${checked.layout.instrument}, ${checked.layout.zones.length} zones in ${took}. ` +
+        `${heard}Muse Spark: ${checked.layout.instrument}, ${checked.layout.zones.length} zones in ${took}. ` +
         `Board ≈ ${aspect.toFixed(2)}:1${why}.`;
     }
   } catch (err) {
@@ -325,7 +334,91 @@ instrumentInput.maxLength = CONFIG.server.maxPromptChars;
 instrumentInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") generateLayout();
 });
-generateBtn.addEventListener("click", generateLayout);
+generateBtn.addEventListener("click", () => generateLayout());
+
+// Push-to-talk: hold Space (outside text boxes and pickers) or hold the button, up to
+// CONFIG.voice.maxMs. Taps pause from the press until CONFIG.voice.resumeTapsMs after the
+// release, so speech doesn't play notes. Muse Voice Transcribe's transcript goes into the
+// instrument box and Generate runs on it.
+const tapsPaused = () => talk !== null || performance.now() < tapsResumeAt;
+
+function startTalk() {
+  if (talk || talkBtn.disabled) return;
+  audio.ctx ??= new AudioContext({ latencyHint: "interactive" });
+  const startedAt = performance.now();
+  const show = () => {
+    const secs = ((performance.now() - startedAt) / 1000).toFixed(1);
+    layoutStatusEl.textContent = `Listening… ${secs} of ${CONFIG.voice.maxMs / 1000} s. Release to send; taps are paused.`;
+  };
+  show();
+  talk = {
+    rec: new Recording(audio.ctx),
+    ticker: window.setInterval(show, 100),
+    cutoff: window.setTimeout(stopTalk, CONFIG.voice.maxMs),
+  };
+  talkBtn.classList.add("on");
+}
+
+async function stopTalk() {
+  if (!talk) return;
+  const { rec, ticker, cutoff } = talk;
+  clearInterval(ticker);
+  clearTimeout(cutoff);
+  talk = null;
+  tapsResumeAt = performance.now() + CONFIG.voice.resumeTapsMs;
+  transcribing = true;
+  talkBtn.classList.remove("on");
+  updateHint();
+  let heard: string | null = null;
+  try {
+    const speech = await rec.stop();
+    if (!speech) {
+      layoutStatusEl.textContent = "Too short: hold Space or the talk button while you speak.";
+      return;
+    }
+    const secs = (speech.audioMs / 1000).toFixed(1);
+    layoutStatusEl.textContent = `Transcribing ${secs} s of speech…`;
+    const t = await transcribe(speech.wav);
+    const boost = speech.gain > 1 ? ` ×${speech.gain.toFixed(1)}` : "";
+    const timing =
+      `${secs} s of audio${boost}; WAV ${speech.encodeMs.toFixed(0)} ms, ` +
+      `Muse Voice Transcribe ${t.serverMs} ms, round trip ${t.ms.toFixed(0)} ms`;
+    const text = t.text.replace(/[.!?]+$/, "").slice(0, CONFIG.server.maxPromptChars).trim();
+    if (!text) {
+      layoutStatusEl.textContent = `Heard nothing (${timing}). Try again closer to the mic.`;
+      return;
+    }
+    instrumentInput.value = text;
+    heard = `Heard "${text}" (${timing}). `;
+  } catch (err) {
+    console.error(err);
+    layoutStatusEl.textContent = `Voice input failed: ${err instanceof Error ? err.message : String(err)}`;
+  } finally {
+    transcribing = false;
+    updateHint();
+  }
+  if (heard) generateLayout(heard);
+}
+
+const inField = (t: EventTarget | null) =>
+  t instanceof HTMLInputElement || t instanceof HTMLSelectElement || t instanceof HTMLTextAreaElement;
+window.addEventListener("keydown", (e) => {
+  if (e.code !== "Space" || inField(e.target)) return;
+  e.preventDefault(); // no page scroll, no click on a focused button
+  if (!e.repeat) startTalk();
+});
+window.addEventListener("keyup", (e) => {
+  if (e.code !== "Space" || (!talk && inField(e.target))) return;
+  e.preventDefault();
+  stopTalk();
+});
+window.addEventListener("blur", stopTalk);
+talkBtn.addEventListener("pointerdown", (e) => {
+  talkBtn.setPointerCapture(e.pointerId);
+  startTalk();
+});
+talkBtn.addEventListener("pointerup", stopTalk);
+talkBtn.addEventListener("pointercancel", stopTalk);
 
 // The finger toggle writes CONFIG.fingers.allowed. Test scores are kept per tap mode,
 // finger setting and tap correction, so accuracy before and after calibrating taps, or
@@ -568,6 +661,7 @@ function keepRecent(times: number[], t: number) {
 // stroke). In vision-only mode that is the tap; in hybrid test mode, it is checked for a
 // matching onset.
 function onStop(m: FingerPick) {
+  if (tapsPaused()) return;
   if (CONFIG.taps.mode === "vision") visionTap(m);
   else if (test.active && !tapCal && audio.micOn) checkMiss(m);
 }
@@ -744,7 +838,7 @@ const zoneList = (notes: Note[]) => notes.map((x) => x.zone?.label ?? "off board
 // logged as rejected, with each moving finger's shortfall. Onsets are ignored in
 // vision-only mode.
 function onOnset(onset: Onset) {
-  if (CONFIG.taps.mode !== "hybrid") return;
+  if (CONFIG.taps.mode !== "hybrid" || tapsPaused()) return;
   const n = ++tapCount;
   if (handsInFrame === 0) {
     logIgnored(n, "no hand");

@@ -15,16 +15,21 @@ class HttpError extends Error {
   }
 }
 
-async function readJson(req: IncomingMessage): Promise<unknown> {
+async function readBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > CONFIG.server.maxBodyBytes) throw new HttpError(413, "request body too large");
+    if (size > maxBytes) throw new HttpError(413, "request body too large");
     chunks.push(chunk);
   }
+  return Buffer.concat(chunks);
+}
+
+async function readJson(req: IncomingMessage): Promise<unknown> {
+  const body = await readBody(req, CONFIG.server.maxBodyBytes);
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    return JSON.parse(body.toString("utf8"));
   } catch {
     throw new HttpError(400, "body is not JSON");
   }
@@ -57,7 +62,8 @@ async function upstreamError(upstream: Response, model: string): Promise<HttpErr
   const text = await upstream.text();
   let message = text;
   try {
-    message = JSON.parse(text).error?.message ?? text;
+    const parsed = JSON.parse(text);
+    message = parsed.error?.message ?? parsed.message ?? text;
   } catch {
     // not JSON; keep the raw text
   }
@@ -168,6 +174,28 @@ async function generateLayout(
   };
 }
 
+// Muse Voice Transcribe, one buffered request per push-to-talk clip (PUSH_TO_TALK mode: the
+// clip is one turn). The settings go as a JSON part next to the WAV.
+async function transcribe(wav: Buffer) {
+  const v = CONFIG.voice;
+  const settings = { model: v.model, audioEncoding: "WAV", mode: "PUSH_TO_TALK", keywords: v.keywords };
+  const form = new FormData();
+  form.append("request", new Blob([JSON.stringify(settings)], { type: "application/json" }));
+  form.append("audio", new Blob([new Uint8Array(wav)], { type: "audio/wav" }), "speech.wav");
+  const upstream = await fetch(`${CONFIG.server.apiBaseUrl}/asr/transcribe`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+    body: form,
+  });
+  if (!upstream.ok) throw await upstreamError(upstream, v.model);
+  const body = (await upstream.json()) as { transcript?: unknown; audioDurationMs?: unknown; sessionId?: unknown };
+  return {
+    text: typeof body.transcript === "string" ? body.transcript.trim() : "",
+    audioDurationMs: typeof body.audioDurationMs === "number" ? body.audioDurationMs : null,
+    sessionId: typeof body.sessionId === "string" ? body.sessionId : null,
+  };
+}
+
 const isCorner = (c: unknown): c is Corner =>
   typeof c === "object" && c !== null && Number.isFinite((c as Corner).x) && Number.isFinite((c as Corner).y);
 
@@ -237,6 +265,19 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     send(res, 200, { ...out, model: CONFIG.muse.model, ms });
     return;
   }
+  if (req.method === "POST" && path === "/api/transcribe") {
+    if (!apiKey) throw new HttpError(500, "MODEL_API_KEY is not set in .env");
+    const wav = await readBody(req, CONFIG.voice.maxWavBytes);
+    if (wav.length < 44 || wav.toString("ascii", 0, 4) !== "RIFF" || wav.toString("ascii", 8, 12) !== "WAVE") {
+      throw new HttpError(400, "body must be a WAV file");
+    }
+    const started = performance.now();
+    const out = await transcribe(wav);
+    const ms = Math.round(performance.now() - started);
+    console.log(`transcribe ${wav.length} bytes: "${out.text}", ${ms} ms (session ${out.sessionId})`);
+    send(res, 200, { ...out, ms });
+    return;
+  }
   throw new HttpError(404, `no route for ${req.method} ${path}`);
 }
 
@@ -250,5 +291,5 @@ createServer((req, res) => {
   });
 }).listen(CONFIG.server.port, "127.0.0.1", () => {
   console.log(`api server on http://127.0.0.1:${CONFIG.server.port}`);
-  if (!apiKey) console.warn("MODEL_API_KEY is not set; /api/segment and /api/layout will fail");
+  if (!apiKey) console.warn("MODEL_API_KEY is not set; /api/segment, /api/layout and /api/transcribe will fail");
 });

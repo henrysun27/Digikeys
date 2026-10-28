@@ -97,6 +97,7 @@ body {
 #detect,
 #instrument,
 #generate,
+#talk,
 #sam-actions button,
 #mic,
 #layout,
@@ -141,9 +142,15 @@ body {
 #tap-mode:hover,
 #detect:hover:enabled,
 #generate:hover:enabled,
+#talk:hover:enabled,
 #sam-actions button:hover:enabled,
 #mic:hover:enabled {
   background: rgba(40, 40, 40, 0.8);
+}
+
+#talk.on {
+  border-color: #ff5252;
+  background: rgba(120, 0, 0, 0.7);
 }
 
 #test.on,
@@ -164,6 +171,7 @@ body {
 
 #detect:disabled,
 #generate:disabled,
+#talk:disabled,
 #sam-actions button:disabled,
 #mic:disabled {
   cursor: default;

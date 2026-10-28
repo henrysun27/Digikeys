@@ -188,6 +188,22 @@ export const CONFIG = {
     maxCompletionTokens: 8000, // reasoning plus the JSON
     jpegQuality: 0.85,
   },
+  // Push-to-talk instrument requests through Muse Voice Transcribe (POST /v1/asr/transcribe,
+  // model ID from https://dev.meta.ai/docs/models). It takes mono 16-bit WAV at 16 or 24 kHz.
+  voice: {
+    model: "muse-voice-transcribe-1.0",
+    sampleRate: 16000,
+    maxMs: 5000, // recording stops and sends by itself after this
+    minMs: 300, // shorter presses are dropped as accidental
+    // Taps stay paused this long after recording ends, for the last syllable and the click
+    // of the released key.
+    resumeTapsMs: 400,
+    maxGain: 8, // quiet speech (the mic has auto gain off) is boosted up to this...
+    targetPeak: 0.9, // ...toward this peak
+    // Recognition is biased toward these terms; it doesn't force them.
+    keywords: ["drum kit", "piano", "xylophone", "marimba", "bongos", "glockenspiel", "kalimba", "steel drum"],
+    maxWavBytes: 1_000_000, // 5 s at 16 kHz is 160 kB
+  },
   // Checks on generated layouts, in board coords (0-1 on both axes). A layout that fails
   // any of them is replaced by the matching preset.
   layoutLimits: {

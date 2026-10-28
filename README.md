@@ -105,7 +105,7 @@ All code in this repo was written during the hackathon.
       than 90% of camera frames, measure the main thread and keep whichever is faster.
       `?detect=worker`, `?detect=main` or `?detect=auto` overrides it for comparing. The
       debug panel shows where detection runs, the GPU renderer, and the auto measurements.
-- [x] Milestone 6 (text input; voice comes next): type an instrument ("drum kit", "8-key
+- [x] Milestone 6: type an instrument ("drum kit", "8-key
       piano in C major", "marimba") and press Generate. The server (`POST /api/layout`) sends
       Muse Spark the request, the current frame (mirrored as on screen, with the accepted
       board outlined and its corners numbered) and the corner pixel positions. Muse Spark
@@ -121,6 +121,17 @@ All code in this repo was written during the hackathon.
       `anyOf` of rect and poly: the API writes keys in alphabetical order, so with `anyOf`
       the first key picked the branch and a model starting with `kind` was forced into a
       polygon with made-up points (2 of 4 piano requests came back that way).
+- [x] Milestone 6 voice input: hold Space (outside the text boxes) or hold "Hold to talk"
+      and say an instrument, up to 5 s. The mic is recorded in an AudioWorklet
+      (`src/voice-worklet.ts`), resampled to 16 kHz mono through an OfflineAudioContext
+      with a low-pass, boosted up to 8x if quiet (the mic runs with auto gain off for the
+      onset detector), and sent as a 16-bit WAV to `POST /api/transcribe`, which forwards it
+      to Muse Voice Transcribe in PUSH_TO_TALK mode with a few instrument names as keyword
+      bias. The transcript fills the instrument box and Generate runs on it. Tap detection
+      (mic onsets and vision stops) is paused from the press until 400 ms after the
+      release, so speech and the released key's click don't play notes. The layout status
+      line shows the transcript and timings (audio length, WAV encoding, transcription,
+      round trip), then the Muse Spark result. A 1.8 s clip took about 1.2 s to transcribe.
 - [x] Two-hand tracking: hands are followed frame to frame by wrist position instead of
       MediaPipe's hand index or handedness label, which could swap between frames and mix
       the two hands' finger histories. Each detection pairs with the nearest tracked wrist
@@ -216,6 +227,10 @@ All code in this repo was written during the hackathon.
   `https://api.meta.ai/v1/chat/completions`, image input, `response_format` JSON schema,
   `reasoning_effort: "low"`): estimates the board's aspect ratio from a camera frame and
   generates instrument Layouts for it (milestone 6). Called only from `server/index.ts`.
+- **Muse Voice Transcribe** (`muse-voice-transcribe-1.0`, `POST
+  https://api.meta.ai/v1/asr/transcribe`, multipart: a JSON `request` part and a 16 kHz mono
+  16-bit WAV `audio` part, PUSH_TO_TALK mode): turns the spoken instrument request into
+  text (milestone 6). Called only from `server/index.ts`.
 
 ## Tap-to-sound latency
 
