@@ -4,6 +4,7 @@ import { decodeMaskToRaster, parseImageStream, recordsOfKind, type ResponsesEven
 import { CONFIG } from "../src/config.ts";
 import { LAYOUT_INSTRUCTIONS, LAYOUT_SCHEMA, layoutRequestText, toZones, type Corner } from "./layout-prompt.ts";
 import { EDGES, type Edge, type Orientation } from "../src/orientation.ts";
+import { OBJECT_INSTRUCTIONS, OBJECT_SCHEMA } from "./object-prompt.ts";
 
 const apiKey = process.env.MODEL_API_KEY?.trim() || null;
 
@@ -115,6 +116,57 @@ async function segment(image: string, prompt: string) {
   return { outcome: result.outcome.status, diagnostics: result.diagnostics.length, objects };
 }
 
+// One Muse Spark Chat Completions call with an image and schema-constrained JSON output:
+// the parsed JSON object and the usage.
+async function museJson(
+  instructions: string,
+  text: string,
+  image: string,
+  schema: { name: string; schema: unknown },
+  maxCompletionTokens: number,
+): Promise<{ out: Record<string, unknown>; usage: unknown }> {
+  const m = CONFIG.muse;
+  const upstream = await fetch(`${CONFIG.server.apiBaseUrl}/chat/completions`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: m.model,
+      messages: [
+        { role: "system", content: instructions },
+        {
+          role: "user",
+          content: [
+            { type: "text", text },
+            { type: "image_url", image_url: { url: image } },
+          ],
+        },
+      ],
+      response_format: { type: "json_schema", json_schema: { ...schema, strict: true } },
+      reasoning_effort: m.reasoningEffort,
+      max_completion_tokens: maxCompletionTokens,
+    }),
+  });
+  if (!upstream.ok) throw await upstreamError(upstream, m.model);
+  const body = (await upstream.json()) as {
+    choices?: { message?: { content?: string | null }; finish_reason?: string }[];
+    usage?: unknown;
+  };
+  const choice = body.choices?.[0];
+  if (choice?.finish_reason === "length") {
+    throw new HttpError(502, `${m.model} ran out of tokens (max_completion_tokens ${maxCompletionTokens})`);
+  }
+  const content = choice?.message?.content;
+  if (!content) throw new HttpError(502, `${m.model} returned no content (finish_reason ${choice?.finish_reason})`);
+  let out: unknown;
+  try {
+    out = JSON.parse(content);
+  } catch {
+    throw new HttpError(502, `${m.model} returned invalid JSON`);
+  }
+  if (typeof out !== "object" || out === null) throw new HttpError(502, `${m.model} returned no JSON object`);
+  return { out: out as Record<string, unknown>, usage: body.usage ?? null };
+}
+
 // Asks Muse Spark for the board's aspect and an InstrumentSpec, as schema-constrained JSON.
 // The spec is returned as the model gave it (freeform zones in Layout form); the browser
 // validates it and builds the layout.
@@ -126,49 +178,45 @@ async function generateLayout(
   corners: Corner[],
   orientation: Orientation,
 ) {
-  const m = CONFIG.muse;
-  const upstream = await fetch(`${CONFIG.server.apiBaseUrl}/chat/completions`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: m.model,
-      messages: [
-        { role: "system", content: LAYOUT_INSTRUCTIONS },
-        {
-          role: "user",
-          content: [
-            { type: "text", text: layoutRequestText(request, width, height, corners, orientation) },
-            { type: "image_url", image_url: { url: image } },
-          ],
-        },
-      ],
-      response_format: {
-        type: "json_schema",
-        json_schema: { name: "instrument_spec", strict: true, schema: LAYOUT_SCHEMA },
-      },
-      reasoning_effort: m.reasoningEffort,
-      max_completion_tokens: m.maxCompletionTokens,
-    }),
-  });
-  if (!upstream.ok) throw await upstreamError(upstream, m.model);
-  const body = (await upstream.json()) as {
-    choices?: { message?: { content?: string | null }; finish_reason?: string }[];
-    usage?: unknown;
-  };
-  const choice = body.choices?.[0];
-  if (choice?.finish_reason === "length") {
-    throw new HttpError(502, `${m.model} ran out of tokens (max_completion_tokens ${m.maxCompletionTokens})`);
-  }
-  const content = choice?.message?.content;
-  if (!content) throw new HttpError(502, `${m.model} returned no content (finish_reason ${choice?.finish_reason})`);
-  let out: { boardAspect?: unknown; zones?: unknown } & Record<string, unknown>;
-  try {
-    out = JSON.parse(content);
-  } catch {
-    throw new HttpError(502, `${m.model} returned invalid JSON`);
-  }
+  const { out, usage } = await museJson(
+    LAYOUT_INSTRUCTIONS,
+    layoutRequestText(request, width, height, corners, orientation),
+    image,
+    { name: "instrument_spec", schema: LAYOUT_SCHEMA },
+    CONFIG.muse.maxCompletionTokens,
+  );
   const { boardAspect, ...spec } = out;
-  return { aspect: boardAspect, spec: { ...spec, zones: toZones(out.zones) }, usage: body.usage ?? null };
+  return { aspect: boardAspect, spec: { ...spec, zones: toZones(out.zones) }, usage };
+}
+
+// Object pads: SAM 3.1 has no prompt-free mode, so every generic phrase in
+// CONFIG.objects.prompts runs on the frame in parallel. Matches come back tagged with their
+// phrase; the browser merges them. A phrase that fails is reported, unless all do.
+async function segmentObjects(image: string) {
+  const prompts = CONFIG.objects.prompts;
+  const runs = await Promise.allSettled(prompts.map((p) => segment(image, p)));
+  const objects = runs.flatMap((r, i) =>
+    r.status === "fulfilled" ? r.value.objects.map((o) => ({ ...o, prompt: prompts[i] })) : [],
+  );
+  const failed = runs.flatMap((r, i) =>
+    r.status === "rejected"
+      ? [{ prompt: prompts[i], error: r.reason instanceof Error ? r.reason.message : String(r.reason) }]
+      : [],
+  );
+  if (failed.length === runs.length) throw new HttpError(502, `every phrase failed: ${failed[0].error}`);
+  return { objects, failed };
+}
+
+// Muse Spark names one object crop, its material and a sound (unchecked; the browser checks).
+async function describeObject(image: string) {
+  const { out, usage } = await museJson(
+    OBJECT_INSTRUCTIONS,
+    "Describe the highlighted object and pick its sound.",
+    image,
+    { name: "object_pad", schema: OBJECT_SCHEMA },
+    CONFIG.objects.maxCompletionTokens,
+  );
+  return { description: out, usage };
 }
 
 // Muse Voice Transcribe, one buffered request per push-to-talk clip (PUSH_TO_TALK mode: the
@@ -226,6 +274,28 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     const ms = Math.round(performance.now() - started);
     console.log(`segment "${prompt}": ${out.objects.length} object(s), ${out.outcome}, ${ms} ms`);
     send(res, 200, { ...out, ms });
+    return;
+  }
+  if (req.method === "POST" && (path === "/api/objects/segment" || path === "/api/objects/describe")) {
+    if (!apiKey) throw new HttpError(500, "MODEL_API_KEY is not set in .env");
+    const body = (await readJson(req)) as { image?: unknown };
+    const image = body?.image;
+    if (typeof image !== "string" || !image.startsWith("data:image/")) {
+      throw new HttpError(400, "image must be an image data URL");
+    }
+    const started = performance.now();
+    if (path === "/api/objects/segment") {
+      const out = await segmentObjects(image);
+      const ms = Math.round(performance.now() - started);
+      const failed = out.failed.map((f) => `; "${f.prompt}" failed: ${f.error}`).join("");
+      console.log(`objects: ${out.objects.length} match(es) from ${CONFIG.objects.prompts.length} phrases, ${ms} ms${failed}`);
+      send(res, 200, { ...out, ms });
+    } else {
+      const out = await describeObject(image);
+      const ms = Math.round(performance.now() - started);
+      console.log(`object: ${JSON.stringify(out.description)}, ${ms} ms`);
+      send(res, 200, { ...out, model: CONFIG.muse.model, ms });
+    }
     return;
   }
   if (req.method === "POST" && path === "/api/layout") {
@@ -289,5 +359,5 @@ createServer((req, res) => {
   });
 }).listen(CONFIG.server.port, "127.0.0.1", () => {
   console.log(`api server on http://127.0.0.1:${CONFIG.server.port}`);
-  if (!apiKey) console.warn("MODEL_API_KEY is not set; /api/segment, /api/layout and /api/transcribe will fail");
+  if (!apiKey) console.warn("MODEL_API_KEY is not set; the model routes under /api will fail");
 });

@@ -52,7 +52,8 @@ type Sound =
 
   | { type: "note"; note: string }      // e.g. "C4"
 
-  | { type: "drum"; sample: string };   // e.g. "snare"
+  | { type: "drum"; sample: string }    // e.g. "snare"
+  | { type: "voice"; voice: string; note: string }; // object pads only: synthesized bell, chime...
 
 // z: hit-test priority where zones overlap; the highest z under a point wins and is drawn
 // on top (black keys z 1 over full white keys z 0). Zones at the same z must not overlap.

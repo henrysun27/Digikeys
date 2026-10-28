@@ -67,7 +67,8 @@ body {
 #hint,
 #sam-status,
 #layout-status,
-#tap-cal-status {
+#tap-cal-status,
+#object-status {
   padding: 6px 10px;
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.6);
@@ -81,7 +82,8 @@ body {
 #hint:empty,
 #sam-status:empty,
 #layout-status:empty,
-#tap-cal-status:empty {
+#tap-cal-status:empty,
+#object-status:empty {
   display: none;
 }
 

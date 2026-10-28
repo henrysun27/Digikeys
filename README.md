@@ -136,6 +136,29 @@ All code in this repo was written during the hackathon.
       release, so speech and the released key's click don't play notes. The layout status
       line shows the transcript and timings (audio length, WAV encoding, transcription,
       round trip), then the Muse Spark result. A 1.8 s clip took about 1.2 s to transcribe.
+- [x] Milestone 7: object pads. "Scan objects" (after calibration) captures a frame and
+      `POST /api/objects/segment` runs SAM 3.1 on it. SAM 3.1 has no prompt-free mode (one
+      noun phrase, or box/point prompts, per request), and no single generic phrase found
+      everything on test desk photos ("object" and "objects" find nothing), so four phrases
+      run in parallel ("objects on the desk", "desk items", "everyday objects", "electronic
+      device") and `src/objects.ts` merges their matches: specks under 0.15% and matches
+      over 30% of the frame are dropped, as is the calibrated board itself (IoU over 0.6),
+      and a match sharing over half of the smaller one's area with a more confident match is
+      the same object. Each object's outline is its mask's convex hull, simplified to 16
+      points and mapped onto the desk plane through the board's homography (objects may lie
+      off the board; points too close to the plane's horizon are refused). Each object's
+      crop, with everything outside its mask dimmed, goes to Muse Spark in parallel
+      (`POST /api/objects/describe`, structured output: isObject, name, material, sound,
+      pitch). Sounds are the drum samples plus synthesized voices for objects: bell
+      (ceramic), chime (glass), metal, woodblock (wood), pluck (plastic), shaker (soft);
+      paper gets the snare. Every object becomes a poly Zone labeled with its name, above
+      every instrument zone (smaller objects above larger ones), and plays through the same
+      tap pipeline: "on the board" now also means "on an object pad". With no scan, taps and
+      keys behave exactly as before; new corners clear the objects. On two CC0 desk photos
+      the scan took about 1.5 s for SAM (19-25 matches) and 2-2.5 s for 8-10 parallel Muse
+      Spark calls, and found every object (mug → bell, phone → hi-hat, sticky notes and a
+      printed sheet → snare, pencils → woodblock, highlighters → pluck, crumpled paper →
+      shaker, laptop → tom). Not yet tried on the camera.
 - [x] Two-hand tracking: hands are followed frame to frame by wrist position instead of
       MediaPipe's hand index or handedness label, which could swap between frames and mix
       the two hands' finger histories. Each detection pairs with the nearest tracked wrist
@@ -258,13 +281,16 @@ All code in this repo was written during the hackathon.
 ## Meta models
 
 - **SAM 3.1** (`sam-3.1`, Responses API at `https://api.meta.ai/v1/responses`, streamed,
-  one-bit masks): finds the playing surface in a camera frame (milestone 5). Called only
-  from `server/index.ts`; the output is parsed with Meta's `@meta-sam/parser`.
+  one-bit masks): finds the playing surface in a camera frame (milestone 5) and the objects
+  on the desk, with four generic phrases in parallel (milestone 7). Called only from
+  `server/index.ts`; the output is parsed with Meta's `@meta-sam/parser`.
 - **Muse Spark 1.3** (`muse-spark-1.3`, Chat Completions at
   `https://api.meta.ai/v1/chat/completions`, image input, `response_format` JSON schema,
   `reasoning_effort: "minimal"`): estimates the board's aspect ratio from a camera frame and
   turns the instrument request into an InstrumentSpec, which `src/instrument.ts` builds
-  into a Layout (milestone 6). Called only from `server/index.ts`.
+  into a Layout (milestone 6). For object pads, it names each object from its crop, with
+  its material and a fitting sound and pitch (milestone 7). Called only from
+  `server/index.ts`.
 - **Muse Voice Transcribe** (`muse-voice-transcribe-1.0`, `POST
   https://api.meta.ai/v1/asr/transcribe`, multipart: a JSON `request` part and a 16 kHz mono
   16-bit WAV `audio` part, PUSH_TO_TALK mode): turns the spoken instrument request into

@@ -2,7 +2,7 @@
 // here builds its Zones deterministically. Only a "freeform" spec carries zones placed by
 // the model. The presets are specs too.
 import { CONFIG } from "./config.ts";
-import { checkLayout, checkSound, type Layout, type Shape, type Sound, type Zone } from "./layout.ts";
+import { checkLayout, checkSound, type InstrumentSound, type Layout, type Shape, type Zone } from "./layout.ts";
 
 // Semitones above the root.
 export const SCALES = {
@@ -37,7 +37,7 @@ export type InstrumentSpec = {
   root: string; // pitch class, e.g. "C", "F#", "Bb"
   includeSharps: boolean;
   rows: number;
-  sounds: Sound[];
+  sounds: InstrumentSound[];
   notes: string;
   zones: unknown; // freeform only, unchecked until checkLayout
 };
@@ -73,7 +73,7 @@ const DRUM_LABELS: Record<string, string> = {
 };
 
 // Zones with unique ids (the sound's name, suffixed on repeats); z 0 unless given.
-function zonesOf(cells: { sound: Sound; shape: Shape; z?: number }[]): Zone[] {
+function zonesOf(cells: { sound: InstrumentSound; shape: Shape; z?: number }[]): Zone[] {
   const ids = new Set<string>();
   return cells.map(({ sound, shape, z = 0 }) => {
     const name = sound.type === "note" ? sound.note : sound.sample;
@@ -85,7 +85,7 @@ function zonesOf(cells: { sound: Sound; shape: Shape; z?: number }[]): Zone[] {
   });
 }
 
-const note = (m: number, flats = false): Sound => ({ type: "note", note: noteName(m, flats) });
+const note = (m: number, flats = false): InstrumentSound => ({ type: "note", note: noteName(m, flats) });
 const rect = (x: number, y: number, w: number, h: number): Shape => ({ kind: "rect", x, y, w, h });
 
 // A piano from lo to hi, widened to start and end on white keys: white keys the full depth
@@ -121,7 +121,7 @@ function gridSize(n: number, rows: number) {
 }
 
 // An even grid, rows far to near; a short last row is centered.
-function pads(sounds: Sound[], rows: number): Zone[] {
+function pads(sounds: InstrumentSound[], rows: number): Zone[] {
   const n = sounds.length;
   const { cols, rows: used } = gridSize(n, rows);
   return zonesOf(
@@ -177,7 +177,7 @@ export function checkSpec(v: unknown): InstrumentSpec | string {
   if (!kind) return `unknown kind "${String(v.kind)}"`;
   const scale = SCALE_NAMES.find((s) => s === v.scale) ?? "chromatic";
   const range = isObj(v.noteRange) ? { low: str(v.noteRange.low), high: str(v.noteRange.high) } : null;
-  const sounds: Sound[] = [];
+  const sounds: InstrumentSound[] = [];
   for (const s of Array.isArray(v.sounds) ? v.sounds : []) {
     const sound = checkSound(s);
     if (typeof sound === "string") return `a sound ${sound}`;

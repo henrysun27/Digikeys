@@ -30,13 +30,36 @@ function unpackBits(bits: string, length: number): Uint8Array {
   return out;
 }
 
-// The current video frame, unmirrored, at full camera resolution.
-function captureFrame(video: HTMLVideoElement): { image: string; width: number; height: number } {
+// The current video frame, unmirrored, at full camera resolution, and the canvas holding it.
+export function captureFrame(video: HTMLVideoElement) {
   const c = document.createElement("canvas");
   c.width = video.videoWidth;
   c.height = video.videoHeight;
   c.getContext("2d")!.drawImage(video, 0, 0);
-  return { image: c.toDataURL("image/jpeg", CONFIG.sam.jpegQuality), width: c.width, height: c.height };
+  return { image: c.toDataURL("image/jpeg", CONFIG.sam.jpegQuality), width: c.width, height: c.height, canvas: c };
+}
+
+const toSamObject = (o: WireObject): SamObject => ({
+  ...o,
+  mask: { width: o.mask.width, height: o.mask.height, data: unpackBits(o.mask.bits, o.mask.width * o.mask.height) },
+});
+
+// Object pads: every generic phrase in CONFIG.objects.prompts on one frame, through the
+// server. Matches are tagged with their phrase; failed lists phrases that errored.
+export async function segmentObjectsIn(image: string): Promise<{
+  objects: (SamObject & { prompt: string })[];
+  failed: { prompt: string; error: string }[];
+  serverMs: number;
+}> {
+  const res = await fetch("/api/objects/segment", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image }),
+  });
+  const body = await res.json().catch(() => ({ error: `server returned ${res.status}` }));
+  if (!res.ok) throw new Error(body.error ?? `server returned ${res.status}`);
+  const objects = (body.objects as (WireObject & { prompt: string })[]).map((o) => ({ ...toSamObject(o), prompt: o.prompt }));
+  return { objects, failed: body.failed, serverMs: body.ms };
 }
 
 // Sends the current frame to SAM 3.1 through the server.
@@ -50,14 +73,7 @@ export async function segmentFrame(video: HTMLVideoElement, prompt: string): Pro
   });
   const body = await res.json().catch(() => ({ error: `server returned ${res.status}` }));
   if (!res.ok) throw new Error(body.error ?? `server returned ${res.status}`);
-  const objects = (body.objects as WireObject[]).map((o) => ({
-    ...o,
-    mask: {
-      width: o.mask.width,
-      height: o.mask.height,
-      data: unpackBits(o.mask.bits, o.mask.width * o.mask.height),
-    },
-  }));
+  const objects = (body.objects as WireObject[]).map(toSamObject);
   return { prompt, width, height, objects, ms: performance.now() - started, serverMs: body.ms };
 }
 

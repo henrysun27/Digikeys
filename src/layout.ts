@@ -5,9 +5,13 @@ import { pointInPolygon, type Pt } from "./geometry.ts";
 export type Shape =
   | { kind: "rect"; x: number; y: number; w: number; h: number }
   | { kind: "poly"; pts: [number, number][] };
-export type Sound =
+// What instruments (presets and Muse Spark specs) play.
+export type InstrumentSound =
   | { type: "note"; note: string } // e.g. "C4"
   | { type: "drum"; sample: string }; // e.g. "snare"
+// Object pads can also play a synthesized voice (OBJECT_VOICES) at a pitch; unpitched
+// voices ignore the note.
+export type Sound = InstrumentSound | { type: "voice"; voice: string; note: string };
 // z: hit-test priority where zones overlap; the highest z under a point wins and is drawn on
 // top (black keys z 1 over white keys z 0). Zones at the same z must not overlap.
 export type Zone = { id: string; label: string; shape: Shape; sound: Sound; z: number };
@@ -15,6 +19,16 @@ export type Layout = { instrument: string; zones: Zone[] };
 
 // Every drum sample sound.ts loads; generated layouts may only use these.
 export const DRUM_SAMPLES = ["kick", "snare", "hihat", "tom1", "tom2", "tom3"];
+// Synthesized voices for object pads (sound.ts), each with its pitch when none is given.
+// Unpitched ones have a null default.
+export const OBJECT_VOICES: Record<string, string | null> = {
+  bell: "C6", // ceramic, porcelain
+  chime: "E6", // glass
+  woodblock: "G5", // wood
+  pluck: "C5", // plastic
+  metal: null, // metal
+  shaker: null, // fabric, soft things
+};
 
 // Layouts, presets and generated alike, are in the player's frame: x from the player's
 // left (0) to right (1), y from the far edge (0) to the near edge (1). orientLayout
@@ -61,7 +75,7 @@ function checkShape(v: unknown): Shape | string {
   return `has an unknown shape kind "${String(v.kind)}"`;
 }
 
-export function checkSound(v: unknown): Sound | string {
+export function checkSound(v: unknown): InstrumentSound | string {
   if (!isObj(v)) return "has no sound";
   if (v.type === "drum") {
     const sample = v.sample;

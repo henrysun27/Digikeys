@@ -35,6 +35,8 @@ import {
   type Orientation,
 } from "./orientation.ts";
 import { requestLayout } from "./muse.ts";
+import { scanObjects } from "./object-scan.ts";
+import { soundName } from "./objects.ts";
 import { Recording, transcribe } from "./voice.ts";
 import { maskArea, maskImage, maskOutline, maskPixels, segmentFrame, type SamObject, type Segmentation } from "./sam.ts";
 import { initSound, playNow } from "./sound.ts";
@@ -84,6 +86,9 @@ const instrumentInput = document.querySelector<HTMLInputElement>("#instrument")!
 const generateBtn = document.querySelector<HTMLButtonElement>("#generate")!;
 const talkBtn = document.querySelector<HTMLButtonElement>("#talk")!;
 const layoutStatusEl = document.querySelector<HTMLDivElement>("#layout-status")!;
+const scanObjectsBtn = document.querySelector<HTMLButtonElement>("#scan-objects")!;
+const clearObjectsBtn = document.querySelector<HTMLButtonElement>("#clear-objects")!;
+const objectStatusEl = document.querySelector<HTMLDivElement>("#object-status")!;
 const ctx = canvas.getContext("2d")!;
 
 const calibration = new Calibration();
@@ -94,6 +99,10 @@ let orientation: Orientation = { near: "1-2", left: "4-1" };
 let layout: Layout = orientLayout(source, orientation);
 const playerEdges = new PlayerEdgeDetector();
 let generated: Layout | null = null; // the last layout from Muse Spark that passed the checks
+// Object pads from the last "Scan objects": poly zones in board coords (they may lie off the
+// board), all above every instrument zone. Empty until a scan; cleared with new corners.
+let objects: Layout = { instrument: "objects", zones: [] };
+let scanning = false;
 let generating = false;
 // Push-to-talk: the recording in progress, whether its transcript is pending, and when taps
 // resume after it (performance.now() ms).
@@ -168,6 +177,7 @@ function updateHint() {
   generateBtn.disabled = !calibration.done || generating;
   talkBtn.disabled = !calibration.done || generating || transcribing;
   calTapsBtn.disabled = !calibration.done;
+  scanObjectsBtn.disabled = !calibration.done || scanning;
   if (!calibration.done && test.active) setTesting(false);
   if (!calibration.done && tapCal) setTapCal(false);
   hintEl.classList.toggle("error", hintError !== null);
@@ -195,6 +205,7 @@ canvas.addEventListener("click", (e) => {
 resetBtn.addEventListener("click", () => {
   calibration.reset();
   forgetPlayerEdge();
+  clearObjects();
   setCorrections(null);
   setProposal(null);
   samStatusEl.textContent = "";
@@ -605,11 +616,69 @@ acceptBtn.addEventListener("click", () => {
   }
   setCorrections(null);
   forgetPlayerEdge();
+  clearObjects();
   setProposal(null);
   samStatusEl.textContent = "Using the corners from SAM 3.1.";
   hintError = null;
   updateHint();
 });
+
+// Object pads replace any earlier scan's.
+function setObjects(zones: Zone[]) {
+  objects = { instrument: "objects", zones };
+  clearObjectsBtn.disabled = zones.length === 0;
+}
+
+// They are in board coords, so new corners clear them.
+function clearObjects() {
+  setObjects([]);
+  objectStatusEl.textContent = "";
+  objectStatusEl.title = "";
+}
+
+// "Scan objects": SAM 3.1 finds the objects in the current frame and Muse Spark names each
+// one and picks its sound (object-scan.ts). The status line lists the pads; matches not
+// used, and why, go to the console and the line's tooltip.
+async function scanForObjects() {
+  const H = calibration.camToBoard;
+  if (!calibration.done || !H || video.videoWidth === 0 || scanning) return;
+  scanning = true;
+  updateHint();
+  objectStatusEl.title = "";
+  const started = performance.now();
+  try {
+    const r = await scanObjects(video, H, calibration.corners, (text) => (objectStatusEl.textContent = text));
+    setObjects(r.zones);
+    const secs = ((performance.now() - started) / 1000).toFixed(1);
+    const timing =
+      `${secs} s: SAM 3.1 ${r.segmentMs.toFixed(0)} ms (${r.matches} matches), ` +
+      `Muse Spark ${r.describeMs.toFixed(0)} ms`;
+    const failed = r.failedPhrases.length ? ` Phrases that failed: ${r.failedPhrases.join("; ")}.` : "";
+    const skipped = r.skipped.length ? ` ${r.skipped.length} matches not used (hover for why).` : "";
+    objectStatusEl.textContent = r.zones.length
+      ? `${r.zones.length} object pad(s) in ${timing}: ${r.found.join(", ")}.${skipped}${failed}`
+      : `No objects found in ${timing}.${skipped}${failed}`;
+    objectStatusEl.title = r.skipped.join("\n");
+    console.info("object scan", { found: r.found, skipped: r.skipped, zones: r.zones });
+  } catch (err) {
+    console.error(err);
+    objectStatusEl.textContent = `Object scan failed: ${err instanceof Error ? err.message : String(err)}`;
+  } finally {
+    scanning = false;
+    updateHint();
+  }
+}
+
+scanObjectsBtn.addEventListener("click", scanForObjects);
+clearObjectsBtn.addEventListener("click", clearObjects);
+
+// The zone a tap at p (board coords) plays: an object pad if one is there (they sit above
+// every instrument zone), else the layout's. With no objects scanned, the layout's only.
+function zoneAt(p: Pt): Zone | null {
+  return (objects.zones.length ? hitTest(objects, p) : null) ?? hitTest(layout, p);
+}
+
+const onObject = (p: Pt) => objects.zones.length > 0 && hitTest(objects, p) !== null;
 
 // The button starts whatever the tap mode still needs: sounds always, the mic only in
 // hybrid mode.
@@ -672,7 +741,7 @@ function onStop(m: FingerPick) {
 function visionTap(m: FingerPick) {
   const n = ++tapCount;
   const at = tapPoint("check", landing(m.at));
-  const zone = at ? hitTest(layout, at) : null;
+  const zone = at ? zoneAt(at) : null;
   const played = zone && zoneReady(zone) ? playZone(zone) : null;
   const latencyMs = played ? performance.now() - m.at.t + played.outputMs : null;
   setLastTap(m.finger, m.at.t);
@@ -742,7 +811,7 @@ function checkMiss(m: FingerPick) {
     const near = levels.filter((l) => l.time >= lo && l.time <= hi + CONFIG.onset.reportMs);
     const peak = near.reduce<MicLevel | null>((a, l) => (!a || l.level > a.level ? l : a), null);
     const at = tapPoint("check", landing(m.at));
-    const zone = at ? hitTest(layout, at) : null;
+    const zone = at ? zoneAt(at) : null;
     logMissed(m.finger, zone?.label ?? null, peak, rejectedOnsets.some(inWindow));
   }, Math.max(0, hi + CONFIG.taps.settleMarginMs - performance.now()));
 }
@@ -763,10 +832,11 @@ function toBoard(p: Pt): Pt | null {
   return calibration.camToBoard ? applyH(calibration.camToBoard, p) : null;
 }
 
+// On the board, or on an object pad (objects may sit off the board).
 function onBoard(p: Pt): boolean {
   if (!calibration.camToBoard) return false;
   const b = applyH(calibration.camToBoard, p);
-  return b.x >= 0 && b.x <= 1 && b.y >= 0 && b.y <= 1;
+  return (b.x >= 0 && b.x <= 1 && b.y >= 0 && b.y <= 1) || onObject(b);
 }
 
 // Remembers the tapping hand for the next guess. The stop-based check, known later,
@@ -779,7 +849,8 @@ function setLastTap(finger: string, t: number) {
 // lateStopMs, so at is the finger's guess position instead.
 type Note = { pick: FingerPick; at: Pt | null; zone: Zone | null; late: boolean };
 
-const insideBoard = (p: Pt | null) => !!p && p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1;
+// Board coords on the board or on an object pad.
+const insideBoard = (p: Pt | null) => !!p && ((p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1) || onObject(p));
 
 // The chord in a ranked list of fingers: every strike (each must pass on its own) landing
 // on the board and scoring at least chordRatio of the best such strike (the best first),
@@ -851,7 +922,7 @@ function onOnset(onset: Onset) {
     .guessAll(onset.time, { toBoard, onBoard, lastHand: recent ? lastTap!.hand : null, window: win })
     .map((pick): Note => {
       const at = tapPoint("guess", landing(pick.at));
-      return { pick, at, zone: at ? hitTest(layout, at) : null, late: false };
+      return { pick, at, zone: at ? zoneAt(at) : null, late: false };
     });
   const { chord, rejected } = chordOf(guesses);
   if (chord.length === 0) {
@@ -921,7 +992,7 @@ function onOnset(onset: Onset) {
         const early = guessAt.get(pick.finger) ?? null;
         const late = pick.stopOffset! > CONFIG.taps.lateStopMs && early !== null;
         const at = late ? early : tapPoint("check", landing(pick.at));
-        return { pick, at, zone: at ? hitTest(layout, at) : null, late };
+        return { pick, at, zone: at ? zoneAt(at) : null, late };
       }),
     );
     const top = checks[0] ?? null;
@@ -1125,7 +1196,7 @@ function zonesUnderFingertips(hands: TrackedHand[]): Set<string> {
     FINGERTIPS.forEach((_, f) => {
       if (!CONFIG.fingers.allowed.includes(FINGER_NAMES[f])) return;
       const p = tapPoint("check", hand.tips[f]);
-      const zone = p ? hitTest(layout, p) : null;
+      const zone = p ? zoneAt(p) : null;
       if (zone) hits.add(zone.id);
     });
   }
@@ -1178,6 +1249,40 @@ function drawLayout(active: Set<string>, now: number) {
   }
   for (const zone of layout.zones) drawLabel(zone, outlines.get(zone.id)!);
   if (tapCal?.zone) drawCrosshair(boardToScreen(zoneAnchor(layout, tapCal.zone)));
+}
+
+// Object pads over the layout, magenta: outline, fill (yellow under a fingertip, cyan
+// flash when played), and the object's name with its sound at the outline's center.
+function drawObjects(active: Set<string>, now: number) {
+  if (!calibration.done) return;
+  for (const zone of objects.zones) {
+    const outline = shapeOutline(zone.shape).map(boardToScreen);
+    tracePath(outline, true);
+    ctx.fillStyle = active.has(zone.id) ? "rgba(255, 196, 0, 0.55)" : "rgba(255, 0, 200, 0.18)";
+    ctx.fill();
+    const flashLeft = (flashes.get(zone.id) ?? 0) - now;
+    if (flashLeft > 0) {
+      ctx.fillStyle = `rgba(0, 220, 255, ${(0.85 * flashLeft) / CONFIG.taps.flashMs})`;
+      ctx.fill();
+    }
+    ctx.strokeStyle = "#ff00c8";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    const c = {
+      x: outline.reduce((s, p) => s + p.x, 0) / outline.length,
+      y: outline.reduce((s, p) => s + p.y, 0) / outline.length,
+    };
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.7)";
+    ctx.fillStyle = "#ffffff";
+    for (const [text, size, dy] of [[zone.label, 15, -9], [soundName(zone.sound), 12, 9]] as const) {
+      ctx.font = `600 ${size}px system-ui, sans-serif`;
+      ctx.strokeText(text, c.x, c.y + dy);
+      ctx.fillText(text, c.x, c.y + dy);
+    }
+  }
 }
 
 // The point to tap during tap calibration.
@@ -1341,7 +1446,9 @@ function loop() {
       ctx.setTransform(-1, 0, 0, 1, canvas.width, 0);
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       ctx.setTransform(1, 0, 0, 1, 0, 0);
-      drawLayout(zonesUnderFingertips(hands), now);
+      const active = zonesUnderFingertips(hands);
+      drawLayout(active, now);
+      drawObjects(active, now);
       drawDots();
       drawCorners(calibration.corners, calibration.done, "#ffd400");
       drawProposal();

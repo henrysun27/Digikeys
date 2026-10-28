@@ -193,6 +193,39 @@ export const CONFIG = {
     maxCompletionTokens: 4000,
     jpegQuality: 0.85,
   },
+  // Object pads (milestone 7). SAM 3.1 has no prompt-free mode (one noun phrase, or
+  // box/point prompts, per request), so each scan runs these generic phrases in parallel
+  // and merges the matches; tested on desk photos, no one phrase found everything.
+  objects: {
+    prompts: ["objects on the desk", "desk items", "everyday objects", "electronic device"],
+    // Per match, as a fraction of the frame: smaller is a speck, larger is the desk or a
+    // group of things.
+    minFrac: 0.0015,
+    maxFrac: 0.3,
+    // Two matches sharing more than this fraction of the smaller one are the same object
+    // (or one is part of the other): the more confident one is kept.
+    maxOverlap: 0.5,
+    boardIoU: 0.6, // a match overlapping the calibrated board this much is the board itself
+    overlapGrid: 320, // cells across the frame when measuring overlaps
+    maxObjects: 12, // most confident first
+    maxPts: 16, // outline vertices (convex hull, simplified)
+    // Outline points may be at most 1/minDepthRatio times as far (along the desk plane, in
+    // perspective) as the board's center; nearer the plane's horizon the homography blows up.
+    minDepthRatio: 0.25,
+    // Crops for Muse Spark: the match's box plus this margin (fraction of its larger side,
+    // at least cropMinMarginPx), scaled to cropMinPx-cropMaxPx on the larger side, with
+    // everything outside the mask dimmed by cropDim.
+    cropMargin: 0.25,
+    cropMinMarginPx: 12,
+    cropMinPx: 256,
+    cropMaxPx: 448,
+    cropDim: 0.6,
+    jpegQuality: 0.85,
+    maxCompletionTokens: 1500,
+    // Above every instrument zone (z 0-1), so an object on the paper wins taps there.
+    // Smaller objects get a higher z still, so a phone on a notebook beats the notebook.
+    baseZ: 100,
+  },
   // Push-to-talk instrument requests through Muse Voice Transcribe (POST /v1/asr/transcribe,
   // model ID from https://dev.meta.ai/docs/models). It takes mono 16-bit WAV at 16 or 24 kHz.
   voice: {

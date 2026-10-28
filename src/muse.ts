@@ -45,6 +45,20 @@ function captureBoardFrame(video: HTMLVideoElement, corners: Pt[]) {
   return { image: c.toDataURL("image/jpeg", CONFIG.muse.jpegQuality), width: c.width, height: c.height, corners: px };
 }
 
+// Asks Muse Spark, through the server, what one object crop is and what it should sound
+// like. description is unchecked (checkDescription in objects.ts).
+export async function describeObjectCrop(image: string): Promise<{ description: unknown; ms: number; serverMs: number }> {
+  const started = performance.now();
+  const res = await fetch("/api/objects/describe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image }),
+  });
+  const body = await res.json().catch(() => ({ error: `server returned ${res.status}` }));
+  if (!res.ok) throw new Error(body.error ?? `server returned ${res.status}`);
+  return { description: body.description, ms: performance.now() - started, serverMs: body.ms };
+}
+
 // Asks Muse Spark, through the server, for an instrument spec for the request on this board,
 // in the frame of a player sitting as `orientation` says.
 export async function requestLayout(
