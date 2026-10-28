@@ -44,6 +44,20 @@ export function pointInPolygon(p: Pt, poly: Pt[]): boolean {
   return inside;
 }
 
+// Distance from p to the nearest point on the polygon's outline.
+export function distToPolygon(p: Pt, poly: Pt[]): number {
+  let best = Infinity;
+  poly.forEach((a, i) => {
+    const b = poly[(i + 1) % poly.length];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len2 = dx * dx + dy * dy;
+    const t = len2 > 0 ? Math.min(1, Math.max(0, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2)) : 0;
+    best = Math.min(best, Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy)));
+  });
+  return best;
+}
+
 // Signed shoelace area; the sign gives the winding.
 export function polygonArea(pts: Pt[]): number {
   let a = 0;

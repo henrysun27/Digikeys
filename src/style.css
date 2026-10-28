@@ -79,6 +79,13 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* The pads, then one line per SAM match not used; a scan can leave a dozen or more. */
+#object-status {
+  white-space: pre-line;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
 #hint:empty,
 #sam-status:empty,
 #layout-status:empty,

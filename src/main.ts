@@ -19,7 +19,7 @@ import {
   showPlayer,
   showTest,
 } from "./debug.ts";
-import { applyH, convexHull, fitQuad, polygonArea, type Pt } from "./geometry.ts";
+import { applyH, convexHull, distToPolygon, fitQuad, polygonArea, type Pt } from "./geometry.ts";
 import { HAND_CONNECTIONS, HandTracking, type TrackedHand } from "./hand-tracking.ts";
 import { createDetector, type Detector } from "./detectors.ts";
 import type { HandFrame } from "./hand-detector.ts";
@@ -633,18 +633,16 @@ function setObjects(zones: Zone[]) {
 function clearObjects() {
   setObjects([]);
   objectStatusEl.textContent = "";
-  objectStatusEl.title = "";
 }
 
 // "Scan objects": SAM 3.1 finds the objects in the current frame and Muse Spark names each
-// one and picks its sound (object-scan.ts). The status line lists the pads; matches not
-// used, and why, go to the console and the line's tooltip.
+// one and picks its sound (object-scan.ts). The status line lists the pads, then each SAM
+// match not used and why, one per line.
 async function scanForObjects() {
   const H = calibration.camToBoard;
   if (!calibration.done || !H || video.videoWidth === 0 || scanning) return;
   scanning = true;
   updateHint();
-  objectStatusEl.title = "";
   const started = performance.now();
   try {
     const r = await scanObjects(video, H, calibration.corners, (text) => (objectStatusEl.textContent = text));
@@ -654,11 +652,12 @@ async function scanForObjects() {
       `${secs} s: SAM 3.1 ${r.segmentMs.toFixed(0)} ms (${r.matches} matches), ` +
       `Muse Spark ${r.describeMs.toFixed(0)} ms`;
     const failed = r.failedPhrases.length ? ` Phrases that failed: ${r.failedPhrases.join("; ")}.` : "";
-    const skipped = r.skipped.length ? ` ${r.skipped.length} matches not used (hover for why).` : "";
+    const skipped = r.skipped.length
+      ? `\n${r.skipped.length} match(es) not used:\n${r.skipped.map((s) => `· ${s}`).join("\n")}`
+      : "";
     objectStatusEl.textContent = r.zones.length
-      ? `${r.zones.length} object pad(s) in ${timing}: ${r.found.join(", ")}.${skipped}${failed}`
-      : `No objects found in ${timing}.${skipped}${failed}`;
-    objectStatusEl.title = r.skipped.join("\n");
+      ? `${r.zones.length} object pad(s) in ${timing}: ${r.found.join(", ")}.${failed}${skipped}`
+      : `No objects found in ${timing}.${failed}${skipped}`;
     console.info("object scan", { found: r.found, skipped: r.skipped, zones: r.zones });
   } catch (err) {
     console.error(err);
@@ -679,6 +678,17 @@ function zoneAt(p: Pt): Zone | null {
 }
 
 const onObject = (p: Pt) => objects.zones.length > 0 && hitTest(objects, p) !== null;
+
+// For a landing that missed every object pad: the closest one and how far outside it the
+// landing fell (board units), or null with no objects scanned.
+function nearestObject(p: Pt): { label: string; d: number } | null {
+  let best: { label: string; d: number } | null = null;
+  for (const z of objects.zones) {
+    const d = distToPolygon(p, shapeOutline(z.shape));
+    if (!best || d < best.d) best = { label: z.label, d };
+  }
+  return best;
+}
 
 // The button starts whatever the tap mode still needs: sounds always, the mic only in
 // hybrid mode.
@@ -863,7 +873,9 @@ function chordOf(notes: Note[]): { chord: Note[]; rejected: string[] } {
     if (pick.why) rejected.push(`${pick.finger} ${pick.why}`);
     else if (!insideBoard(at)) {
       const where = at ? ` (${at.x.toFixed(2)}, ${at.y.toFixed(2)})` : "";
-      rejected.push(`${pick.finger} lands off board${where}`);
+      const near = at ? nearestObject(at) : null;
+      const miss = near ? `, ${near.d.toFixed(2)} outside ${near.label}` : "";
+      rejected.push(`${pick.finger} lands off board${where}${miss}`);
     } else return true;
     return false;
   });
