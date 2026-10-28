@@ -2,6 +2,7 @@ import "./style.css";
 import { Calibration, CORNER_NAMES, checkCorners, orderCorners } from "./calibration.ts";
 import { CONFIG } from "./config.ts";
 import {
+  initSmoothingControls,
   logIgnored,
   logMissed,
   logPlayed,
@@ -12,6 +13,7 @@ import {
   showCamera,
   showCorrections,
   showDetection,
+  showJitter,
   showProbe,
   showDropouts,
   showLevel,
@@ -39,6 +41,7 @@ import { scanObjects } from "./object-scan.ts";
 import { soundName } from "./objects.ts";
 import { Recording, transcribe } from "./voice.ts";
 import { maskArea, maskImage, maskOutline, maskPixels, segmentFrame, type SamObject, type Segmentation } from "./sam.ts";
+import { JitterMeter } from "./smoothing.ts";
 import { initSound, playNow } from "./sound.ts";
 import {
   FINGER_NAMES,
@@ -1032,6 +1035,15 @@ function onOnset(onset: Onset) {
   }, Math.max(0, resolveAt - performance.now()));
 }
 
+// Fingertips in camera pixels, raw and filtered, for the debug panel's jitter readout.
+const jitter = new JitterMeter();
+function measureJitter(hands: TrackedHand[], t: number) {
+  const px = (p: Pt) => ({ x: p.x * video.videoWidth, y: p.y * video.videoHeight });
+  for (const { id, raw, tips } of hands) {
+    FINGERTIPS.forEach((tip, f) => jitter.add(fingerKey(id, FINGER_NAMES[f]), t, px(raw[tip]), px(tips[f])));
+  }
+}
+
 // Fingers are keyed by the hand's tracking ID, which follows the physical hand.
 // Motion comes from the raw landmarks, the landing position from the filtered tips.
 function recordFingers(hands: TrackedHand[], detectedAt: number) {
@@ -1159,6 +1171,7 @@ function useDetector(d: Detector) {
     }
     hands = tracked.hands;
     recordFingers(hands, t);
+    measureJitter(hands, t);
     trackPlayerEdge(hands, t);
     const hold = CONFIG.taps.mode === "vision" ? CONFIG.taps.visionHoldFrames : 0;
     for (const m of history.newStops(toBoard, onBoard, hold)) onStop(m);
@@ -1393,10 +1406,10 @@ function drawCorners(corners: Pt[], closed: boolean, color: string) {
   });
 }
 
-// Raw skeleton with the fingertips at their filtered positions.
+// The skeleton at its filtered positions, every landmark.
 function drawHands(hands: TrackedHand[]) {
   for (const hand of hands) {
-    const pts = hand.raw.map((p, i) => camToScreen(FINGERTIPS.includes(i) ? hand.tips[FINGERTIPS.indexOf(i)] : p));
+    const pts = hand.pts.map(camToScreen);
     ctx.strokeStyle = "rgba(0, 255, 180, 0.8)";
     ctx.lineWidth = 3;
     ctx.beginPath();
@@ -1490,6 +1503,7 @@ function loop() {
         showDetection(detector.kind, detector.info, n / secs, meanMs, detectorChoice);
       }
       showDropouts(dropouts);
+      showJitter(jitter.read(now));
       updatePlayerPanel();
       last = { ...counts };
       fpsStart = now;
@@ -1523,4 +1537,6 @@ async function main() {
   }
 }
 
+// Before any hand track builds its filters, so saved slider values are in CONFIG.
+initSmoothingControls();
 main();

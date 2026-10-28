@@ -4,6 +4,8 @@ import type { DetectorInfo } from "./hand-detector.ts";
 import type { CameraInfo, CameraProbe } from "./main.ts";
 import type { MicInfo, MicLevel, Onset } from "./mic.ts";
 import type { Edge } from "./orientation.ts";
+import { loadSmoothing, saveSmoothing, setSmoothing, SMOOTHING_DEFAULTS, type Jitter } from "./smoothing.ts";
+import { FINGER_NAMES, fingerKey, handOf } from "./taps.ts";
 import type { Correction, TapCorrections } from "./tap-correction.ts";
 import type { TestScore } from "./test-mode.ts";
 
@@ -36,6 +38,9 @@ const recentLatencies: number[] = [];
 const recentWaits: number[] = [];
 const recentVision: number[] = [];
 const visionLatencyEl = el("vision-latency");
+const minCutoffInput = el("min-cutoff") as HTMLInputElement;
+const betaInput = el("beta") as HTMLInputElement;
+const jitterEl = el("jitter");
 
 // What was played at onset time from the best-guess fingers. waitMs: onset to the main
 // thread getting the message; handlerMs: from then to the trigger. rejected: each other
@@ -289,6 +294,56 @@ export function showCorrections(c: TapCorrections | null) {
   const fmt = (name: string, k: Correction | null) =>
     k ? `${name} dx ${signed(k.dx)} dy ${signed(k.dy)}` : `${name} off`;
   tapCorrectionEl.textContent = c ? `${fmt("guess", c.guess)} · ${fmt("check", c.check)}` : "none";
+}
+
+// The One Euro sliders: start from the saved values (else CONFIG's), apply each move to
+// every filter at once and save it; Defaults goes back to CONFIG's and forgets the saved.
+export function initSmoothingControls() {
+  loadSmoothing();
+  const { sliders } = CONFIG.smoothing;
+  const inputs = [
+    { input: minCutoffInput, range: sliders.minCutoff, label: el("min-cutoff-value"), unit: " Hz" },
+    { input: betaInput, range: sliders.beta, label: el("beta-value"), unit: "" },
+  ];
+  const show = () => {
+    minCutoffInput.value = String(CONFIG.smoothing.minCutoff);
+    betaInput.value = String(CONFIG.smoothing.beta);
+    for (const { input, label, unit } of inputs) label.textContent = `${input.value}${unit}`;
+  };
+  for (const { input, range } of inputs) {
+    [input.min, input.max, input.step] = range.map(String);
+    input.addEventListener("input", () => {
+      const p = { minCutoff: Number(minCutoffInput.value), beta: Number(betaInput.value) };
+      setSmoothing(p);
+      saveSmoothing(p);
+      show();
+    });
+  }
+  el("reset-smoothing").addEventListener("click", () => {
+    setSmoothing(SMOOTHING_DEFAULTS);
+    saveSmoothing(null);
+    show();
+  });
+  show();
+}
+
+// One line per hand, fingertips in FINGER_NAMES order: filtered (as drawn) and, in
+// brackets, raw RMS spread in camera pixels.
+export function showJitter(jitter: Jitter[]) {
+  if (jitter.length === 0) {
+    jitterEl.textContent = "no hands";
+    return;
+  }
+  const hands = [...new Set(jitter.map((j) => handOf(j.finger)))].sort();
+  const lines = hands.map((hand) => {
+    const tips = FINGER_NAMES.flatMap((name) => {
+      const j = jitter.find((x) => x.finger === fingerKey(hand, name));
+      return j ? [`${name} ${j.filtered.toFixed(1)} (${j.raw.toFixed(1)})`] : [];
+    });
+    return `${hand}: ${tips.join(", ")}`;
+  });
+  const secs = CONFIG.smoothing.jitterWindowMs / 1000;
+  jitterEl.textContent = `px RMS over ${secs} s, filtered (raw)\n${lines.join("\n")}`;
 }
 
 // A chord target is a hit only if all its zones played; extra: other zones that played.

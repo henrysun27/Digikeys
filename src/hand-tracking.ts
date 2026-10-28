@@ -15,9 +15,9 @@ export const HAND_CONNECTIONS: [number, number][] = [
 ];
 
 // id: a stable letter ("A", "B") that follows the physical hand from frame to frame.
-// raw: the 21 landmarks as detected. tips: One Euro filtered fingertips, in FINGERTIPS
-// order, for display and hit-testing.
-export type TrackedHand = { id: string; raw: Pt[]; tips: Pt[] };
+// raw: the 21 landmarks as detected, for tap motion. pts: all 21 One Euro filtered, for
+// display. tips: the filtered fingertips (pts at FINGERTIPS), for display and hit-testing.
+export type TrackedHand = { id: string; raw: Pt[]; pts: Pt[]; tips: Pt[] };
 
 const INDEX = FINGERTIPS.indexOf(8);
 const WRIST = 0;
@@ -26,7 +26,7 @@ const IDS = "ABCDEFGH";
 type Track = {
   wrist: Pt; // raw, last frame it was seen
   seen: number; // detection time it was last seen, ms
-  filters: [OneEuroFilter, OneEuroFilter][];
+  filters: [OneEuroFilter, OneEuroFilter][]; // x and y, per landmark
 };
 
 // Follows hands across frames by wrist position: each detection is paired with the
@@ -71,7 +71,8 @@ export class HandTracking {
       // Free, since tracks never outnumber numHands (at most IDS.length).
       const id = [...IDS].find((c) => !this.tracks.has(c))!;
       const make = () => new OneEuroFilter(CONFIG.smoothing);
-      this.tracks.set(id, { wrist: wrists[h], seen: t, filters: FINGERTIPS.map(() => [make(), make()]) });
+      const filters = result.landmarks[h].map((): [OneEuroFilter, OneEuroFilter] => [make(), make()]);
+      this.tracks.set(id, { wrist: wrists[h], seen: t, filters });
       idOf.set(h, id);
       started.push(id);
     }
@@ -79,10 +80,10 @@ export class HandTracking {
     const hands: TrackedHand[] = result.landmarks.map((raw, h) => {
       const id = idOf.get(h)!;
       const k = this.tracks.get(id)!;
-      const tips = FINGERTIPS.map((i, f) => ({ x: k.filters[f][0].filter(raw[i].x, t), y: k.filters[f][1].filter(raw[i].y, t) }));
+      const pts = raw.map((p, i) => ({ x: k.filters[i][0].filter(p.x, t), y: k.filters[i][1].filter(p.y, t) }));
       k.wrist = raw[WRIST];
       k.seen = t;
-      return { id, raw, tips };
+      return { id, raw, pts, tips: FINGERTIPS.map((i) => pts[i]) };
     });
     hands.sort((a, b) => a.id.localeCompare(b.id));
 

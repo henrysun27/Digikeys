@@ -83,6 +83,14 @@
           <dd><span id="camera-probe">not run</span> <button id="probe-camera" type="button">Probe</button></dd>
           <dt>Detection</dt>
           <dd id="detection">–</dd>
+          <dt>Smoothing</dt>
+          <dd>
+            <label class="slider">minCutoff <input id="min-cutoff" type="range" /> <span id="min-cutoff-value"></span></label>
+            <label class="slider">beta <input id="beta" type="range" /> <span id="beta-value"></span></label>
+            <button id="reset-smoothing" type="button">Defaults</button>
+          </dd>
+          <dt>Jitter</dt>
+          <dd id="jitter">–</dd>
           <dt>Dropouts</dt>
           <dd><div id="dropouts"></div></dd>
           <dt>Tap correction</dt>

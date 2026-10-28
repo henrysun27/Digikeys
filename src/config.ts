@@ -46,12 +46,17 @@ export const CONFIG = {
     minReach: 0.05, // board units: shorter fingertips-to-wrist spans are skipped
     boardMargin: 0.15, // fingertips this far outside the board (board units) still count
   },
-  // One Euro filter on fingertip positions for display and hit-testing; tap detection's
-  // motion history stays raw. Positions are 0-1 camera coords.
+  // One Euro filter on every hand landmark for display and hit-testing; tap detection's
+  // motion history stays raw. Positions are 0-1 camera coords. minCutoff and beta can be
+  // tuned live from the debug panel's sliders (ranges [min, max, step]); the tuned values
+  // are saved under storageKey and override these defaults.
   smoothing: {
-    minCutoff: 1.5, // Hz when still: lower is smoother but lags more
+    minCutoff: 0.75, // Hz when still: lower is smoother but lags more
     beta: 10, // cutoff rise per (frame width/s) of speed: higher lags less when moving
     dCutoff: 1, // Hz, for the speed estimate
+    sliders: { minCutoff: [0.05, 3, 0.05], beta: [0, 40, 0.5] },
+    storageKey: "desk-instrument.smoothing",
+    jitterWindowMs: 1000, // the jitter readout: RMS distance from the mean tip over this long
   },
   calibration: {
     storageKey: "desk-instrument.calibration",

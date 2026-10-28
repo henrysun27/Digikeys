@@ -86,9 +86,13 @@ All code in this repo was written during the hackathon.
       of the check fit in tap calibration.
 - [x] Tracking: hand detection, presence and tracking confidences lowered to 0.3. The
       camera is asked for 1280x720 at 60 fps; the debug panel shows what it delivers and
-      the measured frame rate. Fingertips go through a One Euro filter (`CONFIG.smoothing`)
-      for display and hit-testing, while tap detection's motion history keeps the raw
-      landmarks so down-strokes aren't blunted. Tracking dropouts (a hand present one frame
+      the measured frame rate. All 21 landmarks per hand go through a One Euro filter
+      (`CONFIG.smoothing`, minCutoff 0.75 Hz, beta 10) for display, and the filtered
+      fingertips are used for hit-testing, while tap detection's motion history keeps the raw
+      landmarks so down-strokes aren't blunted. The debug panel has live sliders for
+      minCutoff and beta (saved to localStorage, with a Defaults button) and a jitter
+      readout: each fingertip's RMS distance from its mean position over the last second,
+      in camera pixels, filtered and raw. Tracking dropouts (a hand present one frame
       and gone the next) are counted per board column of its last index-tip position,
       with a rate per 1000 hand frames, to show whether edge keys lose tracking.
 - [x] Hand detection runs in a module Web Worker (`src/hand-worker.ts`): each new video
