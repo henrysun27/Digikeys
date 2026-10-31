@@ -7,8 +7,10 @@ import {
   logMissed,
   logPlayed,
   logRejected,
+  logShadowOnset,
   logTest,
   logVisionTap,
+  resolveShadowTap,
   resolveTap,
   showCamera,
   showCorrections,
@@ -19,6 +21,8 @@ import {
   showLevel,
   showMicInfo,
   showPlayer,
+  showShadow,
+  showShadowLatency,
   showTest,
 } from "./debug.ts";
 import { applyH, convexHull, distToPolygon, fitQuad, polygonArea, type Pt } from "./geometry.ts";
@@ -41,6 +45,16 @@ import { scanObjects } from "./object-scan.ts";
 import { soundName } from "./objects.ts";
 import { Recording, transcribe } from "./voice.ts";
 import { maskArea, maskImage, maskOutline, maskPixels, segmentFrame, type SamObject, type Segmentation } from "./sam.ts";
+import { candidateDirs, type ShadowRequest, type ShadowResult } from "./shadow.ts";
+import {
+  dirDegrees,
+  loadShadowFit,
+  saveShadowFit,
+  ShadowCalibration,
+  ShadowContacts,
+  type FingerShadow,
+  type ShadowFit,
+} from "./shadow-contact.ts";
 import { JitterMeter } from "./smoothing.ts";
 import { initSound, playNow } from "./sound.ts";
 import {
@@ -49,6 +63,7 @@ import {
   FingerHistory,
   fingerKey,
   handOf,
+  isAllowed,
   landing,
   type FingerPick,
   stopWindow,
@@ -74,6 +89,8 @@ const clearCorrectionBtn = document.querySelector<HTMLButtonElement>("#clear-cor
 const resetStatsBtn = document.querySelector<HTMLButtonElement>("#reset-stats")!;
 const probeBtn = document.querySelector<HTMLButtonElement>("#probe-camera")!;
 const tapCalStatusEl = document.querySelector<HTMLDivElement>("#tap-cal-status")!;
+const calShadowBtn = document.querySelector<HTMLButtonElement>("#cal-shadow")!;
+const shadowStatusEl = document.querySelector<HTMLDivElement>("#shadow-status")!;
 const micBtn = document.querySelector<HTMLButtonElement>("#mic")!;
 const tapModeSelect = document.querySelector<HTMLSelectElement>("#tap-mode")!;
 const layoutSelect = document.querySelector<HTMLSelectElement>("#layout")!;
@@ -150,6 +167,14 @@ const audio = { ctx: null as AudioContext | null, micOn: false, soundOn: false, 
 const acceptedOnsets: number[] = [];
 const rejectedOnsets: number[] = [];
 const levels: MicLevel[] = [];
+// Mic + shadow: the learned direction and threshold (saved), a calibration in progress
+// (taps pause meanwhile), each finger's contacts, and when the latest hand result's frame
+// was grabbed.
+let shadowFit: ShadowFit | null = loadShadowFit();
+let shadowCal: ShadowCalibration | null = null;
+const contacts = new ShadowContacts();
+const CANDIDATE_DIRS = candidateDirs();
+let lastFrameT = -Infinity;
 
 // Coordinate spaces:
 //   cam    - raw camera coords normalized to 0-1, unmirrored (same as MediaPipe landmarks)
@@ -353,7 +378,7 @@ generateBtn.addEventListener("click", () => generateLayout());
 // CONFIG.voice.maxMs. Taps pause from the press until CONFIG.voice.resumeTapsMs after the
 // release, so speech doesn't play notes. Muse Voice Transcribe's transcript goes into the
 // instrument box and Generate runs on it.
-const tapsPaused = () => talk !== null || performance.now() < tapsResumeAt;
+const tapsPaused = () => talk !== null || performance.now() < tapsResumeAt || shadowCal !== null;
 
 function startTalk() {
   if (talk || talkBtn.disabled) return;
@@ -437,16 +462,25 @@ talkBtn.addEventListener("pointercancel", stopTalk);
 // finger setting and tap correction, so accuracy before and after calibrating taps, or
 // with and without the mic, shows side by side.
 const FINGER_SETS: Record<string, string[]> = { index: ["index"], all: FINGER_NAMES };
+// Mic + shadow scores are also kept per shadow calibration.
 const fingerSetting = () => {
   const fit = corrections ? `tap correction ${new Date(corrections.fittedAt).toLocaleTimeString()}` : "no tap correction";
-  return `${tapModeSelect.selectedOptions[0].text}, ${fingersSelect.selectedOptions[0].text}, ${fit}`;
+  const shadow =
+    CONFIG.taps.mode === "shadow" && shadowFit ? `, shadow fit ${new Date(shadowFit.fittedAt).toLocaleTimeString()}` : "";
+  return `${tapModeSelect.selectedOptions[0].text}, ${fingersSelect.selectedOptions[0].text}, ${fit}${shadow}`;
 };
 
 // The tap-mode toggle writes CONFIG.taps.mode. Vision-only needs sound but not the mic.
+// Contacts are only followed in shadow mode, so they start over when it is picked again.
+const TAP_MODES = ["hybrid", "vision", "shadow"] as const;
 tapModeSelect.value = CONFIG.taps.mode;
 updateAudioButton();
 tapModeSelect.addEventListener("change", () => {
-  CONFIG.taps.mode = tapModeSelect.value === "vision" ? "vision" : "hybrid";
+  CONFIG.taps.mode = TAP_MODES.find((m) => m === tapModeSelect.value) ?? "hybrid";
+  contacts.clear();
+  if (CONFIG.taps.mode === "shadow" && !shadowFit && !shadowCal) {
+    shadowStatusEl.textContent = "Mic + shadow needs Calibrate shadow first.";
+  }
   updateAudioButton();
   updateTest();
 });
@@ -697,10 +731,10 @@ function nearestObject(p: Pt): { label: string; d: number } | null {
   return best;
 }
 
-// The button starts whatever the tap mode still needs: sounds always, the mic only in
-// hybrid mode.
+// The button starts whatever the tap mode still needs: sounds always, the mic except in
+// vision-only mode.
 function updateAudioButton() {
-  const needMic = CONFIG.taps.mode === "hybrid" && !audio.micOn;
+  const needMic = CONFIG.taps.mode !== "vision" && !audio.micOn;
   micBtn.disabled = audio.starting || (audio.soundOn && !needMic);
   if (audio.starting) return;
   micBtn.textContent = needMic ? "Enable mic" : !audio.soundOn ? "Enable sound" : audio.micOn ? "Mic on" : "Sound on";
@@ -715,7 +749,7 @@ function onLevel(l: MicLevel) {
 // One AudioContext, created inside the first click, for both the mic detector and Tone.
 // Sounds load and warm up here so the first tap isn't silent.
 micBtn.addEventListener("click", async () => {
-  const startMicToo = CONFIG.taps.mode === "hybrid" && !audio.micOn;
+  const startMicToo = CONFIG.taps.mode !== "vision" && !audio.micOn;
   audio.starting = true;
   updateAudioButton();
   micBtn.textContent = startMicToo ? "Starting mic, loading sounds…" : "Loading sounds…";
@@ -748,7 +782,7 @@ function keepRecent(times: number[], t: number) {
 function onStop(m: FingerPick) {
   if (tapsPaused()) return;
   if (CONFIG.taps.mode === "vision") visionTap(m);
-  else if (test.active && !tapCal && audio.micOn) checkMiss(m);
+  else if (CONFIG.taps.mode === "hybrid" && test.active && !tapCal && audio.micOn) checkMiss(m);
 }
 
 // Vision-only: plays at the stop frame's position, through the check correction, unless
@@ -925,9 +959,14 @@ const zoneList = (notes: Note[]) => notes.map((x) => x.zone?.label ?? "off board
 //
 // Hybrid mode gate: an onset only counts if some allowed finger strikes; otherwise it is
 // logged as rejected, with each moving finger's shortfall. Onsets are ignored in
-// vision-only mode.
+// vision-only mode; shadow mode has its own (shadowOnset).
 function onOnset(onset: Onset) {
-  if (CONFIG.taps.mode !== "hybrid" || tapsPaused()) return;
+  if (tapsPaused()) return;
+  if (CONFIG.taps.mode === "shadow") {
+    shadowOnset(onset);
+    return;
+  }
+  if (CONFIG.taps.mode !== "hybrid") return;
   const n = ++tapCount;
   if (handsInFrame === 0) {
     logIgnored(n, "no hand");
@@ -1034,6 +1073,227 @@ function onOnset(onset: Onset) {
     }
   }, Math.max(0, resolveAt - performance.now()));
 }
+
+// Mic + shadow: an onset plays every allowed finger whose tip is in contact with its shadow
+// at the onset's moment in frames (onset + videoLagMs), or whose contact began inside the
+// stop window around it. No stroke depth or speed checks. Each contact plays at most once,
+// so a finger resting on the board plays on the first onset after it lands, not on every
+// one. Contact shows up in frames videoLagMs after the onset, so fingers play as their
+// frames come in, until the window closes. In test mode the tap joins an attempt once a
+// finger lands on the board, scored like vision taps (guess and check are the same
+// position); in tap calibration the first such finger is recorded.
+type ShadowTapNote = { finger: string; at: Pt | null; zone: Zone | null; latencyMs: number | null; why: string | null };
+type ShadowTap = {
+  n: number;
+  onset: Onset;
+  expected: number; // onset + videoLagMs
+  from: number; // contacts starting from here...
+  to: number; // ...to here count
+  closeAt: number;
+  threshold: number;
+  line: HTMLLIElement;
+  notes: ShadowTapNote[];
+  attempt: Attempt | null;
+};
+const shadowTaps: ShadowTap[] = [];
+
+function shadowOnset(onset: Onset) {
+  const n = ++tapCount;
+  if (!shadowFit) {
+    logIgnored(n, "shadow not calibrated: press Calibrate shadow");
+    return;
+  }
+  if (handsInFrame === 0) {
+    logIgnored(n, "no hand");
+    return;
+  }
+  const win = stopWindow(frameMs);
+  const expected = onset.time + CONFIG.taps.videoLagMs;
+  const tap: ShadowTap = {
+    n,
+    onset,
+    expected,
+    from: expected + win.lo,
+    to: expected + win.hi,
+    closeAt: expected + win.hi + CONFIG.taps.settleMarginMs,
+    threshold: shadowFit.threshold,
+    line: logShadowOnset(n),
+    notes: [],
+    attempt: null,
+  };
+  shadowTaps.push(tap);
+  advanceShadowTaps();
+  setTimeout(() => closeShadowTap(tap), Math.max(0, tap.closeAt - performance.now()));
+}
+
+// For each open shadow tap, oldest first, plays every allowed finger with an unused contact
+// that counts for it. A finger that plays uses up all its contacts touching the window, so
+// a contact flickering off and on doesn't play the next onset too. A contact from before
+// the window counts only if it was still on at the expected time, known once frames reach it.
+function advanceShadowTaps() {
+  for (const tap of shadowTaps) {
+    for (const [finger, list] of contacts.all()) {
+      if (!isAllowed(finger) || tap.notes.some((x) => x.finger === finger)) continue;
+      const c = list.find(
+        (k) =>
+          !k.used &&
+          ((k.start >= tap.from && k.start <= tap.to) ||
+            (k.start < tap.from && lastFrameT >= tap.expected && (k.end === null || k.end > tap.expected))),
+      );
+      if (!c) continue;
+      for (const k of list) if (k.start <= tap.to && (k.end === null || k.end >= tap.from)) k.used = true;
+      playShadowNote(tap, finger, c.at);
+    }
+  }
+}
+
+// One finger of a shadow tap, at its fingertip where contact began, through the check
+// correction (like vision taps), one note per zone.
+function playShadowNote(tap: ShadowTap, finger: string, cam: Pt) {
+  const at = tapPoint("check", cam);
+  const zone = at ? zoneAt(at) : null;
+  let why: string | null = null;
+  let latencyMs: number | null = null;
+  if (!zone) why = insideBoard(at) ? "between zones" : "off board";
+  else if (tap.notes.some((x) => x.zone?.id === zone.id)) why = "zone already played";
+  else if (!zoneReady(zone)) why = "in refractory";
+  else {
+    const p = playZone(zone);
+    if (p) {
+      latencyMs = (p.ctxTime - tap.onset.ctxTime) * 1000 + p.outputMs;
+      showShadowLatency(latencyMs);
+    } else why = "sounds not loaded";
+  }
+  const first = !tap.notes.some((x) => insideBoard(x.at));
+  tap.notes.push({ finger, at, zone, latencyMs, why });
+  if (!at || !insideBoard(at)) return;
+
+  if (tapCal) {
+    const cal = tapCal;
+    const target = first ? cal.take() : null;
+    if (!target) return;
+    pushDot({ guess: { p: at, hit: zone?.id === target.id }, check: null });
+    cal.add("guess", target, at);
+    cal.add("check", target, at);
+    cal.settle();
+    updateTapCalStatus();
+    if (cal.finished) finishTapCal();
+    return;
+  }
+  if (!test.active) return;
+  if (!tap.attempt) {
+    const joined = test.join(tap.onset.time, fingerSetting(), layout);
+    if (!joined) return;
+    tap.attempt = joined.attempt;
+    if (joined.opened) {
+      tap.attempt.line = tap.line;
+      closeAttemptAt(tap.attempt, tap.closeAt + tap.attempt.window);
+    }
+  }
+  const attempt = tap.attempt;
+  if (zone && latencyMs !== null) {
+    attempt.played.add(zone.id);
+    attempt.checked.add(zone.id);
+  }
+  pushDot({ guess: { p: at, hit: !!zone && attempt.target.zones.some((z) => z.id === zone.id) }, check: null });
+  updateTest();
+}
+
+// The window is over: logs what played, and why each other allowed finger seen in the
+// window didn't, with its closest gap there.
+function closeShadowTap(tap: ShadowTap) {
+  advanceShadowTaps();
+  shadowTaps.splice(shadowTaps.indexOf(tap), 1);
+  const rejected: string[] = [];
+  for (const finger of contacts.measured()) {
+    if (!isAllowed(finger) || tap.notes.some((x) => x.finger === finger)) continue;
+    const g = contacts.minGap(finger, tap.from, tap.to);
+    if (g === undefined) continue;
+    rejected.push(
+      g === null
+        ? `${finger} no shadow`
+        : g < tap.threshold
+          ? `${finger} contact already played`
+          : `${finger} closest gap ${g.toFixed(2)} ≥ ${tap.threshold.toFixed(2)}`,
+    );
+  }
+  const notes = tap.notes.map(({ finger, zone, latencyMs, why }) => ({ finger, zone: zone?.label ?? null, latencyMs, why }));
+  resolveShadowTap(tap.line, tap.n, notes, rejected);
+}
+
+// What the next frame measures: every candidate direction on the index tips while
+// calibrating, the learned direction on the allowed tips in shadow mode, else nothing.
+function shadowRequest(): ShadowRequest | null {
+  if (shadowCal) return { tips: [FINGERTIPS[FINGER_NAMES.indexOf("index")]], dirs: CANDIDATE_DIRS };
+  if (CONFIG.taps.mode !== "shadow" || !shadowFit) return null;
+  const tips = FINGERTIPS.filter((_, f) => CONFIG.fingers.allowed.includes(FINGER_NAMES[f]));
+  return { tips, dirs: [shadowFit.dir] };
+}
+
+// Readings come back per detection; a frame requested under the other request (calibration
+// started or ended in between) has the wrong number of directions and is skipped.
+function onShadows(hands: TrackedHand[], t: number, result: ShadowResult | null) {
+  if (!result) return;
+  if (shadowCal) {
+    const gaps = result.readings.map((r) => r.gaps).filter((g) => g.length === CANDIDATE_DIRS.length);
+    if (gaps.length === 0) return;
+    const done = shadowCal.add(t, gaps);
+    if (done) finishShadowCal(done);
+    else shadowStatusEl.textContent = shadowCal.status;
+    return;
+  }
+  if (!shadowFit) return;
+  const fit = shadowFit;
+  const byDetection = new Map(hands.map((h) => [h.detection, h]));
+  const frame: FingerShadow[] = [];
+  for (const r of result.readings) {
+    const hand = byDetection.get(r.hand);
+    if (!hand || r.gaps.length !== 1) continue;
+    const f = FINGERTIPS.indexOf(r.tip);
+    frame.push({
+      finger: fingerKey(hand.id, FINGER_NAMES[f]),
+      t,
+      gap: r.gaps[0],
+      tip: hand.tips[f],
+      toward: { x: (fit.dir.x * r.scale) / video.videoWidth, y: (fit.dir.y * r.scale) / video.videoHeight },
+    });
+  }
+  contacts.update(t, frame, fit.threshold);
+  advanceShadowTaps();
+  showShadow(fit, contacts.current(), result.ms);
+}
+
+function setShadowCal(on: boolean) {
+  shadowCal = on ? new ShadowCalibration() : null;
+  calShadowBtn.textContent = on ? "Cancel shadow calibration" : "Calibrate shadow";
+  calShadowBtn.classList.toggle("on", on);
+  if (shadowCal) shadowStatusEl.textContent = shadowCal.status;
+}
+
+function finishShadowCal(r: ShadowFit | string) {
+  setShadowCal(false);
+  if (typeof r === "string") {
+    shadowStatusEl.textContent = `Shadow calibration failed: ${r}.`;
+    return;
+  }
+  shadowFit = r;
+  saveShadowFit(r);
+  contacts.clear();
+  const pick = CONFIG.taps.mode === "shadow" ? "" : ' Pick "Mic + shadow" to play with it.';
+  shadowStatusEl.textContent =
+    `Shadow calibrated: direction ${dirDegrees(r.dir).toFixed(0)}°, contact under gap ${r.threshold.toFixed(2)} ` +
+    `(resting ${r.touch.toFixed(2)}, lifted ${r.hover.toFixed(2)}; ${r.samples.rest}+${r.samples.lift} frames).${pick}`;
+  showShadow(r, [], null);
+  updateTest();
+}
+
+calShadowBtn.addEventListener("click", () => {
+  if (shadowCal) {
+    setShadowCal(false);
+    shadowStatusEl.textContent = "Shadow calibration cancelled.";
+  } else setShadowCal(true);
+});
+showShadow(shadowFit, [], null);
 
 // Fingertips in camera pixels, raw and filtered, for the debug panel's jitter readout.
 const jitter = new JitterMeter();
@@ -1159,7 +1419,7 @@ let dirty = true;
 let detectorChoice: string | null = null;
 
 function useDetector(d: Detector) {
-  d.onHands = (t: number, frame: HandFrame, ms: number) => {
+  d.onHands = (t: number, frame: HandFrame, ms: number, shadow: ShadowResult | null) => {
     if (detector !== d) return;
     const start = performance.now();
     counts.detections++;
@@ -1167,9 +1427,12 @@ function useDetector(d: Detector) {
     const tracked = tracking.update(frame, t, video.videoWidth / video.videoHeight);
     for (const id of tracked.started) {
       history.dropHand(id);
+      contacts.dropHand(id);
       if (lastTap?.hand === id) lastTap = null;
     }
     hands = tracked.hands;
+    lastFrameT = t;
+    onShadows(hands, t, shadow);
     recordFingers(hands, t);
     measureJitter(hands, t);
     trackPlayerEdge(hands, t);
@@ -1431,6 +1694,40 @@ function drawHands(hands: TrackedHand[]) {
   }
 }
 
+// Mic + shadow: from each measured fingertip along the shadow direction to where its
+// shadow's tip was found, a dot there labelled with the gap (finger units); green in
+// contact, orange hovering. Dashed to the strip's end where no shadow was found.
+function drawShadows() {
+  if (CONFIG.taps.mode !== "shadow" || !shadowFit) return;
+  ctx.font = "600 12px system-ui, sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  for (const s of contacts.current()) {
+    const color = s.contact ? "#00e676" : "#ffb300";
+    const along = s.gap ?? CONFIG.shadow.stripLength;
+    const a = camToScreen(s.tip);
+    const b = camToScreen({ x: s.tip.x + s.toward.x * along, y: s.tip.y + s.toward.y * along });
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.setLineDash(s.gap === null ? [4, 4] : []);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (s.gap === null) continue;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, 5, 0, Math.PI * 2);
+    ctx.fill();
+    const text = s.contact ? `${s.gap.toFixed(2)} contact` : s.gap.toFixed(2);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.7)";
+    ctx.strokeText(text, b.x + 8, b.y);
+    ctx.fillText(text, b.x + 8, b.y);
+  }
+}
+
 const HAND_ID_COLORS: Record<string, string> = { A: "#00dcff", B: "#ffb300" };
 
 // The hand's tracking ID in a badge just past the wrist, so it stays clear of the fingers.
@@ -1459,7 +1756,7 @@ function loop() {
   const onFrame = () => {
     counts.videoFrames++;
     dirty = true;
-    detector?.frame(performance.now());
+    detector?.frame(performance.now(), shadowRequest());
     video.requestVideoFrameCallback(onFrame);
   };
   video.requestVideoFrameCallback(onFrame);
@@ -1482,6 +1779,7 @@ function loop() {
       drawCorners(calibration.corners, calibration.done, "#ffd400");
       drawProposal();
       drawHands(hands);
+      drawShadows();
       counts.drawMs += performance.now() - now;
     }
 

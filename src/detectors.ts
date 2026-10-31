@@ -1,17 +1,19 @@
 import type { HandLandmarker } from "@mediapipe/tasks-vision";
 import type { DetectorInfo, HandFrame, toHandFrame } from "./hand-detector.ts";
 import type { FromWorker, ToWorker } from "./hand-worker.ts";
+import type { ShadowRequest, ShadowResult, sampleShadows } from "./shadow.ts";
 
 export type DetectorKind = "worker" | "main";
-export type OnHands = (t: number, frame: HandFrame, detectMs: number) => void;
+export type OnHands = (t: number, frame: HandFrame, detectMs: number, shadow: ShadowResult | null) => void;
 
-// Hand detection on new video frames. frame(t) is called for every new frame, t being when
-// it was grabbed (performance.now() ms); results come back through onHands, stamped with t.
+// Hand detection on new video frames. frame(t, shadow) is called for every new frame, t
+// being when it was grabbed (performance.now() ms); results come back through onHands,
+// stamped with t, with shadow readings from the same frame if shadow asked for them.
 export interface Detector {
   readonly kind: DetectorKind;
   readonly info: DetectorInfo;
   onHands: OnHands;
-  frame(t: number): void;
+  frame(t: number, shadow: ShadowRequest | null): void;
   close(): void;
 }
 
@@ -27,7 +29,7 @@ export class WorkerDetector implements Detector {
   private readonly video: HTMLVideoElement;
   private inFlight = false;
   private lastPosted = -Infinity;
-  private next: { bitmap: ImageBitmap; t: number } | null = null;
+  private next: { bitmap: ImageBitmap; t: number; shadow: ShadowRequest | null } | null = null;
   private closed = false;
 
   private constructor(info: DetectorInfo, worker: Worker, video: HTMLVideoElement) {
@@ -38,10 +40,10 @@ export class WorkerDetector implements Detector {
       const m = e.data;
       if (m.type !== "result") return;
       this.inFlight = false;
-      this.onHands(m.t, m.frame, m.detectMs);
+      this.onHands(m.t, m.frame, m.detectMs, m.shadow);
       const n = this.next;
       this.next = null;
-      if (n && !this.closed) this.post(n.bitmap, n.t);
+      if (n && !this.closed) this.post(n.bitmap, n.t, n.shadow);
     };
   }
 
@@ -59,7 +61,7 @@ export class WorkerDetector implements Detector {
     });
   }
 
-  frame(t: number) {
+  frame(t: number, shadow: ShadowRequest | null) {
     createImageBitmap(this.video).then(
       (bitmap) => {
         // Copies normally resolve in order; anything older than what's queued is stale.
@@ -67,20 +69,20 @@ export class WorkerDetector implements Detector {
           bitmap.close();
           return;
         }
-        if (!this.inFlight) this.post(bitmap, t);
+        if (!this.inFlight) this.post(bitmap, t, shadow);
         else {
           this.next?.bitmap.close();
-          this.next = { bitmap, t };
+          this.next = { bitmap, t, shadow };
         }
       },
       (err) => console.error(err),
     );
   }
 
-  private post(bitmap: ImageBitmap, t: number) {
+  private post(bitmap: ImageBitmap, t: number, shadow: ShadowRequest | null) {
     this.inFlight = true;
     this.lastPosted = t;
-    this.worker.postMessage({ type: "frame", bitmap, t } satisfies ToWorker, [bitmap]);
+    this.worker.postMessage({ type: "frame", bitmap, t, shadow } satisfies ToWorker, [bitmap]);
   }
 
   close() {
@@ -100,28 +102,41 @@ export class MainDetector implements Detector {
   private readonly landmarker: HandLandmarker;
   private readonly video: HTMLVideoElement;
   private readonly toHandFrame: typeof toHandFrame;
+  private readonly sampleShadows: typeof sampleShadows;
   private lastT = -Infinity;
 
-  private constructor(info: DetectorInfo, landmarker: HandLandmarker, video: HTMLVideoElement, convert: typeof toHandFrame) {
+  private constructor(
+    info: DetectorInfo,
+    landmarker: HandLandmarker,
+    video: HTMLVideoElement,
+    convert: typeof toHandFrame,
+    sample: typeof sampleShadows,
+  ) {
     this.info = info;
     this.landmarker = landmarker;
     this.video = video;
     this.toHandFrame = convert;
+    this.sampleShadows = sample;
   }
 
   // MediaPipe is loaded only when the main-thread detector is used.
   static async create(video: HTMLVideoElement): Promise<MainDetector> {
-    const { createHandLandmarker, toHandFrame } = await import("./hand-detector.ts");
+    const [{ createHandLandmarker, toHandFrame }, { sampleShadows }] = await Promise.all([
+      import("./hand-detector.ts"),
+      import("./shadow.ts"),
+    ]);
     const { landmarker, info } = await createHandLandmarker();
-    return new MainDetector(info, landmarker, video, toHandFrame);
+    return new MainDetector(info, landmarker, video, toHandFrame, sampleShadows);
   }
 
-  frame(t: number) {
+  frame(t: number, shadow: ShadowRequest | null) {
     const ts = Math.max(t, this.lastT + 0.001);
     this.lastT = ts;
     const start = performance.now();
-    const r = this.landmarker.detectForVideo(this.video, ts);
-    this.onHands(t, this.toHandFrame(r), performance.now() - start);
+    const frame = this.toHandFrame(this.landmarker.detectForVideo(this.video, ts));
+    const detectMs = performance.now() - start;
+    const { videoWidth: w, videoHeight: h } = this.video;
+    this.onHands(t, frame, detectMs, shadow ? this.sampleShadows(this.video, w, h, frame, shadow) : null);
   }
 
   close() {

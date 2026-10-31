@@ -66,7 +66,8 @@ export const CONFIG = {
     minCornerCross: 0.002,
   },
   // Mic onset detection (runs in the audio worklet). Levels are block RMS, 0-1.
-  // In hybrid mode an onset also needs a finger strike (taps.minStrokeDepth/minStrikeSpeed).
+  // In hybrid mode an onset also needs a finger strike (taps.minStrokeDepth/minStrikeSpeed);
+  // in shadow mode, a fingertip in contact with its shadow (CONFIG.shadow).
   onset: {
     floorWindowMs: 1000, // the floor is the running median level over this long
     thresholdDb: 8, // level must exceed the floor by this
@@ -101,8 +102,9 @@ export const CONFIG = {
   // Fusing onsets with fingertip motion.
   taps: {
     // "hybrid": mic onsets, kept only if an allowed finger strikes (below). "vision": a down-stroke that stops on the board is the tap, no mic.
-    // The toolbar toggle switches it.
-    mode: "hybrid" as "hybrid" | "vision",
+    // "shadow": mic onsets, played by the allowed fingers whose tip meets its shadow
+    // (CONFIG.shadow), with no stroke depth or speed checks. The toolbar toggle switches it.
+    mode: "hybrid" as "hybrid" | "vision" | "shadow",
     // Finger frames are detected this long after the onset of the same moment. Tune it by
     // adding the debug panel's median stop offset.
     videoLagMs: 50,
@@ -145,6 +147,30 @@ export const CONFIG = {
     minDownSpeed: 0.1,
     missWindowMs: 150, // test mode: a stop with no accepted onset within this is a miss
     keepMs: 2000, // how long onset times and mic levels are kept for miss checks
+  },
+  // Shadow contact (Mic + shadow): a fingertip touching the desk meets its own shadow, a
+  // hovering one has a gap. Each frame, a strip from each allowed fingertip along the shadow
+  // direction is read from a downscaled grayscale grab of the frame (where detection runs),
+  // and the gap is where the strip's darkest run begins. Lengths are in finger units: the
+  // fingertip-to-PIP distance in the frame, so they don't change with distance to the camera.
+  shadow: {
+    stripLength: 1.0,
+    stripWidth: 0.2, // averaged across, against noise
+    cell: 0.04, // strip step, along and across
+    // The run's start is searched from here on: just past the tip landmark, the finger itself.
+    skinSkip: 0.08,
+    minContrast: 0.15, // no shadow unless the darkest is this fraction below the brightest
+    downscale: 0.5, // the grab's scale against the camera frame
+    directions: 24, // candidate shadow directions tried by the calibration
+    hysteresis: 0.03, // contact ends only above threshold + this
+    keepMs: 2000, // contacts and gaps kept this long
+    // "Calibrate shadow": index fingers resting, then lifted. Each phase waits settleMs for
+    // the hands to get there, then collects collectMs of frames. The direction where lifted
+    // gaps clear resting ones the most wins: margin = the lifted (1 - percentile) quantile
+    // minus the resting percentile quantile, which must be at least minMargin; the threshold
+    // sits halfway between them.
+    calibration: { settleMs: 1500, collectMs: 1500, minSamples: 15, percentile: 0.8, minMargin: 0.02 },
+    storageKey: "desk-instrument.shadow",
   },
   // Test mode targets.
   test: {

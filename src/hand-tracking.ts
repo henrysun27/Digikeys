@@ -17,7 +17,8 @@ export const HAND_CONNECTIONS: [number, number][] = [
 // id: a stable letter ("A", "B") that follows the physical hand from frame to frame.
 // raw: the 21 landmarks as detected, for tap motion. pts: all 21 One Euro filtered, for
 // display. tips: the filtered fingertips (pts at FINGERTIPS), for display and hit-testing.
-export type TrackedHand = { id: string; raw: Pt[]; pts: Pt[]; tips: Pt[] };
+// detection: its index in this frame's HandFrame, which per-detection results refer to.
+export type TrackedHand = { id: string; raw: Pt[]; pts: Pt[]; tips: Pt[]; detection: number };
 
 const INDEX = FINGERTIPS.indexOf(8);
 const WRIST = 0;
@@ -83,7 +84,7 @@ export class HandTracking {
       const pts = raw.map((p, i) => ({ x: k.filters[i][0].filter(p.x, t), y: k.filters[i][1].filter(p.y, t) }));
       k.wrist = raw[WRIST];
       k.seen = t;
-      return { id, raw, pts, tips: FINGERTIPS.map((i) => pts[i]) };
+      return { id, raw, pts, tips: FINGERTIPS.map((i) => pts[i]), detection: h };
     });
     hands.sort((a, b) => a.id.localeCompare(b.id));
 

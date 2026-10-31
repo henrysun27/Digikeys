@@ -367,3 +367,43 @@ with `latencyHint: "interactive"` and `lookAhead: 0`, and notes trigger at
       against the best on-board finger. The tap log lists them as "lands off board (x, y)".
       `chordRatio` is now 0.4: real chord fingers scored 0.45-0.53 of the best and were
       blocked at 0.8. Each chord note still has to pass the strike test on its own.
+- [x] Shadow-contact experiment, a third tap mode "Mic + shadow" (`src/shadow.ts`,
+      `src/shadow-contact.ts`, `CONFIG.shadow`): a fingertip touching the desk meets its own
+      shadow, a hovering one has a gap.
+  - Sampling runs where detection runs (the worker, or the main thread with
+    `?detect=main`), on the frame the landmarks came from: one downscaled (0.5) grayscale
+    grab around the requested fingertips, then a strip from each tip along the shadow
+    direction (1.0 long, 0.2 wide). Lengths are in finger units (tip to PIP joint in the
+    frame), so they don't change with distance to the camera. The gap is where the dark run
+    holding the strip's darkest point begins. Dark means below the midpoint between the
+    strip's darkest and brightest (the desk), and also 15% below the finger's own skin,
+    sampled on its last segment. Without the skin check, skin darker than the paper passed
+    for the shadow, so a finger lifted until its shadow left the strip read as contact.
+    Sampling costs 0.6 ms per frame in headless Edge with the GPU (3.8 ms when the grab
+    canvas was CPU-backed, which reads the whole frame back); the debug panel shows it live.
+  - "Calibrate shadow": rest both index fingertips on the board, then lift them about
+    2 cm and hold (1.5 s settle + 1.5 s measuring each, taps paused). Gaps are measured in
+    24 directions, and the direction where lifted gaps clear resting ones the most wins
+    (80th percentile resting vs 20th lifted, margin at least 0.02); the threshold sits
+    halfway. The fit is saved in localStorage. If they overlap in every direction,
+    calibration fails and says so.
+  - On a mic onset, every allowed finger plays whose contact is on at onset + `videoLagMs`
+    in frames, or began inside the stop window around it; there are no stroke depth or
+    speed checks. Each contact plays at most once, so a resting finger plays on the first
+    onset after it lands, not on every one. Contact shows up in frames about `videoLagMs`
+    after the sound, so fingers play as their frames arrive rather than at the onset:
+    expect higher tap-to-sound latency than Mic + motion ("Shadow tap → sound" in the debug
+    panel; not yet measured on camera).
+  - Overlay: a line from each fingertip along the shadow direction to the shadow tip
+    found, with the gap; green in contact, orange hovering, dashed when no shadow is on
+    the strip. The debug panel's "Shadow" row shows the fit and each finger's gap and
+    contact state; the tap log lists played fingers and, for the others, their closest gap
+    in the window.
+  - Test mode scores Mic + shadow on its own line (scores are per tap mode, and here also
+    per shadow calibration), with guess and check the same position, like vision-only.
+  - Checked on synthetic frames only so far (headless Edge, a finger drawn with its shadow
+    offset at 45°). Known limit: when the shadow falls to the side of the finger, a small
+    lift leaves no visible gap. The offset shadow stays tucked against the finger's edge
+    until it exceeds the finger's width, so along such a strip the gap stays at the
+    finger's edge (0.28 for lifts of 5-30 px against 0.32 at 45 px). Light from behind the
+    fingers, casting the shadow ahead of the tip, should open a gap right away.

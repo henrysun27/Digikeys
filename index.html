@@ -15,6 +15,7 @@
         <div id="sam-status"></div>
         <div id="layout-status"></div>
         <div id="tap-cal-status"></div>
+        <div id="shadow-status"></div>
         <div id="object-status"></div>
         <div id="sam-actions" hidden>
           <button id="accept" type="button">Accept corners</button>
@@ -30,6 +31,7 @@
         <select id="tap-mode" aria-label="What triggers a tap">
           <option value="hybrid">Mic + motion</option>
           <option value="vision">Vision only</option>
+          <option value="shadow">Mic + shadow</option>
         </select>
         <select id="fingers" aria-label="Fingers that can tap">
           <option value="index">Index fingers only</option>
@@ -43,6 +45,7 @@
         <button id="test" type="button">Test</button>
         <button id="cal-taps" type="button">Calibrate taps</button>
         <button id="clear-correction" type="button" disabled>Clear correction</button>
+        <button id="cal-shadow" type="button" title="Learn where fingertip shadows fall, for Mic + shadow">Calibrate shadow</button>
       </div>
       <div id="debug">
         <button id="mic" type="button">Enable mic</button>
@@ -71,6 +74,8 @@
           <dd id="median-latency">–</dd>
           <dt>Vision tap → sound</dt>
           <dd id="vision-latency">–</dd>
+          <dt>Shadow tap → sound</dt>
+          <dd id="shadow-latency">–</dd>
           <dt>Stop offset</dt>
           <dd id="stop-offset">–</dd>
           <dt>Median stop</dt>
@@ -89,6 +94,8 @@
             <label class="slider">beta <input id="beta" type="range" /> <span id="beta-value"></span></label>
             <button id="reset-smoothing" type="button">Defaults</button>
           </dd>
+          <dt>Shadow</dt>
+          <dd id="shadow">–</dd>
           <dt>Jitter</dt>
           <dd id="jitter">–</dd>
           <dt>Dropouts</dt>

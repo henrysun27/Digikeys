@@ -4,6 +4,7 @@ import type { DetectorInfo } from "./hand-detector.ts";
 import type { CameraInfo, CameraProbe } from "./main.ts";
 import type { MicInfo, MicLevel, Onset } from "./mic.ts";
 import type { Edge } from "./orientation.ts";
+import { dirDegrees, type ShadowFit, type ShadowState } from "./shadow-contact.ts";
 import { loadSmoothing, saveSmoothing, setSmoothing, SMOOTHING_DEFAULTS, type Jitter } from "./smoothing.ts";
 import { FINGER_NAMES, fingerKey, handOf } from "./taps.ts";
 import type { Correction, TapCorrections } from "./tap-correction.ts";
@@ -41,6 +42,9 @@ const visionLatencyEl = el("vision-latency");
 const minCutoffInput = el("min-cutoff") as HTMLInputElement;
 const betaInput = el("beta") as HTMLInputElement;
 const jitterEl = el("jitter");
+const shadowEl = el("shadow");
+const shadowLatencyEl = el("shadow-latency");
+const recentShadow: number[] = [];
 
 // What was played at onset time from the best-guess fingers. waitMs: onset to the main
 // thread getting the message; handlerMs: from then to the trigger. rejected: each other
@@ -344,6 +348,48 @@ export function showJitter(jitter: Jitter[]) {
   });
   const secs = CONFIG.smoothing.jitterWindowMs / 1000;
   jitterEl.textContent = `px RMS over ${secs} s, filtered (raw)\n${lines.join("\n")}`;
+}
+
+// Mic + shadow: the fit, then each measured finger's gap (finger units) and contact state,
+// and the per-frame sampling time where detection runs.
+export function showShadow(fit: ShadowFit | null, fingers: ShadowState[], ms: number | null) {
+  const head = fit
+    ? `dir ${dirDegrees(fit.dir).toFixed(0)}° · contact < ${fit.threshold.toFixed(2)} ` +
+      `(resting ${fit.touch.toFixed(2)}, lifted ${fit.hover.toFixed(2)}, margin ${fit.margin.toFixed(2)}, ` +
+      `lifted shadow seen ${(fit.seen * 100).toFixed(0)}%)`
+    : "not calibrated";
+  const timing = ms === null ? "" : ` · ${ms.toFixed(1)} ms/frame`;
+  const lines = [...fingers]
+    .sort((a, b) => a.finger.localeCompare(b.finger))
+    .map((f) => `${f.finger}: ${f.gap === null ? "no shadow" : f.gap.toFixed(2)}${f.contact ? " · CONTACT" : ""}`);
+  shadowEl.textContent = [head + timing, ...lines].join("\n");
+}
+
+// One finger of a shadow tap. why: null if it played, else why not ("in refractory"...).
+export type ShadowNote = { finger: string; zone: string | null; latencyMs: number | null; why: string | null };
+
+// The onset's log line, completed by resolveShadowTap once its window closes.
+export function logShadowOnset(n: number): HTMLLIElement {
+  return appendLog(`#${n} shadow: waiting for contact…`);
+}
+
+// Fingers play as their contact frames come in; latency is onset to trigger plus output.
+export function showShadowLatency(latencyMs: number) {
+  pushRecent(recentShadow, latencyMs);
+  shadowLatencyEl.textContent =
+    `${latencyMs.toFixed(0)} ms · median ${median(recentShadow).toFixed(0)} ms (last ${recentShadow.length})`;
+}
+
+// rejected: each other allowed finger and why it didn't count (its closest gap in the window).
+export function resolveShadowTap(line: HTMLLIElement, n: number, notes: ShadowNote[], rejected: string[]) {
+  const played = notes.map((x) => {
+    const how = x.latencyMs !== null ? ` · ${x.latencyMs.toFixed(0)} ms` : ` · silent${x.why ? ` (${x.why})` : ""}`;
+    return `${where(x.finger, x.zone)}${how}`;
+  });
+  if (notes.length) fingerEl.textContent = notes.map((x) => where(x.finger, x.zone)).join(" + ");
+  const none = notes.length ? "" : "no contact";
+  const skipped = rejected.length ? ` · not in contact: ${rejected.join("; ")}` : "";
+  line.textContent = `#${n} shadow ${none}${played.join(" + ")}${skipped}`;
 }
 
 // A chord target is a hit only if all its zones played; extra: other zones that played.

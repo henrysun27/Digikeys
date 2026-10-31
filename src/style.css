@@ -69,6 +69,7 @@ body {
 #sam-status,
 #layout-status,
 #tap-cal-status,
+#shadow-status,
 #object-status {
   padding: 6px 10px;
   border-radius: 6px;
@@ -91,6 +92,7 @@ body {
 #sam-status:empty,
 #layout-status:empty,
 #tap-cal-status:empty,
+#shadow-status:empty,
 #object-status:empty {
   display: none;
 }
@@ -103,6 +105,7 @@ body {
 #test,
 #cal-taps,
 #clear-correction,
+#cal-shadow,
 #sam-prompt,
 #detect,
 #instrument,
@@ -147,6 +150,7 @@ body {
 #test:hover:enabled,
 #cal-taps:hover:enabled,
 #clear-correction:hover:enabled,
+#cal-shadow:hover:enabled,
 #layout:hover,
 #fingers:hover,
 #tap-mode:hover,
@@ -164,12 +168,14 @@ body {
 }
 
 #test.on,
-#cal-taps.on {
+#cal-taps.on,
+#cal-shadow.on {
   border-color: #00e676;
 }
 
 #test:disabled,
 #cal-taps:disabled,
+#cal-shadow:disabled,
 #clear-correction:disabled {
   cursor: default;
   opacity: 0.5;
@@ -313,7 +319,8 @@ body {
   text-align: right;
 }
 
-#jitter {
+#jitter,
+#shadow {
   white-space: pre-line;
 }
 
