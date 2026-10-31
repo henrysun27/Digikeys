@@ -27,7 +27,7 @@ onmessage = (e: MessageEvent<ToWorker>) => {
   const start = performance.now();
   const frame = toHandFrame(landmarker.detectForVideo(bitmap, ts));
   const detectMs = performance.now() - start;
-  const shadows = shadow ? sampleShadows(bitmap, bitmap.width, bitmap.height, frame, shadow) : null;
+  const shadows = shadow ? sampleShadows(bitmap, bitmap.width, bitmap.height, frame, shadow, t) : null;
   bitmap.close();
   post({ type: "result", t, frame, detectMs, shadow: shadows });
 };

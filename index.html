@@ -46,6 +46,12 @@
         <button id="cal-taps" type="button">Calibrate taps</button>
         <button id="clear-correction" type="button" disabled>Clear correction</button>
         <button id="cal-shadow" type="button" title="Learn where fingertip shadows fall, for Mic + shadow">Calibrate shadow</button>
+        <button id="shadow-check-btn" type="button" title="See each index fingertip's shadow as Mic + shadow sees it">Shadow check</button>
+      </div>
+      <div id="shadow-check" hidden>
+        <div id="shadow-check-warning"></div>
+        <canvas id="shadow-check-canvas"></canvas>
+        <div id="shadow-check-legend">Mirrored like the view. Green dot: fingertip · yellow: shadow tip and gap · red: shadow found · orange: other dark cells · blue: hand · dimmed: outside the ±60° search.</div>
       </div>
       <div id="debug">
         <button id="mic" type="button">Enable mic</button>

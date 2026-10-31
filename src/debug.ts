@@ -185,18 +185,50 @@ export function logPlayed(t: PlayedTap): HTMLLIElement {
 
 // Session accuracy of the instant guess and the stop-based check, one line per finger
 // setting, the current one first; target null when the test isn't running.
-export function showTest(target: string | null, setting: string, scores: Map<string, TestScore>) {
+// byMode: the same totalled per tap mode, shown first as a side-by-side table (Mic + motion
+// and Mic + shadow always, other modes once tested): accuracy, hover triggers (played notes
+// whose finger the shadow saw no contact for; "–" without a shadow calibration), and median
+// tap-to-sound.
+export function showTest(
+  target: string | null,
+  setting: string,
+  scores: Map<string, TestScore>,
+  byMode: Map<string, TestScore>,
+) {
   testPanelEl.hidden = target === null && scores.size === 0;
+  const pct = (hits: number, of: number) => (of ? `${((hits / of) * 100).toFixed(0)}%` : "–");
   const line = (name: string, s: TestScore) => {
-    const pct = (hits: number) => (s.taps ? ` (${((hits / s.taps) * 100).toFixed(0)}%)` : "");
     const div = document.createElement("div");
     div.textContent =
-      `${name}: guess ${s.guessHits}/${s.taps}${pct(s.guessHits)} · ` +
-      `check ${s.checkHits}/${s.taps}${pct(s.checkHits)}` +
+      `${name}: guess ${s.guessHits}/${s.taps}${s.taps ? ` (${pct(s.guessHits, s.taps)})` : ""} · ` +
+      `check ${s.checkHits}/${s.taps}${s.taps ? ` (${pct(s.checkHits, s.taps)})` : ""}` +
       (s.extraNotes ? ` · ${s.extraNotes} extra notes` : "");
     return div;
   };
-  const lines = [line(setting, scores.get(setting) ?? { taps: 0, guessHits: 0, checkHits: 0, extraNotes: 0 })];
+  const table = document.createElement("table");
+  table.className = "compare";
+  const row = (cells: string[], head = false) => {
+    const tr = table.insertRow();
+    for (const c of cells) {
+      const td = document.createElement(head ? "th" : "td");
+      td.textContent = c;
+      tr.append(td);
+    }
+  };
+  row(["mode", "taps", "guess", "check", "hover trig.", "tap→sound"], true);
+  const modes = ["Mic + motion", "Mic + shadow", ...[...byMode.keys()].filter((m) => !m.startsWith("Mic + "))];
+  for (const mode of modes) {
+    const s = byMode.get(mode);
+    if (!s) {
+      row([mode, "0", "–", "–", "–", "–"]);
+      continue;
+    }
+    const hover = s.judged ? `${s.hoverTriggers}/${s.judged}` : "–";
+    const latency = s.latencies.length ? `${median(s.latencies).toFixed(0)} ms` : "–";
+    row([mode, String(s.taps), pct(s.guessHits, s.taps), pct(s.checkHits, s.taps), hover, latency]);
+  }
+  const empty = { taps: 0, guessHits: 0, checkHits: 0, extraNotes: 0, judged: 0, hoverTriggers: 0, latencies: [] };
+  const lines: HTMLElement[] = [table, line(setting, scores.get(setting) ?? empty)];
   for (const [name, s] of scores) if (name !== setting) lines.push(line(name, s));
   if (target !== null) {
     const tap = document.createElement("div");
@@ -350,46 +382,67 @@ export function showJitter(jitter: Jitter[]) {
   jitterEl.textContent = `px RMS over ${secs} s, filtered (raw)\n${lines.join("\n")}`;
 }
 
-// Mic + shadow: the fit, then each measured finger's gap (finger units) and contact state,
-// and the per-frame sampling time where detection runs.
+// Mic + shadow: the fit, then each measured finger's gap (MCP-PIP units), shadow contrast
+// and contact state, and the per-frame sampling time where detection runs.
 export function showShadow(fit: ShadowFit | null, fingers: ShadowState[], ms: number | null) {
   const head = fit
-    ? `dir ${dirDegrees(fit.dir).toFixed(0)}° · contact < ${fit.threshold.toFixed(2)} ` +
-      `(resting ${fit.touch.toFixed(2)}, lifted ${fit.hover.toFixed(2)}, margin ${fit.margin.toFixed(2)}, ` +
-      `lifted shadow seen ${(fit.seen * 100).toFixed(0)}%)`
+    ? `dir ${dirDegrees(fit.dir).toFixed(0)}° ±${CONFIG.shadow.sectorDeg}° · contact < ${fit.threshold.toFixed(2)} · ` +
+      `d′ ${fit.dPrime.toFixed(1)} (resting ${fit.rest.median.toFixed(2)}±${fit.rest.sigma.toFixed(2)}, ` +
+      `lifted ${fit.lift.median.toFixed(2)}±${fit.lift.sigma.toFixed(2)})`
     : "not calibrated";
   const timing = ms === null ? "" : ` · ${ms.toFixed(1)} ms/frame`;
   const lines = [...fingers]
     .sort((a, b) => a.finger.localeCompare(b.finger))
-    .map((f) => `${f.finger}: ${f.gap === null ? "no shadow" : f.gap.toFixed(2)}${f.contact ? " · CONTACT" : ""}`);
+    .map(
+      (f) =>
+        `${f.finger}: ${f.gap === null ? "no shadow" : f.gap.toFixed(2)} · contrast ${f.contrast.toFixed(2)}` +
+        (f.contact ? " · CONTACT" : ""),
+    );
   shadowEl.textContent = [head + timing, ...lines].join("\n");
 }
 
-// One finger of a shadow tap. why: null if it played, else why not ("in refractory"...).
-export type ShadowNote = { finger: string; zone: string | null; latencyMs: number | null; why: string | null };
+// One finger played by a shadow onset: how (in contact, or approaching with its gap
+// shrinking) and latency (null if silent, with why).
+export type ShadowNote = {
+  finger: string;
+  zone: string | null;
+  how: string;
+  latencyMs: number | null;
+  why: string | null;
+};
 
-// The onset's log line, completed by resolveShadowTap once its window closes.
-export function logShadowOnset(n: number): HTMLLIElement {
-  return appendLog(`#${n} shadow: waiting for contact…`);
-}
-
-// Fingers play as their contact frames come in; latency is onset to trigger plus output.
-export function showShadowLatency(latencyMs: number) {
-  pushRecent(recentShadow, latencyMs);
-  shadowLatencyEl.textContent =
-    `${latencyMs.toFixed(0)} ms · median ${median(recentShadow).toFixed(0)} ms (last ${recentShadow.length})`;
-}
-
-// rejected: each other allowed finger and why it didn't count (its closest gap in the window).
-export function resolveShadowTap(line: HTMLLIElement, n: number, notes: ShadowNote[], rejected: string[]) {
+// At the onset: what played right away, and why each other allowed finger didn't.
+export function logShadowTap(n: number, notes: ShadowNote[], rejected: string[]): HTMLLIElement {
+  for (const x of notes) {
+    if (x.latencyMs === null) continue;
+    pushRecent(recentShadow, x.latencyMs);
+    shadowLatencyEl.textContent =
+      `${x.latencyMs.toFixed(0)} ms · median ${median(recentShadow).toFixed(0)} ms (last ${recentShadow.length})`;
+    break;
+  }
+  fingerEl.textContent = notes.length ? notes.map((x) => where(x.finger, x.zone)).join(" + ") : "no finger down";
   const played = notes.map((x) => {
-    const how = x.latencyMs !== null ? ` · ${x.latencyMs.toFixed(0)} ms` : ` · silent${x.why ? ` (${x.why})` : ""}`;
-    return `${where(x.finger, x.zone)}${how}`;
+    const sound = x.latencyMs !== null ? `${x.latencyMs.toFixed(0)} ms` : `silent${x.why ? ` (${x.why})` : ""}`;
+    return `${where(x.finger, x.zone)} (${x.how}) · ${sound}`;
   });
-  if (notes.length) fingerEl.textContent = notes.map((x) => where(x.finger, x.zone)).join(" + ");
-  const none = notes.length ? "" : "no contact";
-  const skipped = rejected.length ? ` · not in contact: ${rejected.join("; ")}` : "";
-  line.textContent = `#${n} shadow ${none}${played.join(" + ")}${skipped}`;
+  const what = notes.length ? played.join(" + ") : "nothing in contact or coming down";
+  return appendLog(`#${n} shadow ${what}${notPlayed(rejected)}`);
+}
+
+// Once frames for the onset are in: whether each played finger made visual contact
+// (confirmed) or stayed hovering, and fingers that made contact without playing.
+export function confirmShadowTap(line: HTMLLIElement, confirmed: string[], hovering: string[], unplayed: string[]) {
+  const parts = [
+    ...confirmed.map((f) => `${f} contact ✓`),
+    ...hovering.map((f) => `${f} hovering ✗`),
+    ...unplayed.map((f) => `${f} touched, didn't play`),
+  ];
+  line.textContent += parts.length ? ` · seen: ${parts.join(", ")}` : " · seen: no contact";
+}
+
+// Mic + motion with a shadow calibration: played fingers the shadow saw hovering.
+export function noteHovering(line: HTMLLIElement, hovering: string[]) {
+  if (hovering.length) line.textContent += ` · shadow: ${hovering.join(" + ")} hovering`;
 }
 
 // A chord target is a hit only if all its zones played; extra: other zones that played.

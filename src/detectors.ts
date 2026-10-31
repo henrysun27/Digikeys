@@ -136,7 +136,7 @@ export class MainDetector implements Detector {
     const frame = this.toHandFrame(this.landmarker.detectForVideo(this.video, ts));
     const detectMs = performance.now() - start;
     const { videoWidth: w, videoHeight: h } = this.video;
-    this.onHands(t, frame, detectMs, shadow ? this.sampleShadows(this.video, w, h, frame, shadow) : null);
+    this.onHands(t, frame, detectMs, shadow ? this.sampleShadows(this.video, w, h, frame, shadow, t) : null);
   }
 
   close() {

@@ -407,3 +407,50 @@ with `latencyHint: "interactive"` and `lookAhead: 0`, and notes trigger at
     until it exceeds the finger's width, so along such a strip the gap stays at the
     finger's edge (0.28 for lifts of 5-30 px against 0.32 at 45 px). Light from behind the
     fingers, casting the shadow ahead of the tip, should open a gap right away.
+- [x] Mic + shadow, second version, after camera testing: calibration failed ("resting and
+      lifted gaps overlap in every direction, best -0.17 at -90°"), the lifted shadow was
+      seen in only 11% of frames, and tap-to-sound was 199-236 ms because notes waited for
+      visual contact. Mic + motion stays the default.
+  - Detection (`src/shadow.ts`): the sampler keeps a background of the empty desk, from
+    frames with no hand (blended in every 500 ms at most). Each fingertip gets a 48×48 patch
+    reaching 1.5 units each way. Units are now the finger's MCP-PIP length in the frame.
+    Each cell is divided by the background there, then by the patch's desk level (its 70th
+    percentile), so uneven light and exposure changes cancel. Hands are masked (bones ±0.3
+    units, plus the palm). The shadow is the connected region at least 12% darker than the
+    desk with the most darkness near the tip, searched within ±60° of the light direction.
+    The gap runs from the tip to its nearest cell. Contrast is the region's mean darkening.
+    At a 0.22 mask width, skin's soft edge just outside the mask read as a faint shadow
+    (contrast 0.18); 0.3 removed it.
+  - Shadow check (toolbar): each index fingertip's patch, enlarged and mirrored like the
+    view. It shows the hand mask, the shadow region, the search sector, the shadow tip and
+    gap, and the contrast with its recent median. Below
+    `CONFIG.shadow.minShadowContrast` (0.18) it warns "Shadows too weak — use one low side
+    lamp, overheads off"; it also says when there is no desk background yet. After a
+    calibration it shows each step's gap histogram with rejected frames and the threshold.
+  - Calibration is guided by a prompt over the view, five steps: hands off the desk (until a
+    background is captured), then rest / lift ~2 cm twice, each shown for 1 s before 2 s of
+    measuring; taps pause meanwhile. Frames with no shadow or contrast under 0.18 are
+    rejected. Round 1 searches all around and sets the light direction (the median lifted
+    shadow tip minus the median resting one). Round 2 searches ±60° around it and is
+    scored: d′ = (median lifted - median resting) / rms of their robust sigmas (1.4826 MAD).
+    It must reach `minShadowSeparation` (2). The threshold sits where both are equally many
+    sigmas away. On failure the Shadow check opens with the per-step distributions.
+  - Onsets play right away, on the same path as Mic + motion, never waiting for frames:
+    every allowed finger the latest frame shows in contact (a contact not played before),
+    or coming down onto it (gap under `approachGap` 0.6 and at least 0.03 smaller than
+    within the 100 ms before). One note per zone, at the guess position. Once frames for the
+    onset are in, visual contact from 100 ms before to 150 ms after onset + `videoLagMs`
+    confirms each played finger in the log ("contact ✓" / "hovering ✗", or "touched, didn't
+    play"). In test mode those contact positions score the check.
+  - Test mode shows a side-by-side table per tap mode: taps, guess and check accuracy, hover
+    triggers (played notes whose finger made no visual contact) and median tap-to-sound.
+    With a shadow calibration, Mic + motion's notes are judged for hovering too, so shadow
+    sampling runs in every mode once calibrated (about 1-2 ms per frame where detection runs).
+  - Checked on synthetic frames (headless Edge): desk lit unevenly, a printed stripe beside
+    the fingertip, a hand whose blurred shadow is offset down-right by the lift. With a
+    45%-dark shadow the gap stays at the mask edge (0.31) for offsets up to 0.5 units, then
+    grows (0.54 at 1.0, 0.74 at 1.33). The stripe isn't picked, and a 12%-dark shadow reads
+    contrast 0.12 (flagged weak). Two index tips with patches take 2.2 ms median. The
+    calibration recovered a 30° light direction as 31° with d′ 8.8, and failed a lift that
+    barely moved the gap (d′ 1.68). Tap-to-sound on camera is not measured yet; the onset
+    path is the same as Mic + motion's.

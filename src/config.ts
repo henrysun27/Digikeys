@@ -149,28 +149,46 @@ export const CONFIG = {
     keepMs: 2000, // how long onset times and mic levels are kept for miss checks
   },
   // Shadow contact (Mic + shadow): a fingertip touching the desk meets its own shadow, a
-  // hovering one has a gap. Each frame, a strip from each allowed fingertip along the shadow
-  // direction is read from a downscaled grayscale grab of the frame (where detection runs),
-  // and the gap is where the strip's darkest run begins. Lengths are in finger units: the
-  // fingertip-to-PIP distance in the frame, so they don't change with distance to the camera.
+  // hovering one has a gap. Each frame, a patch around each fingertip is read from a
+  // downscaled grayscale grab (where detection runs), normalized against the empty desk, and
+  // the shadow found in it (src/shadow.ts). Lengths are in units of the finger's MCP-PIP
+  // distance in the frame, so they don't change with distance to the camera.
   shadow: {
-    stripLength: 1.0,
-    stripWidth: 0.2, // averaged across, against noise
-    cell: 0.04, // strip step, along and across
-    // The run's start is searched from here on: just past the tip landmark, the finger itself.
-    skinSkip: 0.08,
-    minContrast: 0.15, // no shadow unless the darkest is this fraction below the brightest
     downscale: 0.5, // the grab's scale against the camera frame
-    directions: 24, // candidate shadow directions tried by the calibration
+    patchRadius: 1.5, // units each way from the tip
+    patchCells: 48, // cells across
+    sectorDeg: 60, // the shadow is searched this far either side of the light direction
+    deskPercentile: 0.7, // of the patch's normalized cells, taken as the desk level
+    minDarken: 0.12, // a shadow cell is at least this much darker than the desk level
+    minArea: 4, // cells, smallest shadow region
+    nearWeight: 0.5, // units: a region's darkness counts for less with distance from the tip
+    handHalfWidth: 0.3, // units either side of each bone that count as the hand (fingers are wider than their bones, and landmarks jitter)
+    // Mean darkening of the shadow found; below it, the shadow is too faint to judge (the
+    // Shadow check warns, calibration rejects the frame, and no contact is read).
+    minShadowContrast: 0.18,
+    // The empty desk: frames with no hand, blended in at most every intervalMs.
+    background: { intervalMs: 500, blend: 0.3 },
     hysteresis: 0.03, // contact ends only above threshold + this
+    // On an onset, a finger not yet in contact still plays if its gap in the latest frame is
+    // under approachGap and at least minShrink smaller than approachMs before (it is coming
+    // down). Frames older than maxAgeMs aren't judged.
+    approachGap: 0.6,
+    approachMs: 100,
+    minShrink: 0.03,
+    maxAgeMs: 150,
+    // Visual contact confirms a played finger (and scores the check) if it overlaps this
+    // window around onset + taps.videoLagMs, ms.
+    confirmWindowMs: [-100, 150] as [number, number],
     keepMs: 2000, // contacts and gaps kept this long
-    // "Calibrate shadow": index fingers resting, then lifted. Each phase waits settleMs for
-    // the hands to get there, then collects collectMs of frames. The direction where lifted
-    // gaps clear resting ones the most wins: margin = the lifted (1 - percentile) quantile
-    // minus the resting percentile quantile, which must be at least minMargin; the threshold
-    // sits halfway between them.
-    calibration: { settleMs: 1500, collectMs: 1500, minSamples: 15, percentile: 0.8, minMargin: 0.02 },
-    storageKey: "desk-instrument.shadow",
+    // "Calibrate shadow": hands off (background), then rest / lift twice, each step showing
+    // its prompt for settleMs before measuring stepMs. The first round finds the light
+    // direction (searching all around); the second measures within sectorDeg of it. Frames
+    // with no shadow or one under minShadowContrast are rejected. Separation is d' on the
+    // second round: (median lifted - median resting) / rms of their robust sigmas (1.4826
+    // MAD), which must reach minShadowSeparation, with at least minSamples frames per step.
+    minShadowSeparation: 2,
+    calibration: { settleMs: 1000, stepMs: 2000, minSamples: 10, histogramBins: 24 },
+    storageKey: "desk-instrument.shadow.v2",
   },
   // Test mode targets.
   test: {

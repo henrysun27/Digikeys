@@ -6,11 +6,12 @@ import {
   logIgnored,
   logMissed,
   logPlayed,
+  confirmShadowTap,
   logRejected,
-  logShadowOnset,
+  logShadowTap,
   logTest,
   logVisionTap,
-  resolveShadowTap,
+  noteHovering,
   resolveTap,
   showCamera,
   showCorrections,
@@ -22,8 +23,8 @@ import {
   showMicInfo,
   showPlayer,
   showShadow,
-  showShadowLatency,
   showTest,
+  type ShadowNote,
 } from "./debug.ts";
 import { applyH, convexHull, distToPolygon, fitQuad, polygonArea, type Pt } from "./geometry.ts";
 import { HAND_CONNECTIONS, HandTracking, type TrackedHand } from "./hand-tracking.ts";
@@ -45,16 +46,20 @@ import { scanObjects } from "./object-scan.ts";
 import { soundName } from "./objects.ts";
 import { Recording, transcribe } from "./voice.ts";
 import { maskArea, maskImage, maskOutline, maskPixels, segmentFrame, type SamObject, type Segmentation } from "./sam.ts";
-import { candidateDirs, type ShadowRequest, type ShadowResult } from "./shadow.ts";
+import type { ShadowReading, ShadowRequest, ShadowResult } from "./shadow.ts";
 import {
   dirDegrees,
   loadShadowFit,
   saveShadowFit,
   ShadowCalibration,
   ShadowContacts,
+  type CalibrationReport,
+  type CalibrationResult,
+  type Contact,
   type FingerShadow,
   type ShadowFit,
 } from "./shadow-contact.ts";
+import { drawShadowCheck, type CheckPatch } from "./shadow-view.ts";
 import { JitterMeter } from "./smoothing.ts";
 import { initSound, playNow } from "./sound.ts";
 import {
@@ -91,6 +96,10 @@ const probeBtn = document.querySelector<HTMLButtonElement>("#probe-camera")!;
 const tapCalStatusEl = document.querySelector<HTMLDivElement>("#tap-cal-status")!;
 const calShadowBtn = document.querySelector<HTMLButtonElement>("#cal-shadow")!;
 const shadowStatusEl = document.querySelector<HTMLDivElement>("#shadow-status")!;
+const checkBtn = document.querySelector<HTMLButtonElement>("#shadow-check-btn")!;
+const checkPanel = document.querySelector<HTMLDivElement>("#shadow-check")!;
+const checkWarningEl = document.querySelector<HTMLDivElement>("#shadow-check-warning")!;
+const checkCanvas = document.querySelector<HTMLCanvasElement>("#shadow-check-canvas")!;
 const micBtn = document.querySelector<HTMLButtonElement>("#mic")!;
 const tapModeSelect = document.querySelector<HTMLSelectElement>("#tap-mode")!;
 const layoutSelect = document.querySelector<HTMLSelectElement>("#layout")!;
@@ -168,13 +177,18 @@ const acceptedOnsets: number[] = [];
 const rejectedOnsets: number[] = [];
 const levels: MicLevel[] = [];
 // Mic + shadow: the learned direction and threshold (saved), a calibration in progress
-// (taps pause meanwhile), each finger's contacts, and when the latest hand result's frame
-// was grabbed.
+// (taps pause meanwhile) and the last one's report, each finger's contacts, and fingers
+// played as they came down, whose next contact is spent (until `until`). The Shadow check
+// view: open or not, and each finger's recent contrasts. shadowBackgroundT: frame time of
+// the sampler's latest desk background, null before the first.
 let shadowFit: ShadowFit | null = loadShadowFit();
 let shadowCal: ShadowCalibration | null = null;
+let calReport: CalibrationReport | null = null;
 const contacts = new ShadowContacts();
-const CANDIDATE_DIRS = candidateDirs();
-let lastFrameT = -Infinity;
+const armed = new Map<string, { after: number; until: number }>();
+let checkOn = false;
+const checkContrast = new Map<string, number[]>();
+let shadowBackgroundT: number | null = null;
 
 // Coordinate spaces:
 //   cam    - raw camera coords normalized to 0-1, unmirrored (same as MediaPipe landmarks)
@@ -470,14 +484,14 @@ const fingerSetting = () => {
   return `${tapModeSelect.selectedOptions[0].text}, ${fingersSelect.selectedOptions[0].text}, ${fit}${shadow}`;
 };
 
+const tapModeName = () => tapModeSelect.selectedOptions[0].text;
+
 // The tap-mode toggle writes CONFIG.taps.mode. Vision-only needs sound but not the mic.
-// Contacts are only followed in shadow mode, so they start over when it is picked again.
 const TAP_MODES = ["hybrid", "vision", "shadow"] as const;
 tapModeSelect.value = CONFIG.taps.mode;
 updateAudioButton();
 tapModeSelect.addEventListener("change", () => {
   CONFIG.taps.mode = TAP_MODES.find((m) => m === tapModeSelect.value) ?? "hybrid";
-  contacts.clear();
   if (CONFIG.taps.mode === "shadow" && !shadowFit && !shadowCal) {
     shadowStatusEl.textContent = "Mic + shadow needs Calibrate shadow first.";
   }
@@ -491,7 +505,7 @@ fingersSelect.addEventListener("change", () => {
 });
 
 function updateTest() {
-  showTest(test.active ? (test.target?.label ?? null) : null, fingerSetting(), test.scores);
+  showTest(test.active ? (test.target?.label ?? null) : null, fingerSetting(), test.scores, test.byMode);
 }
 
 function setTesting(on: boolean) {
@@ -810,7 +824,7 @@ function visionTap(m: FingerPick) {
     if (cal.finished) finishTapCal();
     return;
   }
-  const joined = test.active ? test.join(m.at.t, fingerSetting(), layout) : null;
+  const joined = test.active ? test.join(m.at.t, fingerSetting(), tapModeName(), layout) : null;
   if (!joined) return;
   const { attempt, opened } = joined;
   if (zone) {
@@ -990,6 +1004,7 @@ function onOnset(onset: Onset) {
   }
   keepRecent(acceptedOnsets, onset.time);
   const played: Zone[] = [];
+  const playedFingers: string[] = [];
   let latencyMs: number | null = null;
   for (const { pick, zone } of chord) {
     if (!zone) continue;
@@ -1000,6 +1015,7 @@ function onOnset(onset: Onset) {
     const p = playZone(zone);
     if (!p) continue;
     played.push(zone);
+    playedFingers.push(pick.finger);
     latencyMs ??= (p.ctxTime - onset.ctxTime) * 1000 + p.outputMs;
   }
   const handlerMs = performance.now() - onset.receivedAt;
@@ -1018,11 +1034,14 @@ function onOnset(onset: Onset) {
   // Taps after the last calibration zone (while its checks resolve) count for nothing.
   const calTarget = tapCal?.take() ?? null;
   const cal = calTarget ? tapCal : null;
-  const joined = !tapCal && test.active ? test.join(onset.time, fingerSetting(), layout) : null;
+  const joined = !tapCal && test.active ? test.join(onset.time, fingerSetting(), tapModeName(), layout) : null;
   const attempt = joined?.attempt ?? null;
-  const resolveAt = onset.time + videoLagMs + win.hi + settleMarginMs;
+  // Late enough for the shadow's confirm window too, when it judges hovering.
+  const resolveAt =
+    onset.time + videoLagMs + Math.max(win.hi, CONFIG.shadow.confirmWindowMs[1]) + settleMarginMs;
   if (attempt) {
     for (const z of played) attempt.played.add(z.id);
+    if (latencyMs !== null) attempt.latencies.push(latencyMs);
     if (joined!.opened) {
       attempt.line = line;
       // After the resolve of the last onset that can still join.
@@ -1063,6 +1082,12 @@ function onOnset(onset: Onset) {
       rejected: checkRejected,
     });
     if ((calTarget || attempt) && top?.at) dot.check = { p: top.at, hit: targetHas(top.zone) };
+    const { judged, hovering } = judgeHovering(playedFingers, onset.time);
+    noteHovering(line, hovering);
+    if (attempt) {
+      attempt.judged += judged.length;
+      attempt.hoverTriggers += hovering.length;
+    }
     if (cal) {
       // Only on-time stops go into the check fit; late ones aren't check positions.
       cal.add("check", calTarget!, top && !top.late ? top.at : null);
@@ -1074,29 +1099,15 @@ function onOnset(onset: Onset) {
   }, Math.max(0, resolveAt - performance.now()));
 }
 
-// Mic + shadow: an onset plays every allowed finger whose tip is in contact with its shadow
-// at the onset's moment in frames (onset + videoLagMs), or whose contact began inside the
-// stop window around it. No stroke depth or speed checks. Each contact plays at most once,
-// so a finger resting on the board plays on the first onset after it lands, not on every
-// one. Contact shows up in frames videoLagMs after the onset, so fingers play as their
-// frames come in, until the window closes. In test mode the tap joins an attempt once a
-// finger lands on the board, scored like vision taps (guess and check are the same
-// position); in tap calibration the first such finger is recorded.
-type ShadowTapNote = { finger: string; at: Pt | null; zone: Zone | null; latencyMs: number | null; why: string | null };
-type ShadowTap = {
-  n: number;
-  onset: Onset;
-  expected: number; // onset + videoLagMs
-  from: number; // contacts starting from here...
-  to: number; // ...to here count
-  closeAt: number;
-  threshold: number;
-  line: HTMLLIElement;
-  notes: ShadowTapNote[];
-  attempt: Attempt | null;
-};
-const shadowTaps: ShadowTap[] = [];
-
+// Mic + shadow: an onset plays right away, like Mic + motion, never waiting for frames. It
+// plays every allowed finger that the latest frame shows in contact with its shadow (a
+// contact not played yet, so a finger resting on the board plays once, not on every onset),
+// or coming down onto it: gap under approachGap and at least minShrink smaller than within
+// approachMs before. One note per zone, at the finger's latest position (guess correction);
+// no stroke depth or speed checks. Once frames for the onset are in, visual contact inside
+// confirmWindowMs confirms each played finger in the log. In test mode the contact
+// positions score the check, and a played finger that never touched is a hover trigger; in
+// tap calibration they are the check positions.
 function shadowOnset(onset: Onset) {
   const n = ++tapCount;
   if (!shadowFit) {
@@ -1107,183 +1118,282 @@ function shadowOnset(onset: Onset) {
     logIgnored(n, "no hand");
     return;
   }
-  const win = stopWindow(frameMs);
-  const expected = onset.time + CONFIG.taps.videoLagMs;
-  const tap: ShadowTap = {
-    n,
-    onset,
-    expected,
-    from: expected + win.lo,
-    to: expected + win.hi,
-    closeAt: expected + win.hi + CONFIG.taps.settleMarginMs,
-    threshold: shadowFit.threshold,
-    line: logShadowOnset(n),
-    notes: [],
-    attempt: null,
-  };
-  shadowTaps.push(tap);
-  advanceShadowTaps();
-  setTimeout(() => closeShadowTap(tap), Math.max(0, tap.closeAt - performance.now()));
-}
-
-// For each open shadow tap, oldest first, plays every allowed finger with an unused contact
-// that counts for it. A finger that plays uses up all its contacts touching the window, so
-// a contact flickering off and on doesn't play the next onset too. A contact from before
-// the window counts only if it was still on at the expected time, known once frames reach it.
-function advanceShadowTaps() {
-  for (const tap of shadowTaps) {
-    for (const [finger, list] of contacts.all()) {
-      if (!isAllowed(finger) || tap.notes.some((x) => x.finger === finger)) continue;
-      const c = list.find(
-        (k) =>
-          !k.used &&
-          ((k.start >= tap.from && k.start <= tap.to) ||
-            (k.start < tap.from && lastFrameT >= tap.expected && (k.end === null || k.end > tap.expected))),
-      );
-      if (!c) continue;
-      for (const k of list) if (k.start <= tap.to && (k.end === null || k.end >= tap.from)) k.used = true;
-      playShadowNote(tap, finger, c.at);
-    }
-  }
-}
-
-// One finger of a shadow tap, at its fingertip where contact began, through the check
-// correction (like vision taps), one note per zone.
-function playShadowNote(tap: ShadowTap, finger: string, cam: Pt) {
-  const at = tapPoint("check", cam);
-  const zone = at ? zoneAt(at) : null;
-  let why: string | null = null;
-  let latencyMs: number | null = null;
-  if (!zone) why = insideBoard(at) ? "between zones" : "off board";
-  else if (tap.notes.some((x) => x.zone?.id === zone.id)) why = "zone already played";
-  else if (!zoneReady(zone)) why = "in refractory";
-  else {
-    const p = playZone(zone);
-    if (p) {
-      latencyMs = (p.ctxTime - tap.onset.ctxTime) * 1000 + p.outputMs;
-      showShadowLatency(latencyMs);
-    } else why = "sounds not loaded";
-  }
-  const first = !tap.notes.some((x) => insideBoard(x.at));
-  tap.notes.push({ finger, at, zone, latencyMs, why });
-  if (!at || !insideBoard(at)) return;
-
-  if (tapCal) {
-    const cal = tapCal;
-    const target = first ? cal.take() : null;
-    if (!target) return;
-    pushDot({ guess: { p: at, hit: zone?.id === target.id }, check: null });
-    cal.add("guess", target, at);
-    cal.add("check", target, at);
-    cal.settle();
-    updateTapCalStatus();
-    if (cal.finished) finishTapCal();
-    return;
-  }
-  if (!test.active) return;
-  if (!tap.attempt) {
-    const joined = test.join(tap.onset.time, fingerSetting(), layout);
-    if (!joined) return;
-    tap.attempt = joined.attempt;
-    if (joined.opened) {
-      tap.attempt.line = tap.line;
-      closeAttemptAt(tap.attempt, tap.closeAt + tap.attempt.window);
-    }
-  }
-  const attempt = tap.attempt;
-  if (zone && latencyMs !== null) {
-    attempt.played.add(zone.id);
-    attempt.checked.add(zone.id);
-  }
-  pushDot({ guess: { p: at, hit: !!zone && attempt.target.zones.some((z) => z.id === zone.id) }, check: null });
-  updateTest();
-}
-
-// The window is over: logs what played, and why each other allowed finger seen in the
-// window didn't, with its closest gap there.
-function closeShadowTap(tap: ShadowTap) {
-  advanceShadowTaps();
-  shadowTaps.splice(shadowTaps.indexOf(tap), 1);
+  const now = performance.now();
+  const { approachGap, minShrink, maxAgeMs, confirmWindowMs } = CONFIG.shadow;
   const rejected: string[] = [];
-  for (const finger of contacts.measured()) {
-    if (!isAllowed(finger) || tap.notes.some((x) => x.finger === finger)) continue;
-    const g = contacts.minGap(finger, tap.from, tap.to);
-    if (g === undefined) continue;
-    rejected.push(
-      g === null
-        ? `${finger} no shadow`
-        : g < tap.threshold
-          ? `${finger} contact already played`
-          : `${finger} closest gap ${g.toFixed(2)} ≥ ${tap.threshold.toFixed(2)}`,
-    );
+  const down: { finger: string; tip: Pt; frameT: number; how: string }[] = [];
+  for (const s of contacts.current()) {
+    if (!isAllowed(s.finger)) continue;
+    if (now - s.t > maxAgeMs) {
+      rejected.push(`${s.finger} latest frame ${(now - s.t).toFixed(0)} ms old`);
+      continue;
+    }
+    const open = contacts.open(s.finger);
+    if (s.contact && open) {
+      if (open.used) rejected.push(`${s.finger} contact already played`);
+      else down.push({ finger: s.finger, tip: s.tip, frameT: s.t, how: "contact" });
+      continue;
+    }
+    const trend = contacts.trend(s.finger);
+    if (!trend) {
+      rejected.push(`${s.finger} no shadow`);
+      continue;
+    }
+    const shrink = trend.before === null ? 0 : trend.before - trend.gap;
+    if (trend.gap >= approachGap) rejected.push(`${s.finger} gap ${trend.gap.toFixed(2)} ≥ ${approachGap}`);
+    else if (shrink < minShrink) rejected.push(`${s.finger} gap ${trend.gap.toFixed(2)} not shrinking (${shrink.toFixed(2)})`);
+    else down.push({ finger: s.finger, tip: s.tip, frameT: s.t, how: `coming down, gap ${trend.gap.toFixed(2)}` });
   }
-  const notes = tap.notes.map(({ finger, zone, latencyMs, why }) => ({ finger, zone: zone?.label ?? null, latencyMs, why }));
-  resolveShadowTap(tap.line, tap.n, notes, rejected);
+
+  const notes: ShadowNote[] = [];
+  const playing = new Set<string>();
+  const sounded: string[] = [];
+  let latencyMs: number | null = null;
+  let best: { at: Pt; zone: Zone | null } | null = null; // the first finger on the board
+  for (const d of down) {
+    const at = tapPoint("guess", d.tip);
+    const zone = at ? zoneAt(at) : null;
+    let why: string | null = null;
+    let ms: number | null = null;
+    if (!zone) why = insideBoard(at) ? "between zones" : "off board";
+    else if (playing.has(zone.id)) why = "zone already playing";
+    else if (!zoneReady(zone)) why = "in refractory";
+    else {
+      const p = playZone(zone);
+      if (p) {
+        ms = (p.ctxTime - onset.ctxTime) * 1000 + p.outputMs;
+        latencyMs ??= ms;
+        playing.add(zone.id);
+        sounded.push(d.finger);
+      } else why = "sounds not loaded";
+    }
+    // The contact the finger is in, or is about to make, is spent on this onset.
+    const open = contacts.open(d.finger);
+    if (open) open.used = true;
+    else armed.set(d.finger, { after: d.frameT, until: onset.time + CONFIG.taps.videoLagMs + confirmWindowMs[1] });
+    notes.push({ finger: d.finger, zone: zone?.label ?? null, how: d.how, latencyMs: ms, why });
+    if (!best && at && insideBoard(at)) best = { at, zone };
+  }
+  const line = logShadowTap(n, notes, rejected);
+  if (!best) return;
+
+  const calTarget = tapCal?.take() ?? null;
+  const cal = calTarget ? tapCal : null;
+  const joined = !tapCal && test.active ? test.join(onset.time, fingerSetting(), tapModeName(), layout) : null;
+  const attempt = joined?.attempt ?? null;
+  const expected = onset.time + CONFIG.taps.videoLagMs;
+  const resolveAt = expected + confirmWindowMs[1] + CONFIG.taps.settleMarginMs;
+  if (attempt) {
+    for (const id of playing) attempt.played.add(id);
+    if (latencyMs !== null) attempt.latencies.push(latencyMs);
+    if (joined!.opened) {
+      attempt.line = line;
+      closeAttemptAt(attempt, resolveAt + attempt.window);
+    }
+    updateTest();
+  }
+  const targetHas = (zone: Zone | null) =>
+    !!zone && (calTarget ? zone.id === calTarget.id : !!attempt?.target.zones.some((z) => z.id === zone.id));
+  if (cal) {
+    cal.add("guess", calTarget!, best.at);
+    updateTapCalStatus();
+  }
+  const dot: (typeof dots)[number] = { guess: null, check: null };
+  if (calTarget || attempt) {
+    dot.guess = { p: best.at, hit: targetHas(best.zone) };
+    pushDot(dot);
+  }
+
+  setTimeout(() => {
+    const from = expected + confirmWindowMs[0];
+    const to = expected + confirmWindowMs[1];
+    const confirmed: string[] = [];
+    const hovering: string[] = [];
+    const unplayed: string[] = [];
+    const checks: { at: Pt | null; zone: Zone | null }[] = [];
+    const check = (c: Contact) => {
+      const at = tapPoint("check", c.at);
+      checks.push({ at, zone: at ? zoneAt(at) : null });
+    };
+    for (const d of down) {
+      const c = contacts.during(d.finger, from, to);
+      if (c) {
+        confirmed.push(d.finger);
+        check(c);
+      } else hovering.push(d.finger);
+    }
+    for (const finger of contacts.measured()) {
+      if (!isAllowed(finger) || down.some((d) => d.finger === finger)) continue;
+      const c = contacts.during(finger, from, to);
+      if (c && c.start >= from) {
+        unplayed.push(finger);
+        check(c);
+      }
+    }
+    confirmShadowTap(line, confirmed, hovering, unplayed);
+    const top = checks.find((c) => insideBoard(c.at)) ?? null;
+    if ((calTarget || attempt) && top?.at) dot.check = { p: top.at, hit: targetHas(top.zone) };
+    if (cal) {
+      cal.add("check", calTarget!, top?.at ?? null);
+      cal.settle();
+      if (cal === tapCal && cal.finished) finishTapCal();
+    } else if (attempt) {
+      for (const { zone } of checks) if (zone) attempt.checked.add(zone.id);
+      attempt.judged += sounded.length;
+      attempt.hoverTriggers += sounded.filter((f) => hovering.includes(f)).length;
+    }
+  }, Math.max(0, resolveAt - now));
 }
 
-// What the next frame measures: every candidate direction on the index tips while
-// calibrating, the learned direction on the allowed tips in shadow mode, else nothing.
+// Fingers played as they came down: the contact each makes next (starting after the frame
+// it was judged on, until `until`) is spent too.
+function spendArmed(now: number) {
+  for (const [finger, a] of armed) {
+    const c = contacts.open(finger);
+    if (c && c.start > a.after) {
+      c.used = true;
+      armed.delete(finger);
+    } else if (now > a.until) armed.delete(finger);
+  }
+}
+
+// Mic + motion with a shadow calibration: which of the fingers it played the shadow judged,
+// and which of those it saw hovering (no visual contact in confirmWindowMs around onset +
+// videoLagMs). Call once those frames are in.
+function judgeHovering(fingers: string[], onsetTime: number): { judged: string[]; hovering: string[] } {
+  if (!shadowFit) return { judged: [], hovering: [] };
+  const expected = onsetTime + CONFIG.taps.videoLagMs;
+  const [lo, hi] = CONFIG.shadow.confirmWindowMs;
+  const measured = new Set(contacts.measured());
+  const judged = fingers.filter((f) => measured.has(f));
+  return { judged, hovering: judged.filter((f) => !contacts.during(f, expected + lo, expected + hi)) };
+}
+
+// What the next frame measures. Calibrating: the index tips, searched all around until the
+// first round has found the light direction. Otherwise, with a shadow calibration, the
+// allowed tips around its direction (in every tap mode, so Mic + motion's notes can be
+// judged for hovering), plus the index tips while the Shadow check is open.
 function shadowRequest(): ShadowRequest | null {
-  if (shadowCal) return { tips: [FINGERTIPS[FINGER_NAMES.indexOf("index")]], dirs: CANDIDATE_DIRS };
-  if (CONFIG.taps.mode !== "shadow" || !shadowFit) return null;
-  const tips = FINGERTIPS.filter((_, f) => CONFIG.fingers.allowed.includes(FINGER_NAMES[f]));
-  return { tips, dirs: [shadowFit.dir] };
+  const index = FINGERTIPS[FINGER_NAMES.indexOf("index")];
+  if (shadowCal) return { tips: [index], dir: shadowCal.dir, patches: checkOn };
+  if (!shadowFit && !checkOn) return null;
+  const tips = new Set<number>(checkOn ? [index] : []);
+  if (shadowFit) FINGERTIPS.forEach((tip, f) => CONFIG.fingers.allowed.includes(FINGER_NAMES[f]) && tips.add(tip));
+  return { tips: [...tips], dir: shadowFit?.dir ?? null, patches: checkOn };
 }
 
-// Readings come back per detection; a frame requested under the other request (calibration
-// started or ended in between) has the wrong number of directions and is skipped.
+// Readings come back per detection, matched to tracked hands by their detection index.
 function onShadows(hands: TrackedHand[], t: number, result: ShadowResult | null) {
   if (!result) return;
+  shadowBackgroundT = result.backgroundT;
+  const byDetection = new Map(hands.map((h) => [h.detection, h]));
+  const { videoWidth: w, videoHeight: h } = video;
+  const fingerOf = (r: ShadowReading) => {
+    const hand = byDetection.get(r.hand);
+    return hand ? { hand, f: FINGERTIPS.indexOf(r.tip), name: fingerKey(hand.id, FINGER_NAMES[FINGERTIPS.indexOf(r.tip)]) } : null;
+  };
+  if (checkOn) updateCheck(result.readings, fingerOf);
   if (shadowCal) {
-    const gaps = result.readings.map((r) => r.gaps).filter((g) => g.length === CANDIDATE_DIRS.length);
-    if (gaps.length === 0) return;
-    const done = shadowCal.add(t, gaps);
+    const index = FINGERTIPS[FINGER_NAMES.indexOf("index")];
+    const samples = result.readings.flatMap((r) => {
+      const tip = r.tip === index ? byDetection.get(r.hand)?.raw[r.tip] : undefined;
+      if (!tip) return [];
+      const toShadow = r.shadow && { x: ((r.shadow.x - tip.x) * w) / r.unit, y: ((r.shadow.y - tip.y) * h) / r.unit };
+      return [{ gap: r.gap, contrast: r.contrast, toShadow }];
+    });
+    const done = shadowCal.add(t, samples, result.backgroundT);
     if (done) finishShadowCal(done);
-    else shadowStatusEl.textContent = shadowCal.status;
+    else showCalPrompt();
     return;
   }
   if (!shadowFit) return;
-  const fit = shadowFit;
-  const byDetection = new Map(hands.map((h) => [h.detection, h]));
   const frame: FingerShadow[] = [];
   for (const r of result.readings) {
-    const hand = byDetection.get(r.hand);
-    if (!hand || r.gaps.length !== 1) continue;
-    const f = FINGERTIPS.indexOf(r.tip);
+    const k = fingerOf(r);
+    if (!k) continue;
+    const raw = k.hand.raw[r.tip];
+    const weak = r.contrast < CONFIG.shadow.minShadowContrast;
     frame.push({
-      finger: fingerKey(hand.id, FINGER_NAMES[f]),
+      finger: k.name,
       t,
-      gap: r.gaps[0],
-      tip: hand.tips[f],
-      toward: { x: (fit.dir.x * r.scale) / video.videoWidth, y: (fit.dir.y * r.scale) / video.videoHeight },
+      gap: weak ? null : r.gap,
+      contrast: r.contrast,
+      tip: k.hand.tips[k.f],
+      toShadow: r.shadow && { x: r.shadow.x - raw.x, y: r.shadow.y - raw.y },
     });
   }
-  contacts.update(t, frame, fit.threshold);
-  advanceShadowTaps();
-  showShadow(fit, contacts.current(), result.ms);
+  contacts.update(t, frame, shadowFit.threshold);
+  spendArmed(performance.now());
+  showShadow(shadowFit, contacts.current(), result.ms);
+}
+
+// The Shadow check view: each index fingertip's patch with its recent median contrast, and
+// the warnings for weak shadows or no desk background yet.
+function updateCheck(readings: ShadowReading[], fingerOf: (r: ShadowReading) => { name: string } | null) {
+  const index = FINGERTIPS[FINGER_NAMES.indexOf("index")];
+  const patches: CheckPatch[] = [];
+  for (const r of readings) {
+    const k = fingerOf(r);
+    if (r.tip !== index || !r.patch || !k) continue;
+    let recent = checkContrast.get(k.name);
+    if (!recent) checkContrast.set(k.name, (recent = []));
+    recent.push(r.contrast);
+    if (recent.length > 15) recent.shift();
+    const sorted = [...recent].sort((a, b) => a - b);
+    patches.push({ finger: k.name, reading: r, contrast: sorted[sorted.length >> 1] });
+  }
+  patches.sort((a, b) => a.finger.localeCompare(b.finger));
+  const warnings: string[] = [];
+  if (patches.some((p) => p.contrast < CONFIG.shadow.minShadowContrast)) {
+    warnings.push("Shadows too weak — use one low side lamp, overheads off.");
+  }
+  if (shadowBackgroundT === null) warnings.push("No desk background yet: take your hands off the desk for a moment.");
+  checkWarningEl.textContent = warnings.join("\n");
+  checkWarningEl.classList.toggle("warn", warnings.length > 0);
+  drawShadowCheck(checkCanvas, patches, shadowCal?.dir ?? shadowFit?.dir ?? null, calReport);
+}
+
+function setCheck(on: boolean) {
+  checkOn = on;
+  checkPanel.hidden = !on;
+  checkBtn.classList.toggle("on", on);
+  checkContrast.clear();
+  if (on) drawShadowCheck(checkCanvas, [], shadowFit?.dir ?? null, calReport);
+}
+
+checkBtn.addEventListener("click", () => setCheck(!checkOn));
+
+function showCalPrompt() {
+  if (!shadowCal) return;
+  const p = shadowCal.prompt;
+  shadowStatusEl.textContent = `Calibrating shadow, step ${p.step} of ${p.steps}: ${p.text} · ${p.detail}`;
 }
 
 function setShadowCal(on: boolean) {
   shadowCal = on ? new ShadowCalibration() : null;
   calShadowBtn.textContent = on ? "Cancel shadow calibration" : "Calibrate shadow";
   calShadowBtn.classList.toggle("on", on);
-  if (shadowCal) shadowStatusEl.textContent = shadowCal.status;
+  showCalPrompt();
 }
 
-function finishShadowCal(r: ShadowFit | string) {
+function finishShadowCal(r: CalibrationResult) {
   setShadowCal(false);
-  if (typeof r === "string") {
-    shadowStatusEl.textContent = `Shadow calibration failed: ${r}.`;
+  calReport = r.report;
+  if (!r.fit) {
+    shadowStatusEl.textContent = `Shadow calibration failed: ${r.problem}. Shadow check shows the gaps measured per step.`;
+    setCheck(true);
     return;
   }
-  shadowFit = r;
-  saveShadowFit(r);
+  const f = r.fit;
+  shadowFit = f;
+  saveShadowFit(f);
   contacts.clear();
   const pick = CONFIG.taps.mode === "shadow" ? "" : ' Pick "Mic + shadow" to play with it.';
   shadowStatusEl.textContent =
-    `Shadow calibrated: direction ${dirDegrees(r.dir).toFixed(0)}°, contact under gap ${r.threshold.toFixed(2)} ` +
-    `(resting ${r.touch.toFixed(2)}, lifted ${r.hover.toFixed(2)}; ${r.samples.rest}+${r.samples.lift} frames).${pick}`;
-  showShadow(r, [], null);
+    `Shadow calibrated: light direction ${dirDegrees(f.dir).toFixed(0)}°, separation d′ ${f.dPrime.toFixed(1)}, ` +
+    `contact under gap ${f.threshold.toFixed(2)} (resting ${f.rest.median.toFixed(2)}±${f.rest.sigma.toFixed(2)}, ` +
+    `lifted ${f.lift.median.toFixed(2)}±${f.lift.sigma.toFixed(2)}).${pick}`;
+  showShadow(f, [], null);
   updateTest();
 }
 
@@ -1431,7 +1541,6 @@ function useDetector(d: Detector) {
       if (lastTap?.hand === id) lastTap = null;
     }
     hands = tracked.hands;
-    lastFrameT = t;
     onShadows(hands, t, shadow);
     recordFingers(hands, t);
     measureJitter(hands, t);
@@ -1694,37 +1803,68 @@ function drawHands(hands: TrackedHand[]) {
   }
 }
 
-// Mic + shadow: from each measured fingertip along the shadow direction to where its
-// shadow's tip was found, a dot there labelled with the gap (finger units); green in
-// contact, orange hovering. Dashed to the strip's end where no shadow was found.
+// Mic + shadow (or the Shadow check open): a line from each measured fingertip to its
+// shadow's tip, a dot there labelled with the gap (MCP-PIP units); green in contact, orange
+// hovering, "no shadow" where none was found or it is too faint.
 function drawShadows() {
-  if (CONFIG.taps.mode !== "shadow" || !shadowFit) return;
+  if (!shadowFit || (CONFIG.taps.mode !== "shadow" && !checkOn)) return;
   ctx.font = "600 12px system-ui, sans-serif";
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
   for (const s of contacts.current()) {
     const color = s.contact ? "#00e676" : "#ffb300";
-    const along = s.gap ?? CONFIG.shadow.stripLength;
     const a = camToScreen(s.tip);
-    const b = camToScreen({ x: s.tip.x + s.toward.x * along, y: s.tip.y + s.toward.y * along });
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
-    ctx.setLineDash(s.gap === null ? [4, 4] : []);
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    if (s.gap === null) continue;
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.arc(b.x, b.y, 5, 0, Math.PI * 2);
-    ctx.fill();
-    const text = s.contact ? `${s.gap.toFixed(2)} contact` : s.gap.toFixed(2);
+    let at = { x: a.x + 10, y: a.y - 12 };
+    if (s.gap !== null && s.toShadow) {
+      const b = camToScreen({ x: s.tip.x + s.toShadow.x, y: s.tip.y + s.toShadow.y });
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, 5, 0, Math.PI * 2);
+      ctx.fill();
+      at = { x: b.x + 8, y: b.y };
+    }
+    const text = s.gap === null ? "no shadow" : s.contact ? `${s.gap.toFixed(2)} contact` : s.gap.toFixed(2);
     ctx.lineWidth = 3;
     ctx.strokeStyle = "rgba(0, 0, 0, 0.7)";
-    ctx.strokeText(text, b.x + 8, b.y);
-    ctx.fillText(text, b.x + 8, b.y);
+    ctx.fillStyle = color;
+    ctx.strokeText(text, at.x, at.y);
+    ctx.fillText(text, at.x, at.y);
+  }
+}
+
+// "Calibrate shadow": the current step's prompt across the middle of the view, with how
+// far through its measuring it is.
+function drawCalPrompt() {
+  if (!shadowCal) return;
+  const p = shadowCal.prompt;
+  const w = Math.min(canvas.width - 40, 760);
+  const h = 150;
+  const x = (canvas.width - w) / 2;
+  const y = (canvas.height - h) / 2;
+  ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+  ctx.fillRect(x, y, w, h);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#aaaaaa";
+  ctx.font = "600 16px system-ui, sans-serif";
+  ctx.fillText(`Shadow calibration · step ${p.step} of ${p.steps}`, canvas.width / 2, y + 24);
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "700 30px system-ui, sans-serif";
+  ctx.fillText(p.text, canvas.width / 2, y + 64);
+  ctx.fillStyle = "#cccccc";
+  ctx.font = "500 16px system-ui, sans-serif";
+  ctx.fillText(p.detail, canvas.width / 2, y + 100);
+  ctx.fillStyle = "rgba(255, 255, 255, 0.2)";
+  ctx.fillRect(x + 20, y + h - 22, w - 40, 8);
+  if (p.progress !== null) {
+    ctx.fillStyle = "#00e676";
+    ctx.fillRect(x + 20, y + h - 22, (w - 40) * p.progress, 8);
   }
 }
 
@@ -1780,6 +1920,7 @@ function loop() {
       drawProposal();
       drawHands(hands);
       drawShadows();
+      drawCalPrompt();
       counts.drawMs += performance.now() - now;
     }
 

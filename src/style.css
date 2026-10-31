@@ -106,6 +106,7 @@ body {
 #cal-taps,
 #clear-correction,
 #cal-shadow,
+#shadow-check-btn,
 #sam-prompt,
 #detect,
 #instrument,
@@ -151,6 +152,7 @@ body {
 #cal-taps:hover:enabled,
 #clear-correction:hover:enabled,
 #cal-shadow:hover:enabled,
+#shadow-check-btn:hover,
 #layout:hover,
 #fingers:hover,
 #tap-mode:hover,
@@ -169,7 +171,8 @@ body {
 
 #test.on,
 #cal-taps.on,
-#cal-shadow.on {
+#cal-shadow.on,
+#shadow-check-btn.on {
   border-color: #00e676;
 }
 
@@ -317,6 +320,66 @@ body {
 
 #debug .slider span {
   text-align: right;
+}
+
+#shadow-check {
+  position: absolute;
+  top: 56px;
+  right: 12px;
+  width: 432px;
+  padding: 10px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.75);
+  font-size: 13px;
+  pointer-events: none;
+}
+
+#shadow-check[hidden] {
+  display: none;
+}
+
+#shadow-check-canvas {
+  display: block;
+}
+
+#shadow-check-warning {
+  margin-bottom: 8px;
+  font-weight: 600;
+  white-space: pre-line;
+}
+
+#shadow-check-warning:empty {
+  display: none;
+}
+
+#shadow-check-warning.warn {
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: #ff3b6b;
+}
+
+#shadow-check-legend {
+  margin-top: 6px;
+  color: #aaa;
+  font-size: 11px;
+}
+
+#test-stats table.compare {
+  margin-bottom: 6px;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+#test-stats table.compare th,
+#test-stats table.compare td {
+  padding: 1px 6px 1px 0;
+  text-align: left;
+}
+
+#test-stats table.compare th {
+  color: #aaa;
+  font-weight: 400;
 }
 
 #jitter,

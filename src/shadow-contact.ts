@@ -1,107 +1,153 @@
-// Mic + shadow on the main thread: learning the shadow direction and contact threshold,
-// and following each finger's contacts from the per-frame gaps (shadow.ts).
+// Mic + shadow on the main thread: the guided calibration (light direction and contact
+// threshold), and each finger's contacts from the per-frame gaps (shadow.ts).
 import { CONFIG } from "./config.ts";
 import type { Pt } from "./geometry.ts";
-import { candidateDirs } from "./shadow.ts";
 import { handOf } from "./taps.ts";
 
-// dir: unit direction in camera pixels (unmirrored) from a fingertip toward its shadow's
-// tip. Gaps (finger units) under threshold are contact. touch, hover: median gaps along dir
-// resting and lifted; margin: how far lifted gaps cleared resting ones (see
-// CONFIG.shadow.calibration); seen: share of lifted frames with a shadow on the strip.
-export type ShadowFit = {
-  dir: Pt;
-  threshold: number;
-  touch: number;
-  hover: number;
-  margin: number;
-  seen: number;
-  samples: { rest: number; lift: number };
-  fittedAt: number;
-};
+// A gap distribution: median and robust sigma (1.4826 MAD), units.
+export type GapStats = { median: number; sigma: number; n: number };
+// dir: unit direction in camera pixels (unmirrored) from a fingertip toward its shadow, the
+// centre of the search sector. Gaps (units) under threshold are contact. rest, lift: the
+// second round's distributions; dPrime: their separation.
+export type ShadowFit = { dir: Pt; threshold: number; rest: GapStats; lift: GapStats; dPrime: number; fittedAt: number };
 
 export const dirDegrees = (d: Pt) => (Math.atan2(d.y, d.x) * 180) / Math.PI;
 
-function quantile(xs: number[], q: number): number {
+function median(xs: number[]): number {
   const s = [...xs].sort((a, b) => a - b);
-  return s[Math.min(s.length - 1, Math.max(0, Math.round(q * (s.length - 1))))];
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
-// The candidate direction where lifted gaps clear resting ones by the widest margin. A strip
-// with no shadow counts as a gap the strip's full length (the shadow is beyond it); ties go
-// to the direction that saw the lifted shadow more often.
-function fitShadow(rest: (number | null)[][], lift: (number | null)[][]): ShadowFit | string {
-  const { minSamples, percentile, minMargin } = CONFIG.shadow.calibration;
-  if (rest.length < minSamples || lift.length < minSamples) {
-    return `too few index fingertip frames (${rest.length} resting, ${lift.length} lifted, need ${minSamples} each)`;
-  }
-  const far = CONFIG.shadow.stripLength;
-  const dirs = candidateDirs();
-  let b: Omit<ShadowFit, "samples" | "fittedAt"> | null = null;
-  for (let i = 0; i < dirs.length; i++) {
-    const touch = rest.map((g) => g[i] ?? far);
-    const hover = lift.map((g) => g[i] ?? far);
-    const seen = lift.filter((g) => g[i] !== null).length / lift.length;
-    const hi = quantile(touch, percentile);
-    const lo = quantile(hover, 1 - percentile);
-    const margin = lo - hi;
-    if (!b || margin > b.margin || (margin === b.margin && seen > b.seen)) {
-      b = { dir: dirs[i], threshold: (hi + lo) / 2, touch: quantile(touch, 0.5), hover: quantile(hover, 0.5), margin, seen };
-    }
-  }
-  if (!b) return "no candidate directions";
-  if (b.margin < minMargin) {
-    return (
-      `resting and lifted gaps overlap in every direction (best ${b.margin.toFixed(2)} at ` +
-      `${dirDegrees(b.dir).toFixed(0)}°, need ${minMargin}): is there a clear shadow?`
-    );
-  }
-  return { ...b, samples: { rest: rest.length, lift: lift.length }, fittedAt: Date.now() };
+function stats(xs: number[]): GapStats {
+  const m = median(xs);
+  return { median: m, sigma: Math.max(0.01, 1.4826 * median(xs.map((x) => Math.abs(x - m)))), n: xs.length };
 }
 
-type Phase = "rest" | "lift";
+type StepKind = "background" | "rest" | "lift";
+const STEPS: { kind: StepKind; prompt: string }[] = [
+  { kind: "background", prompt: "Take your hands off the desk" },
+  { kind: "rest", prompt: "Rest both index fingers on the board" },
+  { kind: "lift", prompt: "Lift both index fingers ~2 cm and hold" },
+  { kind: "rest", prompt: "Rest both index fingers on the board again" },
+  { kind: "lift", prompt: "Lift both index fingers ~2 cm again and hold" },
+];
 
-// "Calibrate shadow": index fingers resting on the board, then lifted and held. Each phase
-// waits settleMs, then collects collectMs of index fingertip readings in every candidate
-// direction. Frame times drive it, from the first frame with an index fingertip.
+// One index fingertip in one frame: its gap and contrast as read, and the shadow tip
+// relative to the fingertip in camera pixels over the unit (null with no shadow).
+export type CalibrationSample = { gap: number | null; contrast: number; toShadow: Pt | null };
+// One rest or lift step: accepted gaps (units), rejected frames by reason.
+export type StepReport = { label: string; gaps: number[]; noShadow: number; weak: number };
+export type CalibrationReport = { steps: StepReport[]; threshold: number | null };
+export type CalibrationResult = { fit: ShadowFit | null; problem: string | null; report: CalibrationReport };
+
+// Shown over the camera view while calibrating. progress: 0-1 through the measuring part of
+// the step, null while the prompt settles (or, for the background, until hands are gone).
+export type CalibrationPrompt = { step: number; steps: number; text: string; detail: string; progress: number | null };
+
+// "Calibrate shadow", step by step (STEPS). Each step shows its prompt for settleMs, then
+// measures for stepMs; the background step ends once a background is captured after the
+// prompt settled (the sampler takes one from any frame with no hand). The first rest/lift
+// round searches all around for the shadow; its lifted shadow direction (relative to the
+// resting one) sets `dir`, which the second round searches around and the fit keeps.
 export class ShadowCalibration {
-  phase: Phase = "rest";
-  private phaseStart: number | null = null;
-  private gaps: Record<Phase, (number | null)[][]> = { rest: [], lift: [] };
+  private step = 0;
+  private stepStart: number | null = null;
   private lastT = 0;
+  private handsInView = false;
+  private vectors: Record<"rest" | "lift", Pt[]> = { rest: [], lift: [] };
+  private steps: StepReport[] = STEPS.slice(1).map((s, i) => ({
+    label: `${s.kind} ${i < 2 ? 1 : 2}`,
+    gaps: [],
+    noShadow: 0,
+    weak: 0,
+  }));
+  dir: Pt | null = null;
 
-  // null while collecting; once both phases are in, the fit or why it failed.
-  add(t: number, gaps: (number | null)[][]): ShadowFit | string | null {
-    const { settleMs, collectMs } = CONFIG.shadow.calibration;
-    this.phaseStart ??= t;
+  // Index fingertip samples of frame t (any number of hands), with the time of the latest
+  // background capture. null while going; the result once done.
+  add(t: number, readings: CalibrationSample[], backgroundT: number | null): CalibrationResult | null {
+    const { settleMs, stepMs, minSamples } = CONFIG.shadow.calibration;
+    this.stepStart ??= t;
     this.lastT = t;
-    const age = t - this.phaseStart;
-    if (age >= settleMs) this.gaps[this.phase].push(...gaps);
-    if (age < settleMs + collectMs) return null;
-    if (this.phase === "rest") {
-      this.phase = "lift";
-      this.phaseStart = t;
-      return null;
+    this.handsInView = readings.length > 0;
+    const age = t - this.stepStart;
+    const kind = STEPS[this.step].kind;
+    if (kind === "background") {
+      if (backgroundT === null || backgroundT < this.stepStart + settleMs) return null;
+      return this.next(t);
     }
-    return fitShadow(this.gaps.rest, this.gaps.lift);
+    if (age >= settleMs) {
+      const s = this.steps[this.step - 1];
+      for (const r of readings) {
+        if (r.gap === null || !r.toShadow) s.noShadow++;
+        else if (r.contrast < CONFIG.shadow.minShadowContrast) s.weak++;
+        else {
+          s.gaps.push(r.gap);
+          if (this.step <= 2) this.vectors[kind].push(r.toShadow);
+        }
+      }
+    }
+    if (age < settleMs + stepMs) return null;
+    if (this.step === 2) {
+      // End of round 1: the light direction, or give up.
+      const lift = this.vectors.lift;
+      if (lift.length < minSamples) {
+        return this.finish(`the lifted shadow was found in only ${lift.length} frames (need ${minSamples})`);
+      }
+      const med = (vs: Pt[]) => ({ x: median(vs.map((v) => v.x)), y: median(vs.map((v) => v.y)) });
+      const l = med(lift);
+      const r = this.vectors.rest.length ? med(this.vectors.rest) : { x: 0, y: 0 };
+      const shift = Math.hypot(l.x - r.x, l.y - r.y) > 0.05 ? { x: l.x - r.x, y: l.y - r.y } : l;
+      const len = Math.hypot(shift.x, shift.y);
+      if (len === 0) return this.finish("no direction from the resting to the lifted shadow");
+      this.dir = { x: shift.x / len, y: shift.y / len };
+    }
+    if (this.step === STEPS.length - 1) return this.fit();
+    return this.next(t);
   }
 
-  get status(): string {
-    const { settleMs, collectMs } = CONFIG.shadow.calibration;
-    const what =
-      this.phase === "rest"
-        ? "rest both index fingertips on the board"
-        : "lift both index fingertips about 2 cm off the board and hold them there";
-    const age = this.phaseStart === null ? 0 : this.lastT - this.phaseStart;
-    const step = this.phase === "rest" ? "1/2" : "2/2";
-    const doing =
-      this.phaseStart === null
-        ? "waiting for index fingertips in view…"
-        : age < settleMs
-          ? "get ready…"
-          : `hold still, measuring ${Math.min(100, ((age - settleMs) / collectMs) * 100).toFixed(0)}% ` +
-            `(${this.gaps[this.phase].length} frames)`;
-    return `Calibrating shadow ${step}: ${what}; ${doing}`;
+  private next(t: number): null {
+    this.step++;
+    this.stepStart = t;
+    return null;
+  }
+
+  private finish(problem: string | null, fit: ShadowFit | null = null, threshold: number | null = null): CalibrationResult {
+    return { fit, problem, report: { steps: this.steps, threshold } };
+  }
+
+  // Round 2: d' and the threshold where both distributions are equally many sigmas away.
+  private fit(): CalibrationResult {
+    const { minSamples } = CONFIG.shadow.calibration;
+    const [rest, lift] = [this.steps[2], this.steps[3]];
+    const few = [rest, lift].filter((s) => s.gaps.length < minSamples);
+    if (few.length) {
+      return this.finish(few.map((s) => `${s.label} kept only ${s.gaps.length} frames (need ${minSamples})`).join("; "));
+    }
+    const r = stats(rest.gaps);
+    const l = stats(lift.gaps);
+    const dPrime = (l.median - r.median) / Math.sqrt((r.sigma ** 2 + l.sigma ** 2) / 2);
+    const threshold = (r.median * l.sigma + l.median * r.sigma) / (r.sigma + l.sigma);
+    const need = CONFIG.shadow.minShadowSeparation;
+    if (!(dPrime >= need)) return this.finish(`separation d′ ${dPrime.toFixed(2)} is under ${need}`, null, threshold);
+    const fit = { dir: this.dir!, threshold, rest: r, lift: l, dPrime, fittedAt: Date.now() };
+    return this.finish(null, fit, threshold);
+  }
+
+  get prompt(): CalibrationPrompt {
+    const { settleMs, stepMs } = CONFIG.shadow.calibration;
+    const { kind, prompt } = STEPS[this.step];
+    const age = this.stepStart === null ? 0 : this.lastT - this.stepStart;
+    const base = { step: this.step + 1, steps: STEPS.length, text: prompt };
+    if (kind === "background") {
+      const detail = this.handsInView || age < settleMs ? "capturing the empty desk…" : "capturing…";
+      return { ...base, detail: this.handsInView ? "hands still in view" : detail, progress: null };
+    }
+    if (age < settleMs) return { ...base, detail: "get ready…", progress: null };
+    const s = this.steps[this.step - 1];
+    const rejected = s.noShadow + s.weak ? `, ${s.noShadow + s.weak} rejected` : "";
+    return { ...base, detail: `hold still · ${s.gaps.length} frames${rejected}`, progress: Math.min(1, (age - settleMs) / stepMs) };
   }
 }
 
@@ -113,7 +159,8 @@ export function loadShadowFit(): ShadowFit | null {
     const raw = localStorage.getItem(CONFIG.shadow.storageKey);
     if (!raw) return null;
     const f = JSON.parse(raw);
-    return isPt(f?.dir) && Number.isFinite(f?.threshold) && Number.isFinite(f?.fittedAt) ? f : null;
+    const ok = isPt(f?.dir) && [f?.threshold, f?.dPrime, f?.fittedAt, f?.rest?.median, f?.lift?.median].every(Number.isFinite);
+    return ok ? f : null;
   } catch {
     return null;
   }
@@ -127,14 +174,13 @@ export function saveShadowFit(f: ShadowFit) {
   }
 }
 
-// One finger's frame: gap along the fit's direction (null: no shadow on the strip). tip:
-// the filtered fingertip (cam coords), toward: cam-coord offset of one finger unit along the
-// shadow direction, for drawing the gap from the tip.
-export type FingerShadow = { finger: string; t: number; gap: number | null; tip: Pt; toward: Pt };
+// One finger's frame. gap: null with no shadow found, or one under minShadowContrast. tip:
+// the filtered fingertip (cam coords); toShadow: cam-coord offset from it to the shadow tip.
+export type FingerShadow = { finger: string; t: number; gap: number | null; contrast: number; tip: Pt; toShadow: Pt | null };
 export type ShadowState = FingerShadow & { contact: boolean };
 // From the first frame under the threshold to the first over threshold + hysteresis, with
 // no shadow, or without the finger. at: the filtered fingertip on entry (cam coords). used:
-// an onset played it.
+// an onset played it (or played the finger as it came down onto it).
 export type Contact = { start: number; end: number | null; at: Pt; used: boolean };
 
 export class ShadowContacts {
@@ -166,6 +212,7 @@ export class ShadowContacts {
       while (list.length && list[0].end !== null && list[0].end < t - keepMs) list.shift();
       if (list.length === 0) this.contacts.delete(finger);
     }
+    for (const [finger, gaps] of this.gaps) if (!gaps.length || gaps[gaps.length - 1].t < t - keepMs) this.gaps.delete(finger);
   }
 
   // A contact starting at `at`, or (at null) the open one ending.
@@ -194,13 +241,34 @@ export class ShadowContacts {
     return [...this.states.values()];
   }
 
-  all(): [string, Contact[]][] {
-    return [...this.contacts];
+  // The finger's contact still going on, if any.
+  open(finger: string): Contact | null {
+    const last = this.contacts.get(finger)?.at(-1);
+    return last && last.end === null ? last : null;
+  }
+
+  // Its first contact overlapping from-to, if any.
+  during(finger: string, from: number, to: number): Contact | null {
+    return this.contacts.get(finger)?.find((c) => c.start <= to && (c.end === null || c.end >= from)) ?? null;
   }
 
   // Fingers with gaps in the last keepMs.
   measured(): string[] {
     return [...this.gaps.keys()];
+  }
+
+  // The latest gap and the largest within approachMs before it, both from frames with a
+  // shadow; null if the latest frame has none.
+  trend(finger: string): { gap: number; before: number | null } | null {
+    const gaps = this.gaps.get(finger);
+    const last = gaps?.at(-1);
+    if (!gaps || !last || last.gap === null) return null;
+    let before: number | null = null;
+    for (const g of gaps) {
+      if (g === last || g.gap === null || g.t < last.t - CONFIG.shadow.approachMs) continue;
+      before = Math.max(before ?? -Infinity, g.gap);
+    }
+    return { gap: last.gap, before };
   }
 
   // A finger's smallest gap measured from `from` to `to`: undefined with no frames there,
