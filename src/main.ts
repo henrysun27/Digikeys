@@ -4,6 +4,7 @@ import { CONFIG } from "./config.ts";
 import {
   initSmoothingControls,
   logIgnored,
+  medianTapLatency,
   logMissed,
   logPlayed,
   logRejected,
@@ -32,7 +33,7 @@ import { StepTimes } from "./frame-steps.ts";
 import type { HandFrame } from "./hand-detector.ts";
 import { describeSpec, layoutFromSpec, PRESETS, presetFor } from "./instrument.ts";
 import { hitTest, isAccidental, shapeOutline, zoneAnchor, zStack, type Layout, type Zone } from "./layout.ts";
-import { startMic, type MicLevel, type Onset } from "./mic.ts";
+import { startMic, type MicInfo, type MicLevel, type Onset } from "./mic.ts";
 import {
   leftEdge,
   orientLayout,
@@ -85,6 +86,7 @@ import {
   type TapKind,
 } from "./tap-correction.ts";
 import { TestMode, type Attempt } from "./test-mode.ts";
+import * as ui from "./ui.ts";
 
 const video = document.querySelector<HTMLVideoElement>("#video")!;
 const canvas = document.querySelector<HTMLCanvasElement>("#view")!;
@@ -143,6 +145,10 @@ let transcribing = false;
 let tapsResumeAt = 0;
 const history = new FingerHistory();
 const flashes = new Map<string, number>(); // zone id -> flash end, performance.now() ms
+// Play view: when each zone last played (its glow), and a ripple where each tap landed
+// (board coords), performance.now() ms.
+const hits = new Map<string, number>();
+const ripples: { at: Pt; t: number }[] = [];
 const zonePlayedAt = new Map<string, number>(); // zone id -> last played, performance.now() ms
 let hintError: string | null = null;
 let tapCount = 0;
@@ -217,6 +223,7 @@ function setStatus(text: string) {
 // targets on.
 function updateHint() {
   syncOrientation();
+  ui.setSurfaceDone(calibration.done);
   canvas.classList.toggle("calibrating", !calibration.done);
   testBtn.disabled = !calibration.done;
   generateBtn.disabled = !calibration.done || generating;
@@ -245,6 +252,7 @@ canvas.addEventListener("click", (e) => {
   };
   hintError = calibration.add(screenToCam(screen));
   updateHint();
+  if (calibration.done) ui.toast("Surface set. Pick an instrument.", "success");
 });
 
 resetBtn.addEventListener("click", () => {
@@ -275,6 +283,13 @@ function setLayout(l: Layout) {
   source = l;
   flashes.clear();
   placeLayout();
+  ui.setInstrument(l.instrument, layoutSize(l));
+}
+
+// "13 keys" for a layout of notes, else "7 pads", for the Play view.
+function layoutSize(l: Layout): string {
+  const n = l.zones.length;
+  return l.zones.every((z) => z.sound.type === "note") ? `${n} keys` : `${n} pads`;
 }
 
 // Places the source layout on the board for the current orientation. Targets and tap
@@ -347,9 +362,12 @@ async function generateLayout(heard = "") {
     const preset = presetFor(request);
     setLayout(preset);
     layoutStatusEl.textContent = `${heard}Muse Spark layout not used: ${why}. Using the ${preset.instrument} preset.`;
+    const short = why.length > 70 ? `${why.slice(0, 70)}…` : why;
+    ui.toast(`Muse Spark couldn't build “${request}” (${short}). Using the ${preset.instrument} preset.`, "error");
   };
   generating = true;
   updateHint();
+  ui.working("spark", true);
   layoutStatusEl.textContent = `${heard}Asking Muse Spark for "${request}"…`;
   try {
     const reply = await requestLayout(video, calibration.corners, request, orientation);
@@ -369,6 +387,9 @@ async function generateLayout(heard = "") {
     } else {
       setLayout(built.layout);
       const { spec, layout: l, warning } = built;
+      const size = layoutSize(l).replace(/s$/, "").replace(" ", "-");
+      ui.toast(`Muse Spark built a ${size} ${l.instrument} in ${(reply.ms / 1000).toFixed(1)} s`, "success");
+      ui.banner("narrow", warning ? `Narrow keys: ${warning}.` : null);
       const board = aspect !== null ? ` Board ≈ ${aspect.toFixed(2)}:1.` : "";
       const notes = spec.notes ? ` Muse Spark: "${spec.notes}".` : "";
       layoutStatusEl.textContent =
@@ -381,6 +402,7 @@ async function generateLayout(heard = "") {
   } finally {
     generating = false;
     updateHint();
+    ui.working("spark", false);
   }
 }
 
@@ -429,11 +451,13 @@ async function stopTalk() {
     const speech = await rec.stop();
     if (!speech) {
       layoutStatusEl.textContent = "Too short: hold Space or the talk button while you speak.";
+      ui.toast("Too short: hold the button (or Space) while you speak.");
       return;
     }
     const secs = (speech.audioMs / 1000).toFixed(1);
     layoutStatusEl.textContent = `Transcribing ${secs} s of speech…`;
-    const t = await transcribe(speech.wav);
+    ui.working("voice", true);
+    const t = await transcribe(speech.wav).finally(() => ui.working("voice", false));
     const boost = speech.gain > 1 ? ` ×${speech.gain.toFixed(1)}` : "";
     const timing =
       `${secs} s of audio${boost}; WAV ${speech.encodeMs.toFixed(0)} ms, ` +
@@ -441,13 +465,16 @@ async function stopTalk() {
     const text = t.text.replace(/[.!?]+$/, "").slice(0, CONFIG.server.maxPromptChars).trim();
     if (!text) {
       layoutStatusEl.textContent = `Heard nothing (${timing}). Try again closer to the mic.`;
+      ui.toast("Heard nothing. Try again closer to the mic.", "error");
       return;
     }
     instrumentInput.value = text;
     heard = `Heard "${text}" (${timing}). `;
+    ui.toast(`Heard “${text}” in ${(t.ms / 1000).toFixed(1)} s`);
   } catch (err) {
     console.error(err);
     layoutStatusEl.textContent = `Voice input failed: ${err instanceof Error ? err.message : String(err)}`;
+    ui.toast("Voice input failed. Try again, or type the instrument.", "error");
   } finally {
     transcribing = false;
     updateHint();
@@ -619,6 +646,7 @@ async function detectSurface() {
   const { minSurfaceFrac, looseFitRatio } = CONFIG.sam;
   const prompt = samPromptInput.value.trim() || CONFIG.sam.boundaryPrompt;
   setDetecting(true);
+  ui.working("sam", true);
   samStatusEl.textContent = `Asking SAM 3.1 for "${prompt}"…`;
   try {
     const seg = await segmentFrame(video, prompt);
@@ -627,6 +655,7 @@ async function detectSurface() {
     if (!pick) {
       setProposal(null);
       samStatusEl.textContent = `SAM 3.1: ${found}. Retry, or click the corners.`;
+      ui.toast(`SAM 3.1 found no “${prompt}”. Retry, or click the 4 corners.`, "error");
       return;
     }
     const frac = maskPixels(pick) / (seg.width * seg.height);
@@ -647,11 +676,19 @@ async function detectSurface() {
     samStatusEl.textContent = problem
       ? `SAM 3.1: ${found}. Largest (confidence ${conf}): ${problem}. Retry, or click the corners.`
       : `SAM 3.1: ${found}. Largest (confidence ${conf})${fit}${loose}. Accept to use these corners.`;
+    ui.toast(
+      problem
+        ? `SAM 3.1 found the surface, but ${problem}. Retry, or click the corners.`
+        : `SAM 3.1 found the surface in ${(seg.ms / 1000).toFixed(1)} s. Use these corners?`,
+      problem ? "error" : "info",
+    );
   } catch (err) {
     console.error(err);
     samStatusEl.textContent = `SAM 3.1 failed: ${err instanceof Error ? err.message : String(err)}`;
+    ui.toast("SAM 3.1 didn't answer. Retry, or click the 4 corners.", "error");
   } finally {
     setDetecting(false);
+    ui.working("sam", false);
   }
 }
 
@@ -680,6 +717,7 @@ acceptBtn.addEventListener("click", () => {
   samStatusEl.textContent = "Using the corners from SAM 3.1.";
   hintError = null;
   updateHint();
+  ui.toast("Surface set by SAM 3.1. Pick an instrument.", "success");
 });
 
 // Object pads replace any earlier scan's.
@@ -692,6 +730,7 @@ function setObjects(zones: Zone[]) {
 function clearObjects() {
   setObjects([]);
   objectStatusEl.textContent = "";
+  ui.setObjects(null);
 }
 
 // "Scan objects": Muse Spark lists the objects on the desk, SAM 3.1 segments each name, and
@@ -704,9 +743,27 @@ async function scanForObjects() {
   scanning = true;
   updateHint();
   const started = performance.now();
+  // The model chip follows the scan's stages from its progress lines.
+  let stage: ui.Model = "spark";
+  ui.working(stage, true);
+  const progress = (text: string) => {
+    objectStatusEl.textContent = text;
+    const next: ui.Model = text.includes("SAM 3.1") ? "sam" : "spark";
+    if (next === stage) return;
+    ui.working(stage, false);
+    ui.working((stage = next), true);
+  };
   try {
-    const r = await scanObjects(video, H, calibration.corners, (text) => (objectStatusEl.textContent = text));
+    const r = await scanObjects(video, H, calibration.corners, progress);
     setObjects(r.zones);
+    ui.setObjects(r.zones.length);
+    const some = r.found.slice(0, 3).join(", ") + (r.found.length > 3 ? ", …" : "");
+    ui.toast(
+      r.zones.length
+        ? `${r.zones.length} object pad${r.zones.length === 1 ? "" : "s"} in ${((performance.now() - started) / 1000).toFixed(1)} s: ${some}`
+        : "No objects found on the desk.",
+      r.zones.length ? "success" : "info",
+    );
     const s = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
     const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "es"}`;
     const listed = r.listed.map((l) => `${l.name}${l.count > 1 ? ` ×${l.count}` : ""} → ${plural(l.matches, "match")}`);
@@ -725,9 +782,11 @@ async function scanForObjects() {
   } catch (err) {
     console.error(err);
     objectStatusEl.textContent = `Object scan failed: ${err instanceof Error ? err.message : String(err)}`;
+    ui.toast("Object scan failed. Try again.", "error");
   } finally {
     scanning = false;
     updateHint();
+    ui.working(stage, false);
   }
 }
 
@@ -762,6 +821,17 @@ function updateAudioButton() {
   micBtn.textContent = needMic ? "Enable mic" : !audio.soundOn ? "Enable sound" : audio.micOn ? "Mic on" : "Sound on";
 }
 
+// Debug panel, plus the Play view's Bluetooth banner.
+function micInfo(i: MicInfo) {
+  showMicInfo(i);
+  ui.banner(
+    "bluetooth",
+    i.outputRawMs > CONFIG.sound.outputLatencyWarnMs
+      ? "Audio output is slow (Bluetooth?). Wired headphones or speakers make taps feel instant."
+      : null,
+  );
+}
+
 function onLevel(l: MicLevel) {
   showLevel(l);
   levels.push(l);
@@ -780,16 +850,18 @@ micBtn.addEventListener("click", async () => {
     const ctx = audio.ctx;
     await ctx.resume();
     await Promise.all([
-      startMicToo && startMic(ctx, { onOnset, onLevel, onInfo: showMicInfo }).then(() => (audio.micOn = true)),
+      startMicToo && startMic(ctx, { onOnset, onLevel, onInfo: micInfo }).then(() => (audio.micOn = true)),
       !audio.soundOn && initSound(ctx).then(() => (audio.soundOn = true)),
     ]);
     audio.starting = false;
     updateAudioButton();
+    ui.toast(audio.micOn ? "Mic on. Tap the keys." : "Sound on.", "success");
   } catch (err) {
     console.error(err);
     audio.starting = false;
     updateAudioButton();
     micBtn.textContent += ` (${err instanceof Error ? err.message : String(err)})`;
+    ui.toast(`Couldn't start audio: ${err instanceof Error ? err.message : String(err)}`, "error");
   }
 });
 
@@ -815,7 +887,7 @@ function visionTap(m: FingerPick) {
   const n = ++tapCount;
   const at = tapPoint("check", landing(m.at));
   const zone = at ? zoneAt(at) : null;
-  const played = zone && zoneReady(zone) ? playZone(zone) : null;
+  const played = zone && zoneReady(zone) ? playZone(zone, at) : null;
   const latencyMs = played ? performance.now() - m.at.t + played.outputMs : null;
   setLastTap(m.finger, m.at.t);
   const line = logVisionTap(n, m.finger, zone?.label ?? null, latencyMs);
@@ -863,10 +935,13 @@ function zoneReady(zone: Zone): boolean {
 }
 
 // Plays a zone now and starts its refractory and flash.
-function playZone(zone: Zone): { ctxTime: number; outputMs: number } | null {
+// at: where the tap landed (board coords), for the Play view's ripple.
+function playZone(zone: Zone, at: Pt | null = null): { ctxTime: number; outputMs: number } | null {
   const now = performance.now();
   zonePlayedAt.set(zone.id, now);
   flashes.set(zone.id, now + CONFIG.taps.flashMs);
+  hits.set(zone.id, now);
+  if (at) ripples.push({ at, t: now });
   return playNow(zone.sound);
 }
 
@@ -1017,13 +1092,13 @@ function onOnset(onset: Onset) {
   const played: Zone[] = [];
   const playedFingers: string[] = [];
   let latencyMs: number | null = null;
-  for (const { pick, zone } of chord) {
+  for (const { pick, zone, at } of chord) {
     if (!zone) continue;
     if (!zoneReady(zone)) {
       rejected.push(`${pick.finger} ${zone.label} in refractory`);
       continue;
     }
-    const p = playZone(zone);
+    const p = playZone(zone, at);
     if (!p) continue;
     played.push(zone);
     playedFingers.push(pick.finger);
@@ -1391,6 +1466,7 @@ async function startCamera(): Promise<CameraInfo> {
   const stream = await openCamera(asked);
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
+  ui.fitStage(canvas);
   return { asked, settings: stream.getVideoTracks()[0].getSettings() };
 }
 
@@ -1795,6 +1871,200 @@ function drawCalPrompt() {
   }
 }
 
+// The Play view's stage drawing (Debug keeps the drawing above). ACCENT matches the
+// stylesheet's --accent; a played zone glows for HIT_MS, and a ripple spreads from where the
+// tap landed for RIPPLE_MS.
+const ACCENT = "#8B5CF6";
+const ACCENT_RGB = "139, 92, 246";
+const HIT_MS = 250;
+const RIPPLE_MS = 450;
+const FONT = "Inter, system-ui, sans-serif";
+
+// Frosted glass: a small, blurred copy of the (mirrored) video, stretched back over the
+// zones, so they read as glass over the desk.
+const frost = document.createElement("canvas");
+const frostCtx = frost.getContext("2d")!;
+function frosted(): HTMLCanvasElement {
+  const w = 160;
+  const h = Math.max(1, Math.round((w * canvas.height) / canvas.width));
+  if (frost.width !== w || frost.height !== h) [frost.width, frost.height] = [w, h];
+  frostCtx.filter = "blur(3px)";
+  frostCtx.setTransform(-1, 0, 0, 1, w, 0);
+  frostCtx.drawImage(video, 0, 0, w, h);
+  frostCtx.setTransform(1, 0, 0, 1, 0, 0);
+  return frost;
+}
+
+// 1 right after a zone played, fading to 0 over HIT_MS.
+const glowOf = (id: string, now: number) => Math.max(0, 1 - (now - (hits.get(id) ?? -Infinity)) / HIT_MS);
+
+function fillGlow(glow: number) {
+  if (glow <= 0) return;
+  ctx.save();
+  ctx.shadowColor = ACCENT;
+  ctx.shadowBlur = 30 * glow;
+  ctx.fillStyle = `rgba(${ACCENT_RGB}, ${0.8 * glow})`;
+  ctx.fill();
+  ctx.restore();
+}
+
+// Frosted keys (sharps darker), a violet tint under a fingertip, the glow when played, and
+// the test or tap-calibration target in green; then clean labels.
+function drawLayoutPlay(active: Set<string>, now: number) {
+  if (!calibration.done) return;
+  const outlines = new Map(layout.zones.map((z) => [z.id, shapeOutline(z.shape).map(boardToScreen)]));
+  ctx.save();
+  ctx.beginPath();
+  for (const o of outlines.values()) {
+    o.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+    ctx.closePath();
+  }
+  ctx.clip();
+  ctx.drawImage(frosted(), 0, 0, canvas.width, canvas.height);
+  ctx.restore();
+  for (const { zone, above } of zStack(layout)) {
+    const outline = outlines.get(zone.id)!;
+    ctx.save();
+    if (above.length) {
+      ctx.beginPath();
+      ctx.rect(0, 0, canvas.width, canvas.height);
+      for (const o of above) {
+        outlines.get(o.id)!.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+        ctx.closePath();
+      }
+      ctx.clip("evenodd");
+    }
+    tracePath(outline, true);
+    const sharp = isAccidental(zone);
+    ctx.fillStyle = sharp ? "rgba(14, 12, 28, 0.66)" : "rgba(255, 255, 255, 0.16)";
+    ctx.fill();
+    if (active.has(zone.id)) {
+      ctx.fillStyle = `rgba(${ACCENT_RGB}, 0.24)`;
+      ctx.fill();
+    }
+    const isTarget = tapCal ? zone.id === tapCal.zone?.id : test.isTarget(zone);
+    if (isTarget) {
+      ctx.fillStyle = "rgba(52, 211, 153, 0.3)";
+      ctx.fill();
+    }
+    fillGlow(glowOf(zone.id, now));
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = isTarget ? "#34d399" : sharp ? "rgba(255, 255, 255, 0.22)" : "rgba(255, 255, 255, 0.45)";
+    ctx.lineWidth = isTarget ? 3 : 1.5;
+    ctx.stroke();
+    ctx.restore();
+  }
+  for (const zone of layout.zones) {
+    const outline = outlines.get(zone.id)!;
+    const c = boardToScreen(zoneAnchor(layout, zone));
+    const xs = outline.map((p) => p.x);
+    const ys = outline.map((p) => p.y);
+    const extent = Math.min(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+    const size = Math.max(11, Math.min(26, extent * 0.32));
+    ctx.save();
+    ctx.font = `600 ${size}px ${FONT}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.shadowColor = "rgba(0, 0, 0, 0.55)";
+    ctx.shadowBlur = 6;
+    ctx.fillStyle = isAccidental(zone) ? "rgba(255, 255, 255, 0.78)" : "rgba(255, 255, 255, 0.94)";
+    ctx.fillText(zone.label, c.x, c.y);
+    ctx.restore();
+  }
+  if (tapCal?.zone) drawCrosshair(boardToScreen(zoneAnchor(layout, tapCal.zone)));
+}
+
+// Object pads: a soft outline with a faint violet fill (stronger under a fingertip, glowing
+// when played), and a pill with the object's name and its sound at the outline's center.
+function drawObjectsPlay(active: Set<string>, now: number) {
+  if (!calibration.done) return;
+  for (const zone of objects.zones) {
+    const outline = shapeOutline(zone.shape).map(boardToScreen);
+    ctx.save();
+    tracePath(outline, true);
+    ctx.fillStyle = `rgba(${ACCENT_RGB}, ${active.has(zone.id) ? 0.28 : 0.1})`;
+    ctx.fill();
+    fillGlow(glowOf(zone.id, now));
+    ctx.lineJoin = "round";
+    ctx.lineWidth = 2;
+    ctx.shadowColor = `rgba(${ACCENT_RGB}, 0.6)`;
+    ctx.shadowBlur = 8;
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.75)";
+    ctx.stroke();
+    ctx.restore();
+    const c = {
+      x: outline.reduce((s, p) => s + p.x, 0) / outline.length,
+      y: outline.reduce((s, p) => s + p.y, 0) / outline.length,
+    };
+    drawPill(c, zone.label, soundName(zone.sound));
+  }
+}
+
+// A rounded label: bold name, then a dimmer detail.
+function drawPill(c: Pt, name: string, detail: string) {
+  ctx.save();
+  ctx.textBaseline = "middle";
+  const bold = `600 13px ${FONT}`;
+  const thin = `400 13px ${FONT}`;
+  ctx.font = bold;
+  const nameW = ctx.measureText(name).width;
+  ctx.font = thin;
+  const detailText = ` · ${detail}`;
+  const detailW = ctx.measureText(detailText).width;
+  const w = nameW + detailW + 20;
+  const h = 26;
+  const x = c.x - w / 2;
+  ctx.beginPath();
+  ctx.roundRect(x, c.y - h / 2, w, h, h / 2);
+  ctx.fillStyle = "rgba(16, 15, 26, 0.82)";
+  ctx.fill();
+  ctx.strokeStyle = `rgba(${ACCENT_RGB}, 0.7)`;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.textAlign = "left";
+  ctx.font = bold;
+  ctx.fillStyle = "#ffffff";
+  ctx.fillText(name, x + 10, c.y);
+  ctx.font = thin;
+  ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
+  ctx.fillText(detailText, x + 10 + nameW, c.y);
+  ctx.restore();
+}
+
+// Fingertips only, as soft dots: the fingers that can tap brighter and larger.
+function drawTipsPlay(hands: TrackedHand[]) {
+  for (const hand of hands) {
+    hand.tips.forEach((tip, f) => {
+      const p = camToScreen(tip);
+      const allowed = CONFIG.fingers.allowed.includes(FINGER_NAMES[f]);
+      const r = allowed ? 11 : 7;
+      const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+      g.addColorStop(0, `rgba(255, 255, 255, ${allowed ? 0.95 : 0.5})`);
+      g.addColorStop(0.45, `rgba(255, 255, 255, ${allowed ? 0.5 : 0.2})`);
+      g.addColorStop(1, "rgba(255, 255, 255, 0)");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+}
+
+// An accent ring spreading and fading from each recent tap.
+function drawRipples(now: number) {
+  while (ripples.length && now - ripples[0].t > RIPPLE_MS) ripples.shift();
+  if (!calibration.boardToCam) return;
+  for (const { at, t } of ripples) {
+    const k = (now - t) / RIPPLE_MS;
+    const p = boardToScreen(at);
+    ctx.strokeStyle = `rgba(${ACCENT_RGB}, ${0.9 * (1 - k)})`;
+    ctx.lineWidth = 2.5 * (1 - k) + 0.5;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 6 + 30 * k, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+}
+
 const HAND_ID_COLORS: Record<string, string> = { A: "#00dcff", B: "#ffb300" };
 
 // The hand's tracking ID in a badge just past the wrist, so it stays clear of the fingers.
@@ -1840,13 +2110,23 @@ function loop() {
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       const active = zonesUnderFingertips(hands);
-      drawLayout(active, now);
-      drawObjects(active, now);
-      drawDots();
-      drawCorners(calibration.corners, calibration.done, "#ffd400");
-      drawProposal();
-      drawHands(hands);
-      drawShadows();
+      if (ui.isDebug()) {
+        drawLayout(active, now);
+        drawObjects(active, now);
+        drawDots();
+        drawCorners(calibration.corners, calibration.done, "#ffd400");
+        drawProposal();
+        drawHands(hands);
+        drawShadows();
+      } else {
+        // Play: the instrument, then setup aids only while setting up, then the hands.
+        drawLayoutPlay(active, now);
+        drawObjectsPlay(active, now);
+        if (!calibration.done) drawCorners(calibration.corners, false, ACCENT);
+        drawProposal();
+        drawTipsPlay(hands);
+      }
+      drawRipples(now);
       drawCalPrompt();
       counts.drawMs += performance.now() - now;
       frameSteps.add("main: draw", performance.now() - now);
@@ -1865,6 +2145,15 @@ function loop() {
           `draw ${(draws / secs).toFixed(0)}/s, ${per(counts.drawMs - last.drawMs, draws)} ms`,
       );
       if (camera) showCamera(camera, fps);
+      const mic = audio.micOn ? "Mic on" : audio.soundOn ? "Sound only" : "Mic off";
+      ui.setStatus(medianTapLatency(), mic, hands.length);
+      ui.banner(
+        "light",
+        fps > 0 && fps < CONFIG.camera.lowFpsWarn
+          ? "Low light: the camera slowed below " +
+              `${CONFIG.camera.lowFpsWarn} fps. More light on the desk makes tracking smoother.`
+          : null,
+      );
       if (detector) {
         const meanMs = n ? (counts.detectMs - last.detectMs) / n : null;
         showDetection(detector.kind, detector.info, n / secs, meanMs, detectorChoice);
@@ -1904,6 +2193,42 @@ async function main() {
     setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
+
+// The Play view's setup buttons drive the Debug controls; the chips pick a preset, or ask
+// Muse Spark for the instruments with no preset.
+ui.initUi(
+  {
+    detect: detectBtn,
+    reset: resetBtn,
+    accept: acceptBtn,
+    retry: retryBtn,
+    discard: discardBtn,
+    proposal: samActions,
+    hint: hintEl,
+    talk: talkBtn,
+    generate: generateBtn,
+    scan: scanObjectsBtn,
+    clearObjects: clearObjectsBtn,
+    mic: micBtn,
+    startTalk,
+    stopTalk,
+    build: (request) => {
+      instrumentInput.value = request;
+      generateLayout();
+    },
+    chip: (name) => {
+      const preset = { piano: PRESETS[0], drums: PRESETS[1] }[name];
+      if (preset) {
+        setLayout(preset);
+        ui.toast(`${ui.title(preset.instrument)} ready: ${layoutSize(preset)}`, "success");
+        return;
+      }
+      instrumentInput.value = { pentatonic: "pentatonic scale", marimba: "marimba" }[name] ?? name;
+      generateLayout();
+    },
+  },
+  () => (dirty = true),
+);
 
 // Before any hand track builds its filters, so saved slider values are in CONFIG.
 initSmoothingControls();

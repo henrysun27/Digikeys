@@ -19,6 +19,21 @@ to the Meta Model API.
 `predev` copies the MediaPipe wasm runtime and downloads the hand landmarker model into
 `public/mediapipe/` (gitignored), so everything is served from our own origin.
 
+## Using it
+
+The page opens in **Play** mode: the camera stage, a three-step setup, one control bar.
+
+1. **Surface**: press Detect surface (SAM 3.1 finds the sheet; accept its corners) or
+   click the four corners on the camera view.
+2. **Instrument**: hold the mic button (or Space) and say an instrument (Muse Voice
+   Transcribe, then Muse Spark builds it), type one, or pick a chip. Piano and Drum kit
+   are instant presets; Pentatonic and Marimba are built by Muse Spark.
+3. **Objects** (optional): Scan objects turns things on the desk into pads.
+
+Then press Enable mic and tap. Setup collapses to a slim bar (Edit setup reopens it).
+Press **D**, or open the page with `?debug`, for the **Debug** view: the full toolbar, the
+status lines, the debug panel and tap log, test mode and the shadow tools.
+
 ## Built during the hackathon
 
 All code in this repo was written during the hackathon.
@@ -535,3 +550,32 @@ with `latencyHint: "interactive"` and `lookAhead: 0`, and notes trigger at
     handled 13-15 ms, detect 12.6-14 ms (max 28), everything else under 1 ms on average.
     The background capture spikes to 13.6 ms, but only on frames with no hand, every
     500 ms.
+- [x] Demo UI (presentation only; tap detection, audio and Meta API calls unchanged):
+  - **Play / Debug.** Play (the default) has the header, a setup stepper, warning banners,
+    the stage and one control bar, and nothing is drawn over the stage. Debug (the D key
+    or `?debug`) is the previous interface: the full toolbar, status lines, debug panel,
+    tap log and Shadow check.
+  - **Wiring (`src/ui.ts`).** Play's buttons click the Debug controls or call the same
+    functions, and a MutationObserver mirrors their enabled, hidden and label state, so
+    both views always agree.
+  - **Setup stepper.** ① Surface (Detect surface, or click the corners; SAM's proposal
+    is accepted from the panel) → ② Instrument (hold-to-talk mic button, a text box,
+    chips) → ③ Objects (Scan objects, or Skip). Steps show done, active and locked
+    states, and a done step can be reopened. When all three are done the stepper
+    collapses to a one-line summary with Edit setup.
+  - **Stage.** The camera is centered and as large as fits, with 12 px corners and a
+    vignette.
+    - Keys are frosted glass: a blurred low-res copy of the video shows through them,
+      sharps are darker, and labels are Inter.
+    - A played zone glows violet (#8B5CF6) and fades over 250 ms, and a ripple spreads
+      from where the tap landed.
+    - Fingertips are soft dots, with the skeleton in Debug only. Object pads are soft
+      outlines with a name · sound pill.
+  - **Feedback.** Short toasts in the control bar replace the long status lines, e.g.
+    "Muse Spark built a 13-key piano in 3.4 s", "Heard “marimba”", "SAM 3.1 found the
+    surface". The "Powered by SAM 3.1 · Muse Spark · Muse Voice Transcribe" chip lights
+    the model that is working, with a spinner; an object scan moves the light between
+    Muse Spark and SAM 3.1 as it goes.
+  - **Status corner.** Median tap-to-sound, mic state and hands in view.
+  - **Banners.** Low light (camera under 25 fps), slow (Bluetooth) audio output and
+    narrow keys show as dismissible banners above the stage.

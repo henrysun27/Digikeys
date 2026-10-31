@@ -3,27 +3,86 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Desk Instrument</title>
+    <title>Digikeys</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   </head>
   <body>
     <div id="app">
-      <video id="video" playsinline muted></video>
-      <canvas id="view"></canvas>
-      <div id="hud">
-        <div id="status"></div>
-        <div id="hint"></div>
-        <div id="sam-status"></div>
-        <div id="layout-status"></div>
-        <div id="tap-cal-status"></div>
-        <div id="shadow-status"></div>
-        <div id="object-status"></div>
-        <div id="sam-actions" hidden>
-          <button id="accept" type="button">Accept corners</button>
-          <button id="retry" type="button">Retry</button>
-          <button id="discard" type="button">Discard</button>
+      <!-- Play mode: header, setup stepper, banners, the stage, one control bar. Debug mode
+           (D key or ?debug) swaps the stepper and control bar for the full toolbar and
+           shows the HUD, debug panel and Shadow check over the stage. -->
+      <header id="topbar">
+        <div class="brand">
+          <span class="logo" aria-hidden="true"></span>
+          <h1>Digikeys</h1>
+          <span class="tagline">Any desk is an instrument.</span>
         </div>
-      </div>
-      <div id="toolbar">
+        <div id="models" title="Meta models behind Digikeys; the working one lights up">
+          <span class="powered">Powered by</span>
+          <span class="model" data-model="sam">SAM 3.1</span>
+          <span class="sep">·</span>
+          <span class="model" data-model="spark">Muse Spark</span>
+          <span class="sep">·</span>
+          <span class="model" data-model="voice">Muse Voice Transcribe</span>
+        </div>
+        <div id="status-corner" aria-live="polite">
+          <span class="stat" id="stat-latency" title="Median tap-to-sound latency">– ms</span>
+          <span class="stat" id="stat-mic" title="Microphone">Mic off</span>
+          <span class="stat" id="stat-hands" title="Hands detected">0 hands</span>
+          <button id="mode-toggle" type="button" class="ghost small" title="Switch between Play and Debug (D)">Debug <kbd>D</kbd></button>
+        </div>
+      </header>
+
+      <nav id="stepper" class="play-only" aria-label="Setup">
+        <ol class="steps">
+          <li data-step="surface">
+            <button type="button"><span class="num">1</span><span class="name">Surface</span><span class="sub"></span></button>
+          </li>
+          <li data-step="instrument">
+            <button type="button"><span class="num">2</span><span class="name">Instrument</span><span class="sub"></span></button>
+          </li>
+          <li data-step="objects">
+            <button type="button"><span class="num">3</span><span class="name">Objects</span><span class="sub">optional</span></button>
+          </li>
+        </ol>
+        <div class="panel" data-panel="surface">
+          <p class="lead" id="surface-hint"></p>
+          <button id="p-detect" type="button" class="primary">Detect surface</button>
+          <span id="p-proposal" class="group" hidden>
+            <button id="p-accept" type="button" class="primary">Use these corners</button>
+            <button id="p-retry" type="button">Retry</button>
+            <button id="p-discard" type="button" class="ghost">Discard</button>
+          </span>
+          <button id="p-reset" type="button" class="ghost">Reset corners</button>
+        </div>
+        <div class="panel" data-panel="instrument">
+          <button id="p-talk" type="button" class="mic-big"><span class="mic-icon" aria-hidden="true"></span><span class="label">Hold to describe your instrument</span></button>
+          <form id="p-build" class="group">
+            <input id="p-request" type="text" spellcheck="false" placeholder="…or type one, like “two octave marimba”" aria-label="Describe your instrument" />
+            <button type="submit" class="primary">Build</button>
+          </form>
+          <span class="chips" role="group" aria-label="Quick picks">
+            <button type="button" data-chip="piano">Piano</button>
+            <button type="button" data-chip="drums">Drum kit</button>
+            <button type="button" data-chip="pentatonic">Pentatonic</button>
+            <button type="button" data-chip="marimba">Marimba</button>
+          </span>
+        </div>
+        <div class="panel" data-panel="objects">
+          <p class="lead">Turn things on your desk into pads: a mug rings like a bell, a notebook snaps like a snare.</p>
+          <button id="p-scan" type="button" class="primary">Scan objects</button>
+          <button id="p-clear-objects" type="button" class="ghost" hidden>Clear objects</button>
+          <button id="p-skip" type="button" class="ghost">Skip</button>
+        </div>
+        <div class="slim">
+          <span class="summary"></span>
+          <button id="p-edit" type="button" class="ghost">Edit setup</button>
+        </div>
+      </nav>
+
+      <div id="toolbar" class="debug-only">
         <select id="layout" aria-label="Instrument"></select>
         <input id="instrument" type="text" aria-label="Instrument to generate" spellcheck="false" />
         <button id="generate" type="button">Generate</button>
@@ -48,73 +107,104 @@
         <button id="cal-shadow" type="button" title="Optional: learn where fingertip shadows fall and the contact gap, for Mic + motion + shadow">Calibrate shadow</button>
         <button id="shadow-check-btn" type="button" title="See each index fingertip's shadow as the shadow vote sees it">Shadow check</button>
       </div>
-      <div id="shadow-check" hidden>
-        <div id="shadow-check-warning"></div>
-        <canvas id="shadow-check-canvas"></canvas>
-        <div id="shadow-check-legend">Mirrored like the view. Green dot: fingertip · yellow: shadow tip and gap · red: shadow found · orange: other dark cells · blue: hand · dimmed: outside the ±60° search.</div>
-      </div>
-      <div id="debug">
-        <button id="mic" type="button">Enable mic</button>
-        <div id="output-latency" hidden></div>
-        <div id="camera-warning" hidden></div>
-        <div id="test-panel" hidden>
-          <div id="test-stats"></div>
-          <button id="reset-stats" type="button">Reset stats</button>
+
+      <div id="banners" class="play-only" aria-live="polite"></div>
+
+      <main id="stage">
+        <div id="frame">
+          <video id="video" playsinline muted></video>
+          <canvas id="view"></canvas>
+          <div class="vignette" aria-hidden="true"></div>
         </div>
-        <div class="meter">
-          <div id="meter-level"></div>
-          <div id="meter-threshold"></div>
+        <div id="hud" class="debug-only">
+          <div id="status"></div>
+          <div id="hint"></div>
+          <div id="sam-status"></div>
+          <div id="layout-status"></div>
+          <div id="tap-cal-status"></div>
+          <div id="shadow-status"></div>
+          <div id="object-status"></div>
+          <div id="sam-actions" hidden>
+            <button id="accept" type="button">Accept corners</button>
+            <button id="retry" type="button">Retry</button>
+            <button id="discard" type="button">Discard</button>
+          </div>
         </div>
-        <dl>
-          <dt>Mic level</dt>
-          <dd id="mic-level">–</dd>
-          <dt>Floor</dt>
-          <dd id="mic-floor">–</dd>
-          <dt>Threshold</dt>
-          <dd id="mic-threshold">–</dd>
-          <dt>Chosen finger</dt>
-          <dd id="chosen-finger">–</dd>
-          <dt>Tap → sound</dt>
-          <dd id="tap-latency">–</dd>
-          <dt>Median tap → sound</dt>
-          <dd id="median-latency">–</dd>
-          <dt>Vision tap → sound</dt>
-          <dd id="vision-latency">–</dd>
-          <dt>Stop offset</dt>
-          <dd id="stop-offset">–</dd>
-          <dt>Median stop</dt>
-          <dd id="median-offset">–</dd>
-          <dt>Player edge</dt>
-          <dd id="player-edge">–</dd>
-          <dt>Camera</dt>
-          <dd id="camera-info">–</dd>
-          <dt>Camera probe</dt>
-          <dd><span id="camera-probe">not run</span> <button id="probe-camera" type="button">Probe</button></dd>
-          <dt>Detection</dt>
-          <dd id="detection">–</dd>
-          <dt>Frame steps</dt>
-          <dd id="frame-steps">–</dd>
-          <dt>Smoothing</dt>
-          <dd>
-            <label class="slider">minCutoff <input id="min-cutoff" type="range" /> <span id="min-cutoff-value"></span></label>
-            <label class="slider">beta <input id="beta" type="range" /> <span id="beta-value"></span></label>
-            <button id="reset-smoothing" type="button">Defaults</button>
-          </dd>
-          <dt>Shadow</dt>
-          <dd id="shadow">–</dd>
-          <dt>Jitter</dt>
-          <dd id="jitter">–</dd>
-          <dt>Dropouts</dt>
-          <dd><div id="dropouts"></div></dd>
-          <dt>Tap correction</dt>
-          <dd id="tap-correction">–</dd>
-          <dt>Audio latency</dt>
-          <dd id="audio-latency">–</dd>
-          <dt>Audio clock</dt>
-          <dd id="audio-clock">–</dd>
-        </dl>
-        <ol id="tap-log"></ol>
-      </div>
+        <div id="shadow-check" class="debug-only" hidden>
+          <div id="shadow-check-warning"></div>
+          <canvas id="shadow-check-canvas"></canvas>
+          <div id="shadow-check-legend">Mirrored like the view. Green dot: fingertip · yellow: shadow tip and gap · red: shadow found · orange: other dark cells · blue: hand · dimmed: outside the ±60° search.</div>
+        </div>
+        <div id="debug" class="debug-only">
+          <button id="mic" type="button">Enable mic</button>
+          <div id="output-latency" hidden></div>
+          <div id="camera-warning" hidden></div>
+          <div id="test-panel" hidden>
+            <div id="test-stats"></div>
+            <button id="reset-stats" type="button">Reset stats</button>
+          </div>
+          <div class="meter">
+            <div id="meter-level"></div>
+            <div id="meter-threshold"></div>
+          </div>
+          <dl>
+            <dt>Mic level</dt>
+            <dd id="mic-level">–</dd>
+            <dt>Floor</dt>
+            <dd id="mic-floor">–</dd>
+            <dt>Threshold</dt>
+            <dd id="mic-threshold">–</dd>
+            <dt>Chosen finger</dt>
+            <dd id="chosen-finger">–</dd>
+            <dt>Tap → sound</dt>
+            <dd id="tap-latency">–</dd>
+            <dt>Median tap → sound</dt>
+            <dd id="median-latency">–</dd>
+            <dt>Vision tap → sound</dt>
+            <dd id="vision-latency">–</dd>
+            <dt>Stop offset</dt>
+            <dd id="stop-offset">–</dd>
+            <dt>Median stop</dt>
+            <dd id="median-offset">–</dd>
+            <dt>Player edge</dt>
+            <dd id="player-edge">–</dd>
+            <dt>Camera</dt>
+            <dd id="camera-info">–</dd>
+            <dt>Camera probe</dt>
+            <dd><span id="camera-probe">not run</span> <button id="probe-camera" type="button">Probe</button></dd>
+            <dt>Detection</dt>
+            <dd id="detection">–</dd>
+            <dt>Frame steps</dt>
+            <dd id="frame-steps">–</dd>
+            <dt>Smoothing</dt>
+            <dd>
+              <label class="slider">minCutoff <input id="min-cutoff" type="range" /> <span id="min-cutoff-value"></span></label>
+              <label class="slider">beta <input id="beta" type="range" /> <span id="beta-value"></span></label>
+              <button id="reset-smoothing" type="button">Defaults</button>
+            </dd>
+            <dt>Shadow</dt>
+            <dd id="shadow">–</dd>
+            <dt>Jitter</dt>
+            <dd id="jitter">–</dd>
+            <dt>Dropouts</dt>
+            <dd><div id="dropouts"></div></dd>
+            <dt>Tap correction</dt>
+            <dd id="tap-correction">–</dd>
+            <dt>Audio latency</dt>
+            <dd id="audio-latency">–</dd>
+            <dt>Audio clock</dt>
+            <dd id="audio-clock">–</dd>
+          </dl>
+          <ol id="tap-log"></ol>
+        </div>
+      </main>
+
+      <footer id="controlbar" class="play-only">
+        <button id="p-mic" type="button" class="primary">Enable mic</button>
+        <span id="p-instrument" class="instrument-name" title="Current instrument"></span>
+        <div id="toasts" aria-live="polite"></div>
+        <button id="p-edit-bar" type="button" class="ghost" title="Back to the setup steps">Setup</button>
+      </footer>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

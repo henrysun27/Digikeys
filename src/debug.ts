@@ -160,6 +160,13 @@ export function logVisionTap(n: number, finger: string, zone: string | null, lat
   return appendLog(`#${n} vision ${where(finger, zone)}${played}`);
 }
 
+// The Play view's status corner: median tap-to-sound of the latest mic taps, else of the
+// latest vision taps, null before any.
+export function medianTapLatency(): number | null {
+  const xs = recentLatencies.length ? recentLatencies : recentVision;
+  return xs.length ? median(xs) : null;
+}
+
 function median(xs: number[]): number {
   const s = [...xs].sort((a, b) => a - b);
   const m = s.length >> 1;

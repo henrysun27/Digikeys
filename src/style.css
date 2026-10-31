@@ -1,3 +1,23 @@
+/* Play view: header, setup stepper, banners, the stage and one control bar, nothing over
+   the stage. Debug view (body.debug): the full toolbar, with the HUD, debug panel and
+   Shadow check over the stage, styled as before. */
+
+:root {
+  --bg: #09090f;
+  --panel: #13131c;
+  --panel-2: #1b1b28;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.16);
+  --text: #ececf3;
+  --muted: #9696aa;
+  --accent: #8b5cf6;
+  --accent-soft: rgba(139, 92, 246, 0.16);
+  --ok: #34d399;
+  --warn: #f59e0b;
+  --err: #f43f5e;
+  --radius: 12px;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -6,17 +26,516 @@ html,
 body {
   margin: 0;
   height: 100%;
-  background: #111;
-  color: #eee;
-  font-family: system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter, system-ui, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+body:not(.debug) .debug-only,
+body.debug .play-only {
+  display: none !important;
 }
 
 #app {
-  position: relative;
   height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 24px 18px;
+}
+
+/* Shared controls in the Play shell. */
+#topbar button,
+#stepper button,
+#controlbar button,
+#stepper input {
+  height: 38px;
+  padding: 0 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font: 500 14px Inter, system-ui, sans-serif;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    opacity 0.15s;
+}
+
+#topbar button:hover:enabled,
+#stepper button:hover:enabled,
+#controlbar button:hover:enabled {
+  border-color: rgba(255, 255, 255, 0.3);
+  background: #232334;
+}
+
+#stepper .primary,
+#controlbar .primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: #fff;
+}
+
+#stepper .primary:hover:enabled,
+#controlbar .primary:hover:enabled {
+  border-color: transparent;
+  background: #9b72f8;
+}
+
+#stepper .ghost,
+#controlbar .ghost,
+#topbar .ghost {
+  background: transparent;
+}
+
+#stepper button:disabled,
+#controlbar button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.small {
+  height: 30px !important;
+  padding: 0 10px !important;
+  font-size: 12px !important;
+}
+
+kbd {
+  margin-left: 4px;
+  padding: 1px 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--muted);
+  font: 500 11px Inter, system-ui, sans-serif;
+}
+
+/* Header: brand, model chip, status corner. */
+#topbar {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-right: auto;
+}
+
+.logo {
+  align-self: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background:
+    linear-gradient(90deg, transparent 0 30%, rgba(9, 9, 15, 0.9) 30% 36%, transparent 36% 64%, rgba(9, 9, 15, 0.9) 64% 70%, transparent 70%),
+    linear-gradient(135deg, #a78bfa, var(--accent));
+  box-shadow: 0 0 18px rgba(139, 92, 246, 0.5);
+}
+
+.brand h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.tagline {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+#models {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+#models .powered {
+  margin-right: 2px;
+}
+
+#models .sep {
+  opacity: 0.5;
+}
+
+#models .model {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: color 0.2s;
+}
+
+#models .model.busy {
+  color: #fff;
+  font-weight: 600;
+  text-shadow: 0 0 12px rgba(139, 92, 246, 0.9);
+}
+
+#models .model.busy::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--accent-soft);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+#status-corner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+#status-corner .stat {
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+#stat-mic::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+  vertical-align: 1px;
+}
+
+#stat-mic.on {
+  color: var(--text);
+}
+
+#stat-mic.on::before {
+  background: var(--ok);
+  box-shadow: 0 0 8px var(--ok);
+}
+
+/* Setup stepper. */
+#stepper .steps {
+  display: flex;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+#stepper .steps li {
+  flex: 1;
+}
+
+#stepper .steps li button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 46px;
+  border-color: var(--line);
+  background: var(--panel);
+  text-align: left;
+}
+
+#stepper .num {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+#stepper .name {
+  font-weight: 600;
+}
+
+#stepper .sub {
+  overflow: hidden;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#stepper li.active button {
+  border-color: var(--accent);
+  background: linear-gradient(0deg, var(--accent-soft), var(--accent-soft)), var(--panel);
+}
+
+#stepper li.active .num {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+#stepper li.done .num {
+  border-color: transparent;
+  background: rgba(52, 211, 153, 0.18);
+  color: transparent;
+  position: relative;
+}
+
+#stepper li.done .num::after {
+  content: "✓";
+  position: absolute;
+  color: var(--ok);
+}
+
+#stepper li.locked button {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+#stepper .panel {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+#controlbar button[hidden],
+#stepper .panel[hidden],
+#stepper .group[hidden],
+#stepper button[hidden] {
+  display: none;
+}
+
+#stepper .lead {
+  flex: 1;
+  margin: 0;
+  color: var(--muted);
+}
+
+#surface-hint.error {
+  color: var(--err);
+}
+
+#stepper .group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#p-build {
+  flex: 1;
+}
+
+#p-request {
+  flex: 1;
+  min-width: 160px;
+  cursor: text;
+  background: var(--bg);
+}
+
+#p-request::placeholder {
+  color: var(--muted);
+}
+
+#p-request:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.mic-big {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 44px !important;
+  padding: 0 20px !important;
+  border-color: transparent !important;
+  border-radius: 999px !important;
+  background: linear-gradient(135deg, #a78bfa, var(--accent)) !important;
+  color: #fff !important;
+  font-weight: 600 !important;
+  box-shadow: 0 6px 24px rgba(139, 92, 246, 0.35);
+  user-select: none;
+  touch-action: none;
+}
+
+.mic-big.on {
+  animation: listening 1.1s ease-in-out infinite;
+}
+
+@keyframes listening {
+  50% {
+    box-shadow: 0 0 0 8px rgba(139, 92, 246, 0.25);
+  }
+}
+
+.mic-icon {
+  position: relative;
+  width: 10px;
+  height: 16px;
+  border-radius: 5px;
+  background: #fff;
+}
+
+.mic-icon::after {
+  content: "";
+  position: absolute;
+  left: -4px;
+  top: 6px;
+  width: 14px;
+  height: 10px;
+  border: 2px solid #fff;
+  border-top: none;
+  border-radius: 0 0 9px 9px;
+}
+
+#stepper .chips {
+  display: flex;
+  gap: 6px;
+}
+
+#stepper .chips button {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: transparent;
+  font-size: 13px;
+}
+
+#stepper .chips button:hover:enabled {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+#stepper .slim {
+  display: none;
+}
+
+#stepper.collapsed .steps,
+#stepper.collapsed .panel {
+  display: none;
+}
+
+#stepper.collapsed .slim {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 6px 6px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+#stepper .slim .summary {
+  flex: 1;
+  color: var(--muted);
+  white-space: pre;
+}
+
+#stepper .slim button {
+  height: 30px;
+  font-size: 13px;
+}
+
+/* Warnings: dismissible, above the stage. */
+#banners {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#banners:empty {
+  display: none !important;
+}
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 8px 14px;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  border-radius: var(--radius);
+  background: rgba(245, 158, 11, 0.1);
+  color: #fcd34d;
+}
+
+.banner span {
+  flex: 1;
+}
+
+.banner::before {
+  content: "!";
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--warn);
+  color: var(--bg);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.banner .close {
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.banner .close:hover {
+  background: rgba(245, 158, 11, 0.2);
+}
+
+/* The stage: the camera large and centered, rounded, with a soft vignette. main.ts sizes
+   the canvas to fit (ui.ts fitStage). */
+#stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+#frame {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius);
+  line-height: 0;
+  box-shadow:
+    0 0 0 1px var(--line),
+    0 24px 70px rgba(0, 0, 0, 0.55);
 }
 
 #video {
@@ -24,15 +543,87 @@ body {
 }
 
 #view {
-  max-width: 100%;
-  max-height: 100%;
+  display: block;
 }
 
 #view.calibrating {
   cursor: crosshair;
 }
 
-/* Overlays let clicks through to the canvas, except on their buttons. */
+.vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 58%, rgba(0, 0, 0, 0.42) 100%);
+}
+
+/* Control bar: one row; toasts live here so they never cover the stage. */
+#controlbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 54px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.instrument-name {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.instrument-name:empty {
+  display: none;
+}
+
+#toasts {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.toast {
+  overflow: hidden;
+  max-width: 100%;
+  padding: 8px 14px;
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  animation: toast-in 0.2s ease-out;
+  transition:
+    opacity 0.3s,
+    transform 0.3s;
+}
+
+.toast.success {
+  border-left-color: var(--ok);
+}
+
+.toast.error {
+  border-left-color: var(--err);
+}
+
+.toast.leaving {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* ——— Debug view: the original panels, over the stage. ——— */
+
 #hud,
 #debug {
   pointer-events: none;
@@ -62,6 +653,7 @@ body {
   align-items: flex-start;
   gap: 6px;
   max-width: calc(100% - 180px);
+  z-index: 1;
 }
 
 #status,
@@ -128,10 +720,8 @@ body {
 }
 
 #toolbar {
-  position: absolute;
-  top: 12px;
-  right: 12px;
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -197,17 +787,21 @@ body {
   opacity: 0.8;
 }
 
+/* Right edge, full height, so it never runs into the HUD at top left. */
 #debug {
   position: absolute;
-  left: 12px;
-  bottom: 12px;
+  top: 12px;
+  right: 12px;
   width: 300px;
   max-width: calc(100% - 24px);
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
   padding: 10px;
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.65);
   font-size: 13px;
   font-variant-numeric: tabular-nums;
+  pointer-events: auto;
 }
 
 #output-latency {
@@ -324,8 +918,8 @@ body {
 
 #shadow-check {
   position: absolute;
-  top: 56px;
-  right: 12px;
+  bottom: 12px;
+  left: 12px;
   width: 432px;
   padding: 10px;
   border-radius: 6px;
