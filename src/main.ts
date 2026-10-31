@@ -1724,10 +1724,12 @@ function tracePath(pts: Pt[], close: boolean) {
 // Low z first, each zone clipped to what the zones above it leave visible (even-odd: the
 // whole canvas minus their outlines), so black keys sit on top of the white keys under them
 // and white keys' outlines stop at their edges. Labels go on afterwards, at each zone's
-// visible anchor.
+// visible anchor. Object pads win hit-tests, so keys are clipped out beneath them.
 function drawLayout(active: Set<string>, now: number) {
   if (!calibration.done) return;
   const outlines = new Map(layout.zones.map((z) => [z.id, shapeOutline(z.shape).map(boardToScreen)]));
+  ctx.save();
+  clipOutObjects();
   for (const { zone, above } of zStack(layout)) {
     const outline = outlines.get(zone.id)!;
     ctx.save();
@@ -1760,6 +1762,7 @@ function drawLayout(active: Set<string>, now: number) {
     ctx.restore();
   }
   for (const zone of layout.zones) drawLabel(zone, outlines.get(zone.id)!);
+  ctx.restore();
   if (tapCal?.zone) drawCrosshair(boardToScreen(zoneAnchor(layout, tapCal.zone)));
 }
 
@@ -2015,19 +2018,19 @@ const HIT_MS = 250;
 const RIPPLE_MS = 450;
 const FONT = "Inter, system-ui, sans-serif";
 
-// Frosted glass: a small, blurred copy of the (mirrored) video, stretched back over the
-// zones, so they read as glass over the desk.
-const frost = document.createElement("canvas");
-const frostCtx = frost.getContext("2d")!;
-function frosted(): HTMLCanvasElement {
-  const w = 160;
-  const h = Math.max(1, Math.round((w * canvas.height) / canvas.width));
-  if (frost.width !== w || frost.height !== h) [frost.width, frost.height] = [w, h];
-  frostCtx.filter = "blur(3px)";
-  frostCtx.setTransform(-1, 0, 0, 1, w, 0);
-  frostCtx.drawImage(video, 0, 0, w, h);
-  frostCtx.setTransform(1, 0, 0, 1, 0, 0);
-  return frost;
+// Restricts drawing to outside every object pad, so keys under a pad are hidden just as
+// hit-testing hides them. One even-odd clip per pad: clips intersect, so overlapping pads
+// stay covered.
+function clipOutObjects() {
+  for (const z of objects.zones) {
+    ctx.beginPath();
+    ctx.rect(0, 0, canvas.width, canvas.height);
+    shapeOutline(z.shape)
+      .map(boardToScreen)
+      .forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+    ctx.closePath();
+    ctx.clip("evenodd");
+  }
 }
 
 // 1 right after a zone played, fading to 0 over HIT_MS.
@@ -2043,20 +2046,14 @@ function fillGlow(glow: number) {
   ctx.restore();
 }
 
-// Frosted keys (sharps darker), a violet tint under a fingertip, the glow when played, and
-// the test or tap-calibration target in green; then clean labels.
+// See-through keys: light frosted naturals, darker sharps (drawn after, by z), a violet tint
+// under a fingertip, the glow when played, and the test or tap-calibration target in green;
+// then crisp labels. Object pads cover keys, so keys are clipped out under them.
 function drawLayoutPlay(active: Set<string>, now: number) {
   if (!calibration.done) return;
   const outlines = new Map(layout.zones.map((z) => [z.id, shapeOutline(z.shape).map(boardToScreen)]));
   ctx.save();
-  ctx.beginPath();
-  for (const o of outlines.values()) {
-    o.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
-    ctx.closePath();
-  }
-  ctx.clip();
-  ctx.drawImage(frosted(), 0, 0, canvas.width, canvas.height);
-  ctx.restore();
+  clipOutObjects();
   for (const { zone, above } of zStack(layout)) {
     const outline = outlines.get(zone.id)!;
     ctx.save();
@@ -2071,7 +2068,7 @@ function drawLayoutPlay(active: Set<string>, now: number) {
     }
     tracePath(outline, true);
     const sharp = isAccidental(zone);
-    ctx.fillStyle = sharp ? "rgba(14, 12, 28, 0.66)" : "rgba(255, 255, 255, 0.16)";
+    ctx.fillStyle = sharp ? "rgba(14, 12, 28, 0.4)" : "rgba(255, 255, 255, 0.18)";
     ctx.fill();
     if (active.has(zone.id)) {
       ctx.fillStyle = `rgba(${ACCENT_RGB}, 0.24)`;
@@ -2084,7 +2081,7 @@ function drawLayoutPlay(active: Set<string>, now: number) {
     }
     fillGlow(glowOf(zone.id, now));
     ctx.lineJoin = "round";
-    ctx.strokeStyle = isTarget ? "#34d399" : sharp ? "rgba(255, 255, 255, 0.22)" : "rgba(255, 255, 255, 0.45)";
+    ctx.strokeStyle = isTarget ? "#34d399" : sharp ? "rgba(255, 255, 255, 0.5)" : "rgba(255, 255, 255, 0.7)";
     ctx.lineWidth = isTarget ? 3 : 1.5;
     ctx.stroke();
     ctx.restore();
@@ -2100,19 +2097,23 @@ function drawLayoutPlay(active: Set<string>, now: number) {
     ctx.font = `600 ${size}px ${FONT}`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.shadowColor = "rgba(0, 0, 0, 0.55)";
-    ctx.shadowBlur = 6;
-    ctx.fillStyle = isAccidental(zone) ? "rgba(255, 255, 255, 0.78)" : "rgba(255, 255, 255, 0.94)";
+    // A tight dark halo keeps labels legible now that the desk shows through.
+    ctx.shadowColor = "rgba(0, 0, 0, 0.8)";
+    ctx.shadowBlur = 3;
+    ctx.fillStyle = isAccidental(zone) ? "rgba(255, 255, 255, 0.9)" : "#ffffff";
     ctx.fillText(zone.label, c.x, c.y);
     ctx.restore();
   }
+  ctx.restore();
   if (tapCal?.zone) drawCrosshair(boardToScreen(zoneAnchor(layout, tapCal.zone)));
 }
 
-// Object pads: a soft outline with a faint violet fill (stronger under a fingertip, glowing
-// when played), and a pill with the object's name and its sound at the outline's center.
+// Object pads, drawn over the keys (which are clipped out beneath them): a soft outline
+// with a faint violet fill (stronger under a fingertip, glowing when played), then, once
+// every pad is drawn, a pill with each object's name and sound at its outline's center.
 function drawObjectsPlay(active: Set<string>, now: number) {
   if (!calibration.done) return;
+  const pills: { c: Pt; zone: Zone }[] = [];
   for (const zone of objects.zones) {
     const outline = shapeOutline(zone.shape).map(boardToScreen);
     ctx.save();
@@ -2131,8 +2132,9 @@ function drawObjectsPlay(active: Set<string>, now: number) {
       x: outline.reduce((s, p) => s + p.x, 0) / outline.length,
       y: outline.reduce((s, p) => s + p.y, 0) / outline.length,
     };
-    drawPill(c, zone.label, soundName(zone.sound));
+    pills.push({ c, zone });
   }
+  for (const { c, zone } of pills) drawPill(c, zone.label, soundName(zone.sound));
 }
 
 // A rounded label: bold name, then a dimmer detail (if any), outlined in rgb (default the
