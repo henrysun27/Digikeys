@@ -18,6 +18,7 @@ import {
   showJitter,
   showProbe,
   showDropouts,
+  showFrameSteps,
   showLevel,
   showMicInfo,
   showPlayer,
@@ -26,7 +27,8 @@ import {
 } from "./debug.ts";
 import { applyH, convexHull, distToPolygon, fitQuad, polygonArea, type Pt } from "./geometry.ts";
 import { HAND_CONNECTIONS, HandTracking, type TrackedHand } from "./hand-tracking.ts";
-import { createDetector, type Detector } from "./detectors.ts";
+import { createDetector, type Detector, type FrameTiming } from "./detectors.ts";
+import { StepTimes } from "./frame-steps.ts";
 import type { HandFrame } from "./hand-detector.ts";
 import { describeSpec, layoutFromSpec, PRESETS, presetFor } from "./instrument.ts";
 import { hitTest, isAccidental, shapeOutline, zoneAnchor, zStack, type Layout, type Zone } from "./layout.ts";
@@ -56,6 +58,7 @@ import {
   type CalibrationReport,
   type CalibrationResult,
   type FingerShadow,
+  TouchBaselines,
   type ShadowFit,
   type ShadowVote,
 } from "./shadow-contact.ts";
@@ -185,6 +188,7 @@ let shadowFit: ShadowFit | null = loadShadowFit();
 let shadowCal: ShadowCalibration | null = null;
 let calReport: CalibrationReport | null = null;
 const contacts = new ShadowContacts();
+const baselines = new TouchBaselines();
 let checkOn = false;
 const checkContrast = new Map<string, number[]>();
 let shadowBackgroundT: number | null = null;
@@ -980,9 +984,11 @@ const zoneList = (notes: Note[]) => notes.map((x) => x.zone?.label ?? "off board
 // vision-only mode.
 //
 // Fused mode is all of the above with one change: before the chord is picked (and again
-// before the check's), each strike's score is adjusted by its shadow vote
-// (applyShadowVotes), logged per finger with its confidence and factor. Votes only read
-// frames already in, so the guess plays as soon as in Mic + motion.
+// before the check's), each strike's score can be lowered by its shadow vote
+// (applyShadowVotes, veto-only), logged per finger with its gap, baseline, confidence and
+// factor. Votes only read frames already in, so the guess plays as soon as in Mic + motion.
+// In every mode, the check's fingers teach their touching baselines when shadows are
+// sampled.
 function onOnset(onset: Onset) {
   if (tapsPaused() || CONFIG.taps.mode === "vision") return;
   const fused = CONFIG.taps.mode === "fused";
@@ -996,7 +1002,7 @@ function onOnset(onset: Onset) {
   const win = stopWindow(frameMs);
   const recent = lastTap && onset.time - lastTap.t <= CONFIG.guess.lastHandMs;
   const picks = history.guessAll(onset.time, { toBoard, onBoard, lastHand: recent ? lastTap!.hand : null, window: win });
-  const votes = fused ? applyShadowVotes(picks, () => Infinity) : [];
+  const votes = fused ? applyShadowVotes(picks, () => Infinity, true) : [];
   const guesses = picks.map((pick): Note => {
     const at = tapPoint("guess", landing(pick.at));
     return { pick, at, zone: at ? zoneAt(at) : null, late: false };
@@ -1071,7 +1077,7 @@ function onOnset(onset: Onset) {
     // A late stop is the finger settling after contact; its guess position is better.
     const guessAt = new Map(guesses.map((g) => [g.pick.finger, g.at]));
     const stops = history.resolveAll(onset.time, toBoard, win);
-    const checkVotes = fused ? applyShadowVotes(stops, (p) => p.at.t + CONFIG.shadow.vote.stopSlackMs) : [];
+    const checkVotes = fused ? applyShadowVotes(stops, (p) => p.at.t + CONFIG.shadow.vote.stopSlackMs, false) : [];
     const { chord: checks, rejected: checkRejected } = chordOf(
       stops.map((pick): Note => {
         const early = guessAt.get(pick.finger) ?? null;
@@ -1090,6 +1096,7 @@ function onOnset(onset: Onset) {
       rejected: checkRejected,
     });
     noteShadowVotes(line, "check shadow", checkVotes);
+    learnBaselines(checks.map((c) => c.pick));
     if ((calTarget || attempt) && top?.at) dot.check = { p: top.at, hit: targetHas(top.zone) };
     const { judged, hovering } = judgeHovering(playedFingers, onset.time);
     noteHovering(line, hovering);
@@ -1108,23 +1115,38 @@ function onOnset(onset: Onset) {
   }, Math.max(0, resolveAt - performance.now()));
 }
 
-// Fused mode: each strike's shadow vote (shadowVote) multiplies its score; one whose factor
-// falls under vetoFactor is no strike any more ("shadow says hovering"). The guess votes on
-// frames up to now, the check on frames up to stopSlackMs past its stop. Fingers that
-// aren't strikes don't vote. Returns the votes cast, re-ranked picks in place.
-function applyShadowVotes(picks: FingerPick[], to: (p: FingerPick) => number): ShadowVote[] {
+// Fused mode: each strike's shadow vote (shadowVote, veto-only) can only lower its score;
+// one whose factor falls under vetoFactor is no strike any more ("shadow says hovering").
+// The guess votes on the latest frames and only while the gap has stopped closing; the
+// check on the frames at its stop (up to stopSlackMs past it). Fingers that aren't strikes
+// don't vote. Returns the votes cast, re-ranked picks in place.
+function applyShadowVotes(picks: FingerPick[], to: (p: FingerPick) => number, steady: boolean): ShadowVote[] {
   const votes: ShadowVote[] = [];
   for (const p of picks) {
     if (p.why) continue;
-    const v = shadowVote(contacts, shadowFit, p.finger, p.startT, to(p));
+    const v = shadowVote(contacts, baselines.of(p.finger), p.finger, p.startT, to(p), steady);
     votes.push(v);
     p.score *= v.factor;
     if (v.factor < CONFIG.shadow.vote.vetoFactor) {
-      p.why = `shadow says hovering (${v.why}, gap ${v.end?.toFixed(2)}, conf ${v.confidence.toFixed(2)}, ×${v.factor.toFixed(2)})`;
+      p.why =
+        `shadow says hovering (gap ${v.gap!.toFixed(2)} vs baseline ${v.baseline!.toFixed(2)}, ` +
+        `conf ${v.confidence.toFixed(2)}, ×${v.factor.toFixed(2)})`;
     }
   }
   ranked(picks);
   return votes;
+}
+
+// Each finger the stop check found adds its smallest confident gap around its stop to its
+// touching baseline.
+function learnBaselines(checks: FingerPick[]) {
+  const { holdMs, stopSlackMs } = CONFIG.shadow.vote;
+  for (const p of checks) {
+    const gaps = contacts
+      .between(p.finger, p.at.t - holdMs, p.at.t + stopSlackMs)
+      .flatMap((f) => (f.confidence > 0 && f.gap !== null ? [f.gap] : []));
+    if (gaps.length) baselines.add(p.finger, Math.min(...gaps));
+  }
 }
 
 // Test mode: which of the fingers that played the shadow could judge, and which of those it
@@ -1169,7 +1191,11 @@ function onShadows(hands: TrackedHand[], t: number, result: ShadowResult | null)
     const hand = byDetection.get(r.hand);
     return hand ? { hand, f: FINGERTIPS.indexOf(r.tip), name: fingerKey(hand.id, FINGER_NAMES[FINGERTIPS.indexOf(r.tip)]) } : null;
   };
-  if (checkOn) updateCheck(result.readings, fingerOf);
+  if (checkOn) {
+    const viewStart = performance.now();
+    updateCheck(result.readings, fingerOf);
+    frameSteps.add("main: Shadow check view", performance.now() - viewStart);
+  }
   if (shadowCal) {
     const index = FINGERTIPS[FINGER_NAMES.indexOf("index")];
     const samples = result.readings.flatMap((r) => {
@@ -1198,7 +1224,7 @@ function onShadows(hands: TrackedHand[], t: number, result: ShadowResult | null)
     });
   }
   contacts.update(t, frame, shadowFit?.threshold ?? null);
-  showShadow(shadowFit, contacts.current(), result.ms);
+  showShadow(shadowFit, contacts.current(), baselines, result.ms);
 }
 
 // The Shadow check view: each index fingertip's patch with its recent median contrast, and
@@ -1267,7 +1293,7 @@ function finishShadowCal(r: CalibrationResult) {
     `Shadow calibrated: light direction ${dirDegrees(f.dir).toFixed(0)}°, separation d′ ${f.dPrime.toFixed(1)}, ` +
     `contact under gap ${f.threshold.toFixed(2)} (resting ${f.rest.median.toFixed(2)}±${f.rest.sigma.toFixed(2)}, ` +
     `lifted ${f.lift.median.toFixed(2)}±${f.lift.sigma.toFixed(2)}).${pick}`;
-  showShadow(f, [], null);
+  showShadow(f, [], baselines, null);
   updateTest();
 }
 
@@ -1277,7 +1303,7 @@ calShadowBtn.addEventListener("click", () => {
     shadowStatusEl.textContent = "Shadow calibration cancelled.";
   } else setShadowCal(true);
 });
-showShadow(shadowFit, [], null);
+showShadow(shadowFit, [], baselines, null);
 
 // Fingertips in camera pixels, raw and filtered, for the debug panel's jitter readout.
 const jitter = new JitterMeter();
@@ -1391,6 +1417,12 @@ probeBtn.addEventListener("click", async () => {
   }
 });
 
+// Each frame's steps, from the grab to its result handled (detectors.ts FrameTiming, the
+// shadow sampler's own steps, the main thread's handling), and redraws; reported once a
+// second in the debug panel's "Frame steps" row. TOTAL_STEP: grab to handled, end to end.
+const frameSteps = new StepTimes();
+const TOTAL_STEP = "grab → handled";
+
 // Hand detection, in the worker or on the main thread (see CONFIG.hands.detectOn). Counts
 // are totals since startup; the panel and the auto choice take differences. handleMs: the
 // main thread's own work per result (tracking, finger history, strikes); draws and drawMs:
@@ -1403,28 +1435,48 @@ let dirty = true;
 let detectorChoice: string | null = null;
 
 function useDetector(d: Detector) {
-  d.onHands = (t: number, frame: HandFrame, ms: number, shadow: ShadowResult | null) => {
+  d.onHands = (t: number, frame: HandFrame, timing: FrameTiming, shadow: ShadowResult | null) => {
     if (detector !== d) return;
     const start = performance.now();
     counts.detections++;
-    counts.detectMs += ms;
+    counts.detectMs += timing.detect;
+    const step = (name: string, since: number) => {
+      const now = performance.now();
+      frameSteps.add(name, now - since);
+      return now;
+    };
+    let at = start;
     const tracked = tracking.update(frame, t, video.videoWidth / video.videoHeight);
     for (const id of tracked.started) {
       history.dropHand(id);
       contacts.dropHand(id);
+      baselines.dropHand(id);
       if (lastTap?.hand === id) lastTap = null;
     }
     hands = tracked.hands;
+    at = step("main: tracking", at);
     onShadows(hands, t, shadow);
+    at = step("main: shadow update (incl. check view)", at);
     recordFingers(hands, t);
     measureJitter(hands, t);
     trackPlayerEdge(hands, t);
+    at = step("main: fingers", at);
     const hold = CONFIG.taps.mode === "vision" ? CONFIG.taps.visionHoldFrames : 0;
     for (const m of history.newStops(toBoard, onBoard, hold)) onStop(m);
     countDropouts(hands, tracked.lost);
     handsInFrame = hands.length;
     dirty = true;
-    counts.handleMs += performance.now() - start;
+    at = step("main: stops", at);
+    counts.handleMs += at - start;
+    frameSteps.add("copy", timing.copy);
+    frameSteps.add("queue", timing.queue);
+    frameSteps.add("send", timing.send);
+    frameSteps.add("detect", timing.detect);
+    frameSteps.add("shadow: grab", shadow?.steps.grab ?? null);
+    frameSteps.add("shadow: background", shadow?.steps.background ?? null);
+    frameSteps.add("shadow: measure", shadow?.steps.measure ?? null);
+    frameSteps.add("back", timing.back);
+    frameSteps.add(TOTAL_STEP, at - t);
   };
   detector = d;
 }
@@ -1797,6 +1849,7 @@ function loop() {
       drawShadows();
       drawCalPrompt();
       counts.drawMs += performance.now() - now;
+      frameSteps.add("main: draw", performance.now() - now);
     }
 
     if (now - fpsStart >= 1000) {
@@ -1818,6 +1871,7 @@ function loop() {
       }
       showDropouts(dropouts);
       showJitter(jitter.read(now));
+      showFrameSteps(frameSteps.take(), TOTAL_STEP, frameMs);
       updatePlayerPanel();
       last = { ...counts };
       fpsStart = now;

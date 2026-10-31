@@ -1,10 +1,11 @@
 import { CONFIG } from "./config.ts";
 import type { DetectorKind } from "./detectors.ts";
+import type { StepRow } from "./frame-steps.ts";
 import type { DetectorInfo } from "./hand-detector.ts";
 import type { CameraInfo, CameraProbe } from "./main.ts";
 import type { MicInfo, MicLevel, Onset } from "./mic.ts";
 import type { Edge } from "./orientation.ts";
-import { dirDegrees, type ShadowFit, type ShadowState, type ShadowVote } from "./shadow-contact.ts";
+import { dirDegrees, type ShadowFit, type ShadowState, type ShadowVote, type TouchBaselines } from "./shadow-contact.ts";
 import { loadSmoothing, saveSmoothing, setSmoothing, SMOOTHING_DEFAULTS, type Jitter } from "./smoothing.ts";
 import { FINGER_NAMES, fingerKey, handOf } from "./taps.ts";
 import type { Correction, TapCorrections } from "./tap-correction.ts";
@@ -42,6 +43,7 @@ const visionLatencyEl = el("vision-latency");
 const minCutoffInput = el("min-cutoff") as HTMLInputElement;
 const betaInput = el("beta") as HTMLInputElement;
 const jitterEl = el("jitter");
+const frameStepsEl = el("frame-steps");
 const shadowEl = el("shadow");
 
 // What was played at onset time from the best-guess fingers. waitMs: onset to the main
@@ -95,13 +97,18 @@ export function showMicInfo(i: MicInfo) {
   audioLatencyEl.textContent =
     `out ${i.outputMs.toFixed(0)} ms applied (raw ${i.outputRawMs.toFixed(1)} ms) · ` +
     `in 0 ms applied (stats raw ${raw(i.inputStatsRaw)} ms, settings raw ${raw(i.inputSettingsRaw)} s) · ${rates}`;
-  // Offset: performance.now() ms at audio-clock 0, smoothed. Drift in ms per minute and ppm.
+  // Offset: performance.now() ms at audio-clock 0, from the fitted line. Drift in ms per
+  // minute and ppm over the drift log; the fit's own slope, pairs, outliers and residual.
   const c = i.clock;
   const drift =
     c.driftMsPerMin === null
       ? "drift measuring…"
       : `drift ${c.driftMsPerMin >= 0 ? "+" : ""}${c.driftMsPerMin.toFixed(2)} ms/min (${((c.driftMsPerMin / 60_000) * 1e6).toFixed(0)} ppm)`;
-  audioClockEl.textContent = `offset ${c.offsetMs.toFixed(1)} ms (${fmtMs(c.sinceStartMs)} since start) · ${drift} · ${c.source}`;
+  const fitS = (CONFIG.mic.clock.fitWindowMs / 1000).toFixed(0);
+  audioClockEl.textContent =
+    `offset ${c.offsetMs.toFixed(1)} ms (${fmtMs(c.sinceStartMs)} since start) · ${drift} · ` +
+    `fit ${fitS} s: ${c.fitPpm.toFixed(0)} ppm, ${c.pairs} pairs, ${(c.rejectedShare * 100).toFixed(0)}% outliers, ` +
+    `±${c.residualMs.toFixed(2)} ms · ${c.source}`;
 }
 
 function appendLog(text: string): HTMLLIElement {
@@ -303,6 +310,30 @@ export function showDetection(
 
 export type Dropouts = { lost: number[]; frames: number[]; offLost: number; offFrames: number };
 
+// Mean and max ms per frame step over the last second, slowest mean first, with the end-
+// to-end grab-to-handled time on top and the slowest step named. budget: the measured frame
+// interval (null if unknown); a step whose mean takes more than half of it is marked slow,
+// and one whose max exceeds it, spiking. Worker steps (send, detect, shadow) run one frame
+// at a time, so together they set the detection rate.
+export function showFrameSteps(rows: StepRow[], total: string, budget: number | null) {
+  const end = rows.find((r) => r.name === total);
+  const steps = rows.filter((r) => r.name !== total).sort((a, b) => b.mean - a.mean);
+  if (!end || steps.length === 0) {
+    frameStepsEl.textContent = "no frames";
+    return;
+  }
+  const fmt = (r: StepRow) => `${r.mean.toFixed(1)} ms (max ${r.max.toFixed(1)})`;
+  const flag = (r: StepRow) =>
+    budget === null ? "" : r.mean > budget / 2 ? " ⚠ slow" : r.max > budget ? " ⚠ spikes" : "";
+  const slowest = steps[0];
+  const lines = [
+    `${total}: ${fmt(end)} · slowest step: ${slowest.name} ${slowest.mean.toFixed(1)} ms` +
+      (budget !== null ? ` · frame every ${budget.toFixed(0)} ms` : ""),
+    ...steps.map((r) => `${r.name}: ${fmt(r)}${flag(r)}`),
+  ];
+  frameStepsEl.textContent = lines.join("\n");
+}
+
 // One cell per board column, left to right as the board is defined (C4 first on the
 // piano), plus off board: dropouts, and below them dropouts per 1000 frames with a hand
 // in that column.
@@ -380,9 +411,10 @@ export function showJitter(jitter: Jitter[]) {
   jitterEl.textContent = `px RMS over ${secs} s, filtered (raw)\n${lines.join("\n")}`;
 }
 
-// The shadow: the fit, then each measured finger's gap (MCP-PIP units), contrast, confidence
-// and contact state, and the per-frame sampling time where detection runs.
-export function showShadow(fit: ShadowFit | null, fingers: ShadowState[], ms: number | null) {
+// The shadow: the fit, then each measured finger's gap (MCP-PIP units), contrast, confidence,
+// touching baseline (with the taps it has) and contact state, and the per-frame sampling
+// time where detection runs.
+export function showShadow(fit: ShadowFit | null, fingers: ShadowState[], baselines: TouchBaselines, ms: number | null) {
   const head = fit
     ? `dir ${dirDegrees(fit.dir).toFixed(0)}° ±${CONFIG.shadow.sectorDeg}° · contact < ${fit.threshold.toFixed(2)} · ` +
       `d′ ${fit.dPrime.toFixed(1)} (resting ${fit.rest.median.toFixed(2)}±${fit.rest.sigma.toFixed(2)}, ` +
@@ -394,22 +426,23 @@ export function showShadow(fit: ShadowFit | null, fingers: ShadowState[], ms: nu
     .map(
       (f) =>
         `${f.finger}: ${f.gap === null ? "no shadow" : f.gap.toFixed(2)} · contrast ${f.contrast.toFixed(2)} · ` +
-        `conf ${f.confidence.toFixed(2)}` +
+        `conf ${f.confidence.toFixed(2)} · baseline ${baselines.of(f.finger)?.toFixed(2) ?? "–"} ` +
+        `(${baselines.count(f.finger)} taps)` +
         (f.contact ? " · CONTACT" : ""),
     );
   shadowEl.textContent = [head + timing, ...lines].join("\n");
 }
 
 // Fused mode: each striking finger's shadow vote, appended to its tap's log line (the
-// guess's at onset, the check's when it resolves).
+// guess's at onset, the check's when it resolves): confidence, gap vs its touching
+// baseline, why, and the factor (1 unless penalized).
 export function noteShadowVotes(line: HTMLLIElement, label: string, votes: ShadowVote[]) {
   if (votes.length === 0) return;
   const fmt = (v: number | null) => (v === null ? "–" : v.toFixed(2));
   const parts = votes.map(
     (v) =>
-      `${v.finger} conf ${v.confidence.toFixed(2)}` +
-      (v.end !== null ? `, gap ${fmt(v.from)}→${fmt(v.end)}` : "") +
-      ` (${v.why}) ×${v.factor.toFixed(2)}`,
+      `${v.finger} conf ${v.confidence.toFixed(2)}, gap ${fmt(v.gap)} vs baseline ${fmt(v.baseline)} ` +
+      `(${v.why}) ×${v.factor.toFixed(2)}`,
   );
   line.textContent += ` · ${label}: ${parts.join("; ")}`;
 }

@@ -86,10 +86,24 @@ export const CONFIG = {
   },
   mic: {
     maxLatencyCorrectionMs: 100, // any latency correction is clamped to 0..this
-    // Audio clock -> performance.now(): re-synced on every worklet message, the offset is
-    // the median over smoothMs; the drift rate is fitted over driftWindowS, one point per
-    // driftSampleMs.
-    clock: { smoothMs: 1000, driftSampleMs: 1000, driftWindowS: 120 },
+    // Audio clock -> performance.now(): a pair is taken on every worklet message, from
+    // getOutputTimestamp while its performanceTime is within maxTimestampAgeMs of now, else
+    // currentTime with now. The mapping is a line fitted over the last fitWindowMs of pairs,
+    // with outliers past outlierMad robust sigmas (at least minOutlierMs) dropped, refitted
+    // at most every refitMs; its slope is held at 0 until the pairs span minFitSpanS and
+    // clamped to ±maxDriftPpm. The long-term drift rate is fitted over driftWindowS, one
+    // point per driftSampleMs.
+    clock: {
+      maxTimestampAgeMs: 500,
+      fitWindowMs: 10_000,
+      refitMs: 250,
+      outlierMad: 3,
+      minOutlierMs: 2,
+      minFitSpanS: 2,
+      maxDriftPpm: 500,
+      driftSampleMs: 1000,
+      driftWindowS: 120,
+    },
   },
   sound: {
     pianoBaseUrl: "https://tonejs.github.io/audio/salamander/",
@@ -169,15 +183,28 @@ export const CONFIG = {
     // Shadow confidence, 0-1: the shadow region's contrast mapped linearly from
     // confidence[0] (0) to confidence[1] (1); 0 with no region found.
     confidence: [0.1, 0.3] as [number, number],
-    // Fused mode: on an onset, each striking finger's score is multiplied by 1 + c × cue,
-    // c its median shadow confidence over the stroke's frames, cue +boost if the gap ended
-    // near zero (calibrated: under the threshold) or shrank by at least minShrink over the
-    // stroke, -penalty if a clear gap persisted (calibrated: threshold + hoverMargin or more;
-    // uncalibrated: minHoverGap or more) without shrinking, else 0. A strike whose factor
-    // falls under vetoFactor is dropped as hovering. With no shadow seen, c is 0 and the
-    // factor 1: plain Mic + motion. The guess votes on frames up to the onset (no waiting);
-    // the check on frames up to stopSlackMs after its stop.
-    vote: { boost: 0.5, penalty: 1, vetoFactor: 0.4, minShrink: 0.05, hoverMargin: 0.1, minHoverGap: 0.6, stopSlackMs: 50 },
+    // Fused mode, veto-only: the shadow never raises a strike's score. A strike's score is
+    // multiplied by 1 - c × penalty (c: its median shadow confidence) only when its gap
+    // stays at least `margin` above the finger's own touching baseline in every frame
+    // within holdMs of the last one judged, and (for the guess) has stopped closing
+    // (fell less than minShrink across them); a factor under vetoFactor drops the strike as
+    // hovering. Otherwise, and with no shadow seen, the factor is 1: plain Mic + motion.
+    // The baseline is the baselinePercentile of the finger's gap at the stop of its last
+    // baselineTaps accepted taps (the stop check's fingers), used from minBaselineTaps on.
+    // The guess votes on frames up to the onset (no waiting); the check on frames up to
+    // stopSlackMs after its stop. minHoverGap: test mode's uncalibrated hover judge.
+    vote: {
+      penalty: 1,
+      vetoFactor: 0.4,
+      margin: 0.15,
+      minShrink: 0.05,
+      holdMs: 70,
+      baselinePercentile: 0.2,
+      baselineTaps: 40,
+      minBaselineTaps: 5,
+      stopSlackMs: 50,
+      minHoverGap: 0.6,
+    },
     // The empty desk: frames with no hand, blended in at most every intervalMs.
     background: { intervalMs: 500, blend: 0.3 },
     hysteresis: 0.03, // contact ends only above threshold + this

@@ -58,21 +58,26 @@ export async function startMic(ctx: AudioContext, h: MicHandlers) {
   // Maps the worklet's audio-clock time for a block to performance.now() when it was
   // rendered. getOutputTimestamp pairs a context time with the moment it is heard, and a
   // block is rendered baseLatency + outputLatency before that. Input latency is taken as
-  // 0; config.taps.videoLagMs absorbs any constant offset. Falls back to the currentTime
-  // pairing if the output timestamp is missing or disagrees by more than the clamp.
-  // The audio clock runs off the sound card's crystal and drifts against performance.now()
-  // (tens of ppm, hundreds of ms over hours), so the pair is re-taken on every worklet
-  // message and ClockSync smooths it and measures the drift.
+  // 0; config.taps.videoLagMs absorbs any constant offset. The audio system takes that pair
+  // itself, so a busy main thread doesn't skew it, unlike currentTime paired with now (now
+  // is late by however long the message waited). It is no longer cross-checked against
+  // that pairing, which under load wrongly rejected it; currentTime is the fallback only
+  // when the output timestamp is missing or stale. The audio clock runs off the sound
+  // card's crystal and drifts against performance.now() (tens of ppm), so pairs are taken
+  // on every worklet message and ClockSync fits a line through them, dropping outliers.
   const clock = new ClockSync(CONFIG.mic.clock);
   const sync = (): boolean => {
     const { ms: outputMs } = outputLatency(ctx);
     const now = performance.now();
-    const byCurrentTime = now - ctx.currentTime * 1000;
     const ts = ctx.getOutputTimestamp();
-    const byOutput =
-      ts.performanceTime && ts.contextTime !== undefined ? ts.performanceTime - ts.contextTime * 1000 - outputMs : null;
-    const useOutput = byOutput !== null && Math.abs(byOutput - byCurrentTime) <= CONFIG.mic.maxLatencyCorrectionMs;
-    return clock.sample(useOutput ? byOutput : byCurrentTime, useOutput ? "output timestamp" : "currentTime", now);
+    const fresh =
+      ts.performanceTime !== undefined &&
+      ts.performanceTime > 0 &&
+      ts.contextTime !== undefined &&
+      Math.abs(ts.performanceTime - now) <= CONFIG.mic.clock.maxTimestampAgeMs;
+    return fresh
+      ? clock.sample(ts.contextTime!, ts.performanceTime! - outputMs, "output timestamp", now)
+      : clock.sample(ctx.currentTime, now, "currentTime", now);
   };
   const info = (): MicInfo => {
     const settings: AudioSettings = track.getSettings();

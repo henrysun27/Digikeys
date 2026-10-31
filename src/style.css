@@ -383,7 +383,8 @@ body {
 }
 
 #jitter,
-#shadow {
+#shadow,
+#frame-steps {
   white-space: pre-line;
 }
 

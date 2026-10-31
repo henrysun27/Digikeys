@@ -5,17 +5,30 @@ import type { HandLandmarker } from "@mediapipe/tasks-vision";
 import { createHandLandmarker, toHandFrame, type DetectorInfo, type HandFrame } from "./hand-detector.ts";
 import { sampleShadows, type ShadowRequest, type ShadowResult } from "./shadow.ts";
 
-export type ToWorker = { type: "frame"; bitmap: ImageBitmap; t: number; shadow: ShadowRequest | null };
+// sentAt, postedAt: epoch ms (performance.timeOrigin + now), comparable across threads.
+// sendMs: from sentAt to the worker taking the frame.
+export type ToWorker = { type: "frame"; bitmap: ImageBitmap; t: number; shadow: ShadowRequest | null; sentAt: number };
 export type FromWorker =
   | ({ type: "ready" } & DetectorInfo)
   | { type: "error"; message: string }
-  | { type: "result"; t: number; frame: HandFrame; detectMs: number; shadow: ShadowResult | null };
+  | {
+      type: "result";
+      t: number;
+      frame: HandFrame;
+      detectMs: number;
+      shadow: ShadowResult | null;
+      sendMs: number;
+      postedAt: number;
+    };
+
+export const epochNow = () => performance.timeOrigin + performance.now();
 
 const post = (m: FromWorker) => postMessage(m);
 let landmarker: HandLandmarker | null = null;
 let lastT = -Infinity;
 
 onmessage = (e: MessageEvent<ToWorker>) => {
+  const sendMs = Math.max(0, epochNow() - e.data.sentAt);
   const { bitmap, t, shadow } = e.data;
   if (!landmarker) {
     bitmap.close();
@@ -29,7 +42,7 @@ onmessage = (e: MessageEvent<ToWorker>) => {
   const detectMs = performance.now() - start;
   const shadows = shadow ? sampleShadows(bitmap, bitmap.width, bitmap.height, frame, shadow, t) : null;
   bitmap.close();
-  post({ type: "result", t, frame, detectMs, shadow: shadows });
+  post({ type: "result", t, frame, detectMs, shadow: shadows, sendMs, postedAt: epochNow() });
 };
 
 createHandLandmarker().then(

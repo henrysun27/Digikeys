@@ -491,3 +491,47 @@ with `latencyHint: "interactive"` and `lookAhead: 0`, and notes trigger at
     shrinking 0.9 → 0.4 at full confidence gives ×1.5; a steady 0.8 gap gives ×0 (vetoed),
     ×0.75 at a 0.15 contrast (kept). Calibrated: ending under the threshold ×1.5, a steady
     gap above threshold + margin ×0. Not yet tested on camera.
+- [x] Fixes after testing the fused mode:
+  - What testing showed: the shadow vetoed a hovering finger correctly (#802), but its
+    ×1.5 boost made the wrong finger win (#803). Touching fingers never showed a near-zero
+    gap either: B index stayed at 0.31-0.36 while tapping, the hand mask's edge.
+  - The shadow vote is now veto-only: it never raises a score. Each finger learns a
+    touching baseline, the 20th percentile of its smallest gap around the stop of its last
+    40 taps the stop check found (`CONFIG.shadow.vote`, used from 5 taps on). The mask-edge
+    floor is then just that finger's baseline.
+  - A strike is penalized (×(1 - confidence)) only when every confident frame judged
+    stays at least 0.15 above the baseline. For the check those are the frames at its stop;
+    for the guess, the latest 70 ms, and only if the gap has stopped closing (fell less than
+    0.05), so a finger still coming down at the onset is never judged hovering. Under ×0.4
+    the strike is dropped. Without a baseline yet, or without a clear shadow, the factor is
+    exactly 1.
+  - In Node: B index tapping at 0.31-0.36 gives baseline 0.32 and ×1. A steady 0.62 at the
+    stop gives ×0 (vetoed), a finger still closing 0.9 → 0.6 ×1, a faint hover ×0.75. Over
+    2000 random tracks the factor never exceeded 1.
+  - Audio clock under load: the panel read 3354 ppm and +324 ms since start. Each pair
+    used to be checked against `currentTime` paired with `performance.now()`, which is late
+    whenever the main thread is busy, so under load it rejected the good
+    `getOutputTimestamp` pair and switched sources.
+  - Now `getOutputTimestamp` is used whenever its `performanceTime` is within 500 ms of
+    now. The mapping is a line fitted to the (audio time, performance time) pairs of the
+    last 10 s (`CONFIG.mic.clock`). It starts from the median offset, then twice drops pairs
+    beyond 3 robust sigmas (at least 2 ms) and least-squares fits the rest. The slope is
+    held at 0 until the pairs span 2 s, clamped to ±500 ppm, and refitted every 250 ms
+    (20 µs per worklet message on average).
+  - Simulated with a 20 ppm drift: with 15% or 40% of pairs late by 20-300 ms, or a 2 s
+    burst late by 100-400 ms, onset times stay within 0.1 ms of the truth and the drift
+    reads 20 ppm. The first fit, a plain least-squares pass before rejecting, was off by
+    5 ms and 64 ms in the same tests. The panel shows the fit's ppm, pairs, outlier share
+    and residual. Headless Edge with a fake mic: 333 pairs, ±0.30 ms, from the output
+    timestamp.
+  - Frame steps: the debug panel shows each per-frame step's mean and max over the last
+    second, slowest first, with the grab-to-handled total and the slowest step named:
+    - worker detector: copy (video frame to ImageBitmap), queue, send, detect;
+    - shadow: grab, background, measure;
+    - back, then the main thread's tracking, shadow update (and Shadow check view),
+      fingers, stops, and draw.
+    A step taking more than half the frame interval on average is marked slow, one whose
+    max exceeds the interval, spiking. Headless Edge with a fake camera (20 fps): grab →
+    handled 13-15 ms, detect 12.6-14 ms (max 28), everything else under 1 ms on average.
+    The background capture spikes to 13.6 ms, but only on frames with no hand, every
+    500 ms.

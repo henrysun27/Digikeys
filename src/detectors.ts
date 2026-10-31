@@ -4,7 +4,22 @@ import type { FromWorker, ToWorker } from "./hand-worker.ts";
 import type { ShadowRequest, ShadowResult, sampleShadows } from "./shadow.ts";
 
 export type DetectorKind = "worker" | "main";
-export type OnHands = (t: number, frame: HandFrame, detectMs: number, shadow: ShadowResult | null) => void;
+// One frame's steps before the main thread handles its result, ms; null where the detector
+// has no such step. copy: video frame to ImageBitmap. queue: the copy waiting for the frame
+// in flight. send: posting it to the worker. detect: HandLandmarker. shadow: shadow
+// sampling (its own steps are in the shadow result). back: the result's trip back.
+export type FrameTiming = {
+  copy: number | null;
+  queue: number | null;
+  send: number | null;
+  detect: number;
+  shadow: number | null;
+  back: number | null;
+};
+export type OnHands = (t: number, frame: HandFrame, timing: FrameTiming, shadow: ShadowResult | null) => void;
+
+// Epoch ms, as the worker stamps its messages (see hand-worker.ts).
+const epochNow = () => performance.timeOrigin + performance.now();
 
 // Hand detection on new video frames. frame(t, shadow) is called for every new frame, t
 // being when it was grabbed (performance.now() ms); results come back through onHands,
@@ -29,7 +44,11 @@ export class WorkerDetector implements Detector {
   private readonly video: HTMLVideoElement;
   private inFlight = false;
   private lastPosted = -Infinity;
-  private next: { bitmap: ImageBitmap; t: number; shadow: ShadowRequest | null } | null = null;
+  // A copy waiting for the frame in flight: copy, how long it took; copiedAt: when it was done.
+  private next: { bitmap: ImageBitmap; t: number; shadow: ShadowRequest | null; copy: number; copiedAt: number } | null =
+    null;
+  private sent = { copy: 0, queue: 0 }; // the frame in flight's
+
   private closed = false;
 
   private constructor(info: DetectorInfo, worker: Worker, video: HTMLVideoElement) {
@@ -40,10 +59,17 @@ export class WorkerDetector implements Detector {
       const m = e.data;
       if (m.type !== "result") return;
       this.inFlight = false;
-      this.onHands(m.t, m.frame, m.detectMs, m.shadow);
+      const timing: FrameTiming = {
+        ...this.sent,
+        send: m.sendMs,
+        detect: m.detectMs,
+        shadow: m.shadow?.ms ?? null,
+        back: Math.max(0, epochNow() - m.postedAt), // the two threads' clocks can disagree by a hair
+      };
+      this.onHands(m.t, m.frame, timing, m.shadow);
       const n = this.next;
       this.next = null;
-      if (n && !this.closed) this.post(n.bitmap, n.t, n.shadow);
+      if (n && !this.closed) this.post(n.bitmap, n.t, n.shadow, n.copy, n.copiedAt);
     };
   }
 
@@ -62,27 +88,31 @@ export class WorkerDetector implements Detector {
   }
 
   frame(t: number, shadow: ShadowRequest | null) {
+    const asked = performance.now();
     createImageBitmap(this.video).then(
       (bitmap) => {
+        const copiedAt = performance.now();
+        const copy = copiedAt - asked;
         // Copies normally resolve in order; anything older than what's queued is stale.
         if (this.closed || t <= this.lastPosted || (this.next && t <= this.next.t)) {
           bitmap.close();
           return;
         }
-        if (!this.inFlight) this.post(bitmap, t, shadow);
+        if (!this.inFlight) this.post(bitmap, t, shadow, copy, copiedAt);
         else {
           this.next?.bitmap.close();
-          this.next = { bitmap, t, shadow };
+          this.next = { bitmap, t, shadow, copy, copiedAt };
         }
       },
       (err) => console.error(err),
     );
   }
 
-  private post(bitmap: ImageBitmap, t: number, shadow: ShadowRequest | null) {
+  private post(bitmap: ImageBitmap, t: number, shadow: ShadowRequest | null, copy: number, copiedAt: number) {
     this.inFlight = true;
     this.lastPosted = t;
-    this.worker.postMessage({ type: "frame", bitmap, t, shadow } satisfies ToWorker, [bitmap]);
+    this.sent = { copy, queue: performance.now() - copiedAt };
+    this.worker.postMessage({ type: "frame", bitmap, t, shadow, sentAt: epochNow() } satisfies ToWorker, [bitmap]);
   }
 
   close() {
@@ -136,7 +166,9 @@ export class MainDetector implements Detector {
     const frame = this.toHandFrame(this.landmarker.detectForVideo(this.video, ts));
     const detectMs = performance.now() - start;
     const { videoWidth: w, videoHeight: h } = this.video;
-    this.onHands(t, frame, detectMs, shadow ? this.sampleShadows(this.video, w, h, frame, shadow, t) : null);
+    const s = shadow ? this.sampleShadows(this.video, w, h, frame, shadow, t) : null;
+    const timing = { copy: null, queue: null, send: null, detect: detectMs, shadow: s?.ms ?? null, back: null };
+    this.onHands(t, frame, timing, s);
   }
 
   close() {

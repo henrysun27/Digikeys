@@ -30,8 +30,15 @@ export type ShadowReading = {
   background: boolean;
   patch?: PatchView;
 };
-// backgroundT: frame time of the latest background capture, null before the first.
-export type ShadowResult = { readings: ShadowReading[]; ms: number; backgroundT: number | null };
+// backgroundT: frame time of the latest background capture, null before the first. steps:
+// ms spent grabbing the patches' region, updating the background (frames with no hand) and
+// measuring the patches.
+export type ShadowResult = {
+  readings: ShadowReading[];
+  ms: number;
+  backgroundT: number | null;
+  steps: { grab: number; background: number; measure: number };
+};
 
 // Grayscale of the frame region from (ox, oy), downscaled by kx, ky (grab pixels per frame
 // pixel).
@@ -261,9 +268,11 @@ export function sampleShadows(
   t: number,
 ): ShadowResult {
   const start = performance.now();
-  const done = (readings: ShadowReading[]) => ({ readings, ms: performance.now() - start, backgroundT: bgT });
+  const steps = { grab: 0, background: 0, measure: 0 };
+  const done = (readings: ShadowReading[]) => ({ readings, ms: performance.now() - start, backgroundT: bgT, steps });
   if (frame.landmarks.length === 0) {
     updateBackground(src, width, height, t);
+    steps.background = performance.now() - start;
     return done([]);
   }
   const { patchRadius } = CONFIG.shadow;
@@ -281,12 +290,16 @@ export function sampleShadows(
   const x1 = Math.min(width, Math.ceil(Math.max(...tips.map((t) => t.at.x + reach(t)))));
   const y1 = Math.min(height, Math.ceil(Math.max(...tips.map((t) => t.at.y + reach(t)))));
   if (!tips.length || x1 - x0 < 2 || y1 - y0 < 2) return done([]);
+  const grabStart = performance.now();
   const g = grab("patch", src, x0, y0, x1, y1);
+  const measureStart = performance.now();
+  steps.grab = measureStart - grabStart;
   const hands = handShapes(frame, px);
   const readings = tips.flatMap(({ hand, tip, at, unit }) => {
     if (!(unit > 0)) return [];
     const m = measure(g, hands, at, unit, req.dir, req.patches);
     return [{ ...m, hand, tip, shadow: m.shadow && { x: m.shadow.x / width, y: m.shadow.y / height } }];
   });
+  steps.measure = performance.now() - measureStart;
   return done(readings);
 }

@@ -275,43 +275,77 @@ export class ShadowContacts {
   }
 }
 
-// A finger's shadow vote on a strike (CONFIG.shadow.vote): its frames from the stroke's
-// start to `to`. confidence: the median over those frames (0 for frames without a shadow
-// region). from, end: the largest gap before the last confident frame and that frame's gap.
-// cue: +boost, -penalty or 0; factor: 1 + confidence × cue. why: what the cue was.
+// A finger's shadow vote on a strike (CONFIG.shadow.vote), veto-only: it can lower a score,
+// never raise it. Judged on the finger's frames from `from` to `to` that lie within holdMs
+// of the last of them: at the stop for the check, the latest frames for the guess. It
+// penalizes only if every one of those frames with a shadow shows a gap clearly above the
+// finger's own touching baseline (baseline + margin) and, when `steady`, the gap is no
+// longer closing (it fell less than minShrink across them): a finger still coming down
+// isn't judged hovering. factor: 1 - confidence × penalty then, else 1; confidence is the
+// median over those frames (0 for frames without a shadow region). gap: the last gap seen.
 export type ShadowVote = {
   finger: string;
   confidence: number;
-  from: number | null;
-  end: number | null;
-  cue: number;
+  gap: number | null;
+  baseline: number | null;
   factor: number;
   why: string;
 };
 
 export function shadowVote(
   contacts: ShadowContacts,
-  fit: ShadowFit | null,
+  baseline: number | null,
   finger: string,
   from: number,
   to: number,
+  steady: boolean,
 ): ShadowVote {
-  const { boost, penalty, minShrink, hoverMargin, minHoverGap } = CONFIG.shadow.vote;
-  const frames = contacts.between(finger, from, to);
-  const neutral = (why: string, c = 0): ShadowVote => ({ finger, confidence: c, from: null, end: null, cue: 0, factor: 1, why });
-  if (frames.length === 0) return neutral("no shadow frames");
-  const c = median(frames.map((f) => f.confidence));
+  const { penalty, minShrink, margin, holdMs } = CONFIG.shadow.vote;
+  const all = contacts.between(finger, from, to);
+  const last = all.at(-1);
+  const frames = last ? all.filter((f) => f.t >= last.t - holdMs) : [];
   const sure = frames.filter((f) => f.confidence > 0 && f.gap !== null);
-  if (c === 0 || sure.length === 0) return neutral("no clear shadow");
-  const end = sure[sure.length - 1].gap!;
-  const before = sure.slice(0, -1).map((f) => f.gap!);
-  const start = before.length ? Math.max(...before) : null;
-  const shrank = start !== null && start - end >= minShrink;
-  const near = fit !== null && end < fit.threshold;
-  const clear = fit !== null ? end >= fit.threshold + hoverMargin : end >= minHoverGap;
-  const cue = near || shrank ? boost : clear ? -penalty : 0;
-  const why = near ? "gap near zero" : shrank ? "gap shrank" : clear ? "clear gap persists" : "no cue";
-  return { finger, confidence: c, from: start, end, cue, factor: 1 + c * cue, why };
+  const gap = sure.at(-1)?.gap ?? null;
+  const c = frames.length ? median(frames.map((f) => f.confidence)) : 0;
+  const keep = (why: string): ShadowVote => ({ finger, confidence: c, gap, baseline, factor: 1, why });
+  if (baseline === null) return keep("no touching baseline yet");
+  if (c === 0 || gap === null) return keep("no clear shadow");
+  const above = Math.min(...sure.map((f) => f.gap!)) - baseline;
+  if (above < margin) return keep(`gap within ${margin} of baseline`);
+  const closing = Math.max(...sure.map((f) => f.gap!)) - gap;
+  if (steady && closing >= minShrink) return keep("gap still closing");
+  return { finger, confidence: c, gap, baseline, factor: 1 - c * penalty, why: `gap stays ${above.toFixed(2)} above baseline` };
+}
+
+// A finger's touching baseline: the baselinePercentile of the gaps it showed at the stops of
+// its accepted taps (the last baselineTaps of them), once there are minBaselineTaps.
+export class TouchBaselines {
+  private gaps = new Map<string, number[]>();
+
+  add(finger: string, gap: number) {
+    let xs = this.gaps.get(finger);
+    if (!xs) this.gaps.set(finger, (xs = []));
+    xs.push(gap);
+    if (xs.length > CONFIG.shadow.vote.baselineTaps) xs.shift();
+  }
+
+  // null until there are enough taps.
+  of(finger: string): number | null {
+    const { minBaselineTaps, baselinePercentile } = CONFIG.shadow.vote;
+    const xs = this.gaps.get(finger);
+    if (!xs || xs.length < minBaselineTaps) return null;
+    const s = [...xs].sort((a, b) => a - b);
+    return s[Math.round(baselinePercentile * (s.length - 1))];
+  }
+
+  count(finger: string): number {
+    return this.gaps.get(finger)?.length ?? 0;
+  }
+
+  // Forgets a hand's fingers, when its ID passes to a different hand.
+  dropHand(hand: string) {
+    for (const finger of this.gaps.keys()) if (handOf(finger) === hand) this.gaps.delete(finger);
+  }
 }
 
 // Test mode's hover judge for a played finger, over from-to: true if it hovered, false if
