@@ -66,8 +66,8 @@ export const CONFIG = {
     minCornerCross: 0.002,
   },
   // Mic onset detection (runs in the audio worklet). Levels are block RMS, 0-1.
-  // In hybrid mode an onset also needs a finger strike (taps.minStrokeDepth/minStrikeSpeed);
-  // in shadow mode, a fingertip in contact with its shadow (CONFIG.shadow).
+  // In hybrid and fused mode an onset also needs a finger strike
+  // (taps.minStrokeDepth/minStrikeSpeed).
   onset: {
     floorWindowMs: 1000, // the floor is the running median level over this long
     thresholdDb: 8, // level must exceed the floor by this
@@ -102,9 +102,9 @@ export const CONFIG = {
   // Fusing onsets with fingertip motion.
   taps: {
     // "hybrid": mic onsets, kept only if an allowed finger strikes (below). "vision": a down-stroke that stops on the board is the tap, no mic.
-    // "shadow": mic onsets, played by the allowed fingers whose tip meets its shadow
-    // (CONFIG.shadow), with no stroke depth or speed checks. The toolbar toggle switches it.
-    mode: "hybrid" as "hybrid" | "vision" | "shadow",
+    // "fused": hybrid, with each striking finger's score adjusted by its shadow's vote
+    // (CONFIG.shadow.vote). The toolbar toggle switches it.
+    mode: "hybrid" as "hybrid" | "vision" | "fused",
     // Finger frames are detected this long after the onset of the same moment. Tune it by
     // adding the debug panel's median stop offset.
     videoLagMs: 50,
@@ -148,8 +148,8 @@ export const CONFIG = {
     missWindowMs: 150, // test mode: a stop with no accepted onset within this is a miss
     keepMs: 2000, // how long onset times and mic levels are kept for miss checks
   },
-  // Shadow contact (Mic + shadow): a fingertip touching the desk meets its own shadow, a
-  // hovering one has a gap. Each frame, a patch around each fingertip is read from a
+  // Shadow contact (Mic + motion + shadow): a fingertip touching the desk meets its own
+  // shadow, a hovering one has a gap. Each frame, a patch around each fingertip is read from a
   // downscaled grayscale grab (where detection runs), normalized against the empty desk, and
   // the shadow found in it (src/shadow.ts). Lengths are in units of the finger's MCP-PIP
   // distance in the frame, so they don't change with distance to the camera.
@@ -166,18 +166,24 @@ export const CONFIG = {
     // Mean darkening of the shadow found; below it, the shadow is too faint to judge (the
     // Shadow check warns, calibration rejects the frame, and no contact is read).
     minShadowContrast: 0.18,
+    // Shadow confidence, 0-1: the shadow region's contrast mapped linearly from
+    // confidence[0] (0) to confidence[1] (1); 0 with no region found.
+    confidence: [0.1, 0.3] as [number, number],
+    // Fused mode: on an onset, each striking finger's score is multiplied by 1 + c × cue,
+    // c its median shadow confidence over the stroke's frames, cue +boost if the gap ended
+    // near zero (calibrated: under the threshold) or shrank by at least minShrink over the
+    // stroke, -penalty if a clear gap persisted (calibrated: threshold + hoverMargin or more;
+    // uncalibrated: minHoverGap or more) without shrinking, else 0. A strike whose factor
+    // falls under vetoFactor is dropped as hovering. With no shadow seen, c is 0 and the
+    // factor 1: plain Mic + motion. The guess votes on frames up to the onset (no waiting);
+    // the check on frames up to stopSlackMs after its stop.
+    vote: { boost: 0.5, penalty: 1, vetoFactor: 0.4, minShrink: 0.05, hoverMargin: 0.1, minHoverGap: 0.6, stopSlackMs: 50 },
     // The empty desk: frames with no hand, blended in at most every intervalMs.
     background: { intervalMs: 500, blend: 0.3 },
     hysteresis: 0.03, // contact ends only above threshold + this
-    // On an onset, a finger not yet in contact still plays if its gap in the latest frame is
-    // under approachGap and at least minShrink smaller than approachMs before (it is coming
-    // down). Frames older than maxAgeMs aren't judged.
-    approachGap: 0.6,
-    approachMs: 100,
-    minShrink: 0.03,
-    maxAgeMs: 150,
-    // Visual contact confirms a played finger (and scores the check) if it overlaps this
-    // window around onset + taps.videoLagMs, ms.
+    // Test mode's hover judge: a played finger hovered if, from confirmWindowMs[0] to [1]
+    // around onset + taps.videoLagMs, it made no contact (calibrated) or every confident
+    // frame showed a gap of vote.minHoverGap or more (uncalibrated).
     confirmWindowMs: [-100, 150] as [number, number],
     keepMs: 2000, // contacts and gaps kept this long
     // "Calibrate shadow": hands off (background), then rest / lift twice, each step showing

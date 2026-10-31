@@ -35,8 +35,10 @@ export type ToBoard = (p: Pt) => Pt | null;
 // guess, where a still-moving stroke should land (the onset stands in for the stop, whose
 // frames haven't arrived yet). why: null for a strike, else the reason with the measured
 // value. score ranks strikes for chords: weighted depth for the guess, speed for the check.
+// startT: when the stroke started (its first frame's time).
 export type FingerPick = {
   finger: string;
+  startT: number;
   depth: number;
   speed: number;
   at: Sample;
@@ -103,11 +105,11 @@ function judge(finger: string, start: Sample, at: Sample, stopped: boolean, toBo
         : speed < minStrikeSpeed
           ? `too slow (${speed.toFixed(2)}/s${est} < ${minStrikeSpeed}/s)`
           : null;
-  return { finger, depth, speed, at, stopped, why, score: 0, stopOffset: null };
+  return { finger, startT: start.t, depth, speed, at, stopped, why, score: 0, stopOffset: null };
 }
 
 // Strikes first, best score first; then the rest.
-const ranked = (picks: FingerPick[]) =>
+export const ranked = (picks: FingerPick[]) =>
   picks.sort((a, b) => Number(a.why !== null) - Number(b.why !== null) || b.score - a.score);
 
 export class FingerHistory {

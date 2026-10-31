@@ -1,6 +1,6 @@
-// Shadow sampling for Mic + shadow: how far each fingertip is from its shadow, read from the
-// frame its landmarks came from. Runs where detection runs (the worker or the main thread),
-// so it has no DOM dependencies; its background estimate lives here too.
+// Shadow sampling for Mic + motion + shadow: how far each fingertip is from its shadow,
+// read from the frame its landmarks came from. Runs where detection runs (the worker or the
+// main thread), so it has no DOM dependencies; its background estimate lives here too.
 import { CONFIG } from "./config.ts";
 import type { Pt } from "./geometry.ts";
 import type { HandFrame } from "./hand-detector.ts";

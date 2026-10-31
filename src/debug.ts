@@ -4,7 +4,7 @@ import type { DetectorInfo } from "./hand-detector.ts";
 import type { CameraInfo, CameraProbe } from "./main.ts";
 import type { MicInfo, MicLevel, Onset } from "./mic.ts";
 import type { Edge } from "./orientation.ts";
-import { dirDegrees, type ShadowFit, type ShadowState } from "./shadow-contact.ts";
+import { dirDegrees, type ShadowFit, type ShadowState, type ShadowVote } from "./shadow-contact.ts";
 import { loadSmoothing, saveSmoothing, setSmoothing, SMOOTHING_DEFAULTS, type Jitter } from "./smoothing.ts";
 import { FINGER_NAMES, fingerKey, handOf } from "./taps.ts";
 import type { Correction, TapCorrections } from "./tap-correction.ts";
@@ -43,8 +43,6 @@ const minCutoffInput = el("min-cutoff") as HTMLInputElement;
 const betaInput = el("beta") as HTMLInputElement;
 const jitterEl = el("jitter");
 const shadowEl = el("shadow");
-const shadowLatencyEl = el("shadow-latency");
-const recentShadow: number[] = [];
 
 // What was played at onset time from the best-guess fingers. waitMs: onset to the main
 // thread getting the message; handlerMs: from then to the trigger. rejected: each other
@@ -120,10 +118,10 @@ export function logIgnored(n: number, reason: string) {
 
 // Hybrid mode: an onset with no striking finger landing on the board; rejected says why
 // each moving one fell short or can't play.
-export function logRejected(n: number, o: Onset, rejected: string[]) {
+export function logRejected(n: number, o: Onset, rejected: string[]): HTMLLIElement {
   const why = rejected.length ? rejected.join("; ") : "no finger moving down";
   const rise = `rise ${(20 * Math.log10(o.rise)).toFixed(0)} dB`;
-  appendLog(`#${n} rejected (no strike on the board: ${why}) · ${fmtDb(o.level)} vs threshold ${fmtDb(o.threshold)}, ${rise}`);
+  return appendLog(`#${n} rejected (no strike on the board: ${why}) · ${fmtDb(o.level)} vs threshold ${fmtDb(o.threshold)}, ${rise}`);
 }
 
 // Test mode: a finger came down and stopped on the board but no onset was accepted
@@ -186,9 +184,8 @@ export function logPlayed(t: PlayedTap): HTMLLIElement {
 // Session accuracy of the instant guess and the stop-based check, one line per finger
 // setting, the current one first; target null when the test isn't running.
 // byMode: the same totalled per tap mode, shown first as a side-by-side table (Mic + motion
-// and Mic + shadow always, other modes once tested): accuracy, hover triggers (played notes
-// whose finger the shadow saw no contact for; "–" without a shadow calibration), and median
-// tap-to-sound.
+// and Mic + motion + shadow always, other modes once tested): accuracy, hover triggers
+// (played notes the shadow judged, and how many of those hovered), and median tap-to-sound.
 export function showTest(
   target: string | null,
   setting: string,
@@ -216,7 +213,8 @@ export function showTest(
     }
   };
   row(["mode", "taps", "guess", "check", "hover trig.", "tap→sound"], true);
-  const modes = ["Mic + motion", "Mic + shadow", ...[...byMode.keys()].filter((m) => !m.startsWith("Mic + "))];
+  const fixed = ["Mic + motion", "Mic + motion + shadow"];
+  const modes = [...fixed, ...[...byMode.keys()].filter((m) => !fixed.includes(m))];
   for (const mode of modes) {
     const s = byMode.get(mode);
     if (!s) {
@@ -382,65 +380,41 @@ export function showJitter(jitter: Jitter[]) {
   jitterEl.textContent = `px RMS over ${secs} s, filtered (raw)\n${lines.join("\n")}`;
 }
 
-// Mic + shadow: the fit, then each measured finger's gap (MCP-PIP units), shadow contrast
+// The shadow: the fit, then each measured finger's gap (MCP-PIP units), contrast, confidence
 // and contact state, and the per-frame sampling time where detection runs.
 export function showShadow(fit: ShadowFit | null, fingers: ShadowState[], ms: number | null) {
   const head = fit
     ? `dir ${dirDegrees(fit.dir).toFixed(0)}° ±${CONFIG.shadow.sectorDeg}° · contact < ${fit.threshold.toFixed(2)} · ` +
       `d′ ${fit.dPrime.toFixed(1)} (resting ${fit.rest.median.toFixed(2)}±${fit.rest.sigma.toFixed(2)}, ` +
       `lifted ${fit.lift.median.toFixed(2)}±${fit.lift.sigma.toFixed(2)})`
-    : "not calibrated";
+    : "not calibrated (fused mode uses relative cues)";
   const timing = ms === null ? "" : ` · ${ms.toFixed(1)} ms/frame`;
   const lines = [...fingers]
     .sort((a, b) => a.finger.localeCompare(b.finger))
     .map(
       (f) =>
-        `${f.finger}: ${f.gap === null ? "no shadow" : f.gap.toFixed(2)} · contrast ${f.contrast.toFixed(2)}` +
+        `${f.finger}: ${f.gap === null ? "no shadow" : f.gap.toFixed(2)} · contrast ${f.contrast.toFixed(2)} · ` +
+        `conf ${f.confidence.toFixed(2)}` +
         (f.contact ? " · CONTACT" : ""),
     );
   shadowEl.textContent = [head + timing, ...lines].join("\n");
 }
 
-// One finger played by a shadow onset: how (in contact, or approaching with its gap
-// shrinking) and latency (null if silent, with why).
-export type ShadowNote = {
-  finger: string;
-  zone: string | null;
-  how: string;
-  latencyMs: number | null;
-  why: string | null;
-};
-
-// At the onset: what played right away, and why each other allowed finger didn't.
-export function logShadowTap(n: number, notes: ShadowNote[], rejected: string[]): HTMLLIElement {
-  for (const x of notes) {
-    if (x.latencyMs === null) continue;
-    pushRecent(recentShadow, x.latencyMs);
-    shadowLatencyEl.textContent =
-      `${x.latencyMs.toFixed(0)} ms · median ${median(recentShadow).toFixed(0)} ms (last ${recentShadow.length})`;
-    break;
-  }
-  fingerEl.textContent = notes.length ? notes.map((x) => where(x.finger, x.zone)).join(" + ") : "no finger down";
-  const played = notes.map((x) => {
-    const sound = x.latencyMs !== null ? `${x.latencyMs.toFixed(0)} ms` : `silent${x.why ? ` (${x.why})` : ""}`;
-    return `${where(x.finger, x.zone)} (${x.how}) · ${sound}`;
-  });
-  const what = notes.length ? played.join(" + ") : "nothing in contact or coming down";
-  return appendLog(`#${n} shadow ${what}${notPlayed(rejected)}`);
+// Fused mode: each striking finger's shadow vote, appended to its tap's log line (the
+// guess's at onset, the check's when it resolves).
+export function noteShadowVotes(line: HTMLLIElement, label: string, votes: ShadowVote[]) {
+  if (votes.length === 0) return;
+  const fmt = (v: number | null) => (v === null ? "–" : v.toFixed(2));
+  const parts = votes.map(
+    (v) =>
+      `${v.finger} conf ${v.confidence.toFixed(2)}` +
+      (v.end !== null ? `, gap ${fmt(v.from)}→${fmt(v.end)}` : "") +
+      ` (${v.why}) ×${v.factor.toFixed(2)}`,
+  );
+  line.textContent += ` · ${label}: ${parts.join("; ")}`;
 }
 
-// Once frames for the onset are in: whether each played finger made visual contact
-// (confirmed) or stayed hovering, and fingers that made contact without playing.
-export function confirmShadowTap(line: HTMLLIElement, confirmed: string[], hovering: string[], unplayed: string[]) {
-  const parts = [
-    ...confirmed.map((f) => `${f} contact ✓`),
-    ...hovering.map((f) => `${f} hovering ✗`),
-    ...unplayed.map((f) => `${f} touched, didn't play`),
-  ];
-  line.textContent += parts.length ? ` · seen: ${parts.join(", ")}` : " · seen: no contact";
-}
-
-// Mic + motion with a shadow calibration: played fingers the shadow saw hovering.
+// Test mode: played fingers the shadow saw hovering.
 export function noteHovering(line: HTMLLIElement, hovering: string[]) {
   if (hovering.length) line.textContent += ` · shadow: ${hovering.join(" + ")} hovering`;
 }

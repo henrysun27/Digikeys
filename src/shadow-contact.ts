@@ -1,4 +1,4 @@
-// Mic + shadow on the main thread: the guided calibration (light direction and contact
+// The shadow on the main thread: the guided calibration (light direction and contact
 // threshold), and each finger's contacts from the per-frame gaps (shadow.ts).
 import { CONFIG } from "./config.ts";
 import type { Pt } from "./geometry.ts";
@@ -64,18 +64,21 @@ export class ShadowCalibration {
   }));
   dir: Pt | null = null;
 
-  // Index fingertip samples of frame t (any number of hands), with the time of the latest
+  // Index fingertip samples of frame t (any number of hands), whether any hand was detected
+  // (the background is only captured from frames without), and the time of the latest
   // background capture. null while going; the result once done.
-  add(t: number, readings: CalibrationSample[], backgroundT: number | null): CalibrationResult | null {
+  add(t: number, readings: CalibrationSample[], hands: boolean, backgroundT: number | null): CalibrationResult | null {
     const { settleMs, stepMs, minSamples } = CONFIG.shadow.calibration;
-    this.stepStart ??= t;
     this.lastT = t;
-    this.handsInView = readings.length > 0;
-    const age = t - this.stepStart;
+    this.handsInView = hands;
     const kind = STEPS[this.step].kind;
+    // A rest or lift step starts once an index fingertip is in view.
+    if (kind !== "background" && this.stepStart === null && readings.length === 0) return null;
+    this.stepStart ??= t;
+    const age = t - this.stepStart;
     if (kind === "background") {
       if (backgroundT === null || backgroundT < this.stepStart + settleMs) return null;
-      return this.next(t);
+      return this.next();
     }
     if (age >= settleMs) {
       const s = this.steps[this.step - 1];
@@ -104,12 +107,13 @@ export class ShadowCalibration {
       this.dir = { x: shift.x / len, y: shift.y / len };
     }
     if (this.step === STEPS.length - 1) return this.fit();
-    return this.next(t);
+    return this.next();
   }
 
-  private next(t: number): null {
+  // Every step after the background is a rest or lift step, which starts on fingertips.
+  private next(): null {
     this.step++;
-    this.stepStart = t;
+    this.stepStart = null;
     return null;
   }
 
@@ -141,9 +145,9 @@ export class ShadowCalibration {
     const age = this.stepStart === null ? 0 : this.lastT - this.stepStart;
     const base = { step: this.step + 1, steps: STEPS.length, text: prompt };
     if (kind === "background") {
-      const detail = this.handsInView || age < settleMs ? "capturing the empty desk…" : "capturing…";
-      return { ...base, detail: this.handsInView ? "hands still in view" : detail, progress: null };
+      return { ...base, detail: this.handsInView ? "hands still in view" : "capturing the empty desk…", progress: null };
     }
+    if (this.stepStart === null) return { ...base, detail: "waiting for index fingertips in view…", progress: null };
     if (age < settleMs) return { ...base, detail: "get ready…", progress: null };
     const s = this.steps[this.step - 1];
     const rejected = s.noShadow + s.weak ? `, ${s.noShadow + s.weak} rejected` : "";
@@ -174,34 +178,51 @@ export function saveShadowFit(f: ShadowFit) {
   }
 }
 
-// One finger's frame. gap: null with no shadow found, or one under minShadowContrast. tip:
-// the filtered fingertip (cam coords); toShadow: cam-coord offset from it to the shadow tip.
+// One finger's frame. gap: null with no shadow region found; contrast: the region's (see
+// ShadowReading). tip: the filtered fingertip (cam coords); toShadow: cam-coord offset from
+// it to the shadow tip.
 export type FingerShadow = { finger: string; t: number; gap: number | null; contrast: number; tip: Pt; toShadow: Pt | null };
-export type ShadowState = FingerShadow & { contact: boolean };
+// contact: only with a shadow calibration (its threshold), else always false.
+export type ShadowState = FingerShadow & { contact: boolean; confidence: number };
 // From the first frame under the threshold to the first over threshold + hysteresis, with
-// no shadow, or without the finger. at: the filtered fingertip on entry (cam coords). used:
-// an onset played it (or played the finger as it came down onto it).
-export type Contact = { start: number; end: number | null; at: Pt; used: boolean };
+// no shadow, or without the finger. at: the filtered fingertip on entry (cam coords).
+export type Contact = { start: number; end: number | null; at: Pt };
+
+// Shadow confidence 0-1 of one frame: none without a region, else its contrast mapped
+// from CONFIG.shadow.confidence[0] to [1].
+export function confidence(gap: number | null, contrast: number): number {
+  const [lo, hi] = CONFIG.shadow.confidence;
+  return gap === null ? 0 : Math.max(0, Math.min(1, (contrast - lo) / (hi - lo)));
+}
+
+type Frame = { t: number; gap: number | null; contrast: number; confidence: number };
 
 export class ShadowContacts {
   private states = new Map<string, ShadowState>();
   private contacts = new Map<string, Contact[]>();
-  private gaps = new Map<string, { t: number; gap: number | null }[]>();
+  private frames = new Map<string, Frame[]>();
 
   // Every finger measured in frame t; fingers measured before but not now lose contact.
-  update(t: number, frame: FingerShadow[], threshold: number) {
-    const { hysteresis, keepMs } = CONFIG.shadow;
+  // threshold: the calibrated contact threshold, null without one (no contacts then). A
+  // shadow under minShadowContrast never counts as contact.
+  update(t: number, frame: FingerShadow[], threshold: number | null) {
+    const { hysteresis, keepMs, minShadowContrast } = CONFIG.shadow;
     const seen = new Set<string>();
     for (const f of frame) {
       seen.add(f.finger);
       const was = this.states.get(f.finger)?.contact ?? false;
-      const contact = f.gap !== null && f.gap < threshold + (was ? hysteresis : 0);
-      this.states.set(f.finger, { ...f, contact });
+      const contact =
+        threshold !== null &&
+        f.gap !== null &&
+        f.contrast >= minShadowContrast &&
+        f.gap < threshold + (was ? hysteresis : 0);
+      const c = confidence(f.gap, f.contrast);
+      this.states.set(f.finger, { ...f, contact, confidence: c });
       if (contact !== was) this.mark(f.finger, t, contact ? f.tip : null);
-      let gaps = this.gaps.get(f.finger);
-      if (!gaps) this.gaps.set(f.finger, (gaps = []));
-      gaps.push({ t, gap: f.gap });
-      while (gaps.length && gaps[0].t < t - keepMs) gaps.shift();
+      let frames = this.frames.get(f.finger);
+      if (!frames) this.frames.set(f.finger, (frames = []));
+      frames.push({ t, gap: f.gap, contrast: f.contrast, confidence: c });
+      while (frames.length && frames[0].t < t - keepMs) frames.shift();
     }
     for (const [finger, s] of this.states) {
       if (seen.has(finger)) continue;
@@ -212,20 +233,22 @@ export class ShadowContacts {
       while (list.length && list[0].end !== null && list[0].end < t - keepMs) list.shift();
       if (list.length === 0) this.contacts.delete(finger);
     }
-    for (const [finger, gaps] of this.gaps) if (!gaps.length || gaps[gaps.length - 1].t < t - keepMs) this.gaps.delete(finger);
+    for (const [finger, frames] of this.frames) {
+      if (!frames.length || frames[frames.length - 1].t < t - keepMs) this.frames.delete(finger);
+    }
   }
 
   // A contact starting at `at`, or (at null) the open one ending.
   private mark(finger: string, t: number, at: Pt | null) {
     let list = this.contacts.get(finger);
     if (!list) this.contacts.set(finger, (list = []));
-    if (at) list.push({ start: t, end: null, at, used: false });
+    if (at) list.push({ start: t, end: null, at });
     else if (list.length && list[list.length - 1].end === null) list[list.length - 1].end = t;
   }
 
   // Forgets a hand's fingers, when its ID passes to a different hand.
   dropHand(hand: string) {
-    for (const m of [this.states, this.contacts, this.gaps]) {
+    for (const m of [this.states, this.contacts, this.frames]) {
       for (const finger of m.keys()) if (handOf(finger) === hand) m.delete(finger);
     }
   }
@@ -233,7 +256,7 @@ export class ShadowContacts {
   clear() {
     this.states.clear();
     this.contacts.clear();
-    this.gaps.clear();
+    this.frames.clear();
   }
 
   // The latest frame's fingers.
@@ -241,42 +264,65 @@ export class ShadowContacts {
     return [...this.states.values()];
   }
 
-  // The finger's contact still going on, if any.
-  open(finger: string): Contact | null {
-    const last = this.contacts.get(finger)?.at(-1);
-    return last && last.end === null ? last : null;
-  }
-
   // Its first contact overlapping from-to, if any.
   during(finger: string, from: number, to: number): Contact | null {
     return this.contacts.get(finger)?.find((c) => c.start <= to && (c.end === null || c.end >= from)) ?? null;
   }
 
-  // Fingers with gaps in the last keepMs.
-  measured(): string[] {
-    return [...this.gaps.keys()];
+  // Its frames from `from` to `to`, oldest first.
+  between(finger: string, from: number, to: number): Frame[] {
+    return (this.frames.get(finger) ?? []).filter((f) => f.t >= from && f.t <= to);
   }
+}
 
-  // The latest gap and the largest within approachMs before it, both from frames with a
-  // shadow; null if the latest frame has none.
-  trend(finger: string): { gap: number; before: number | null } | null {
-    const gaps = this.gaps.get(finger);
-    const last = gaps?.at(-1);
-    if (!gaps || !last || last.gap === null) return null;
-    let before: number | null = null;
-    for (const g of gaps) {
-      if (g === last || g.gap === null || g.t < last.t - CONFIG.shadow.approachMs) continue;
-      before = Math.max(before ?? -Infinity, g.gap);
-    }
-    return { gap: last.gap, before };
-  }
+// A finger's shadow vote on a strike (CONFIG.shadow.vote): its frames from the stroke's
+// start to `to`. confidence: the median over those frames (0 for frames without a shadow
+// region). from, end: the largest gap before the last confident frame and that frame's gap.
+// cue: +boost, -penalty or 0; factor: 1 + confidence × cue. why: what the cue was.
+export type ShadowVote = {
+  finger: string;
+  confidence: number;
+  from: number | null;
+  end: number | null;
+  cue: number;
+  factor: number;
+  why: string;
+};
 
-  // A finger's smallest gap measured from `from` to `to`: undefined with no frames there,
-  // null if none of them showed a shadow.
-  minGap(finger: string, from: number, to: number): number | null | undefined {
-    const xs = (this.gaps.get(finger) ?? []).filter((g) => g.t >= from && g.t <= to);
-    if (xs.length === 0) return undefined;
-    const found = xs.flatMap((g) => (g.gap === null ? [] : [g.gap]));
-    return found.length ? Math.min(...found) : null;
-  }
+export function shadowVote(
+  contacts: ShadowContacts,
+  fit: ShadowFit | null,
+  finger: string,
+  from: number,
+  to: number,
+): ShadowVote {
+  const { boost, penalty, minShrink, hoverMargin, minHoverGap } = CONFIG.shadow.vote;
+  const frames = contacts.between(finger, from, to);
+  const neutral = (why: string, c = 0): ShadowVote => ({ finger, confidence: c, from: null, end: null, cue: 0, factor: 1, why });
+  if (frames.length === 0) return neutral("no shadow frames");
+  const c = median(frames.map((f) => f.confidence));
+  const sure = frames.filter((f) => f.confidence > 0 && f.gap !== null);
+  if (c === 0 || sure.length === 0) return neutral("no clear shadow");
+  const end = sure[sure.length - 1].gap!;
+  const before = sure.slice(0, -1).map((f) => f.gap!);
+  const start = before.length ? Math.max(...before) : null;
+  const shrank = start !== null && start - end >= minShrink;
+  const near = fit !== null && end < fit.threshold;
+  const clear = fit !== null ? end >= fit.threshold + hoverMargin : end >= minHoverGap;
+  const cue = near || shrank ? boost : clear ? -penalty : 0;
+  const why = near ? "gap near zero" : shrank ? "gap shrank" : clear ? "clear gap persists" : "no cue";
+  return { finger, confidence: c, from: start, end, cue, factor: 1 + c * cue, why };
+}
+
+// Test mode's hover judge for a played finger, over from-to: true if it hovered, false if
+// it touched, null if the shadow can't tell (no frame with a shadow of minShadowContrast,
+// the contrast contact needs). Calibrated: hovered unless it made contact. Uncalibrated:
+// hovered if every such frame showed a clear gap.
+export function hovered(contacts: ShadowContacts, fit: ShadowFit | null, finger: string, from: number, to: number): boolean | null {
+  const sure = contacts
+    .between(finger, from, to)
+    .filter((f) => f.gap !== null && f.contrast >= CONFIG.shadow.minShadowContrast);
+  if (sure.length === 0) return null;
+  if (fit) return contacts.during(finger, from, to) === null;
+  return sure.every((f) => f.gap! >= CONFIG.shadow.vote.minHoverGap);
 }

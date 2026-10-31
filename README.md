@@ -454,3 +454,40 @@ with `latencyHint: "interactive"` and `lookAhead: 0`, and notes trigger at
     calibration recovered a 30° light direction as 31° with d′ 8.8, and failed a lift that
     barely moved the gap (d′ 1.68). Tap-to-sound on camera is not measured yet; the onset
     path is the same as Mic + motion's.
+- [x] "Mic + motion + shadow" (`CONFIG.taps.mode: "fused"`) replaces Mic + shadow. The mic
+      onset sets the timing and Mic + motion's strike detection runs unchanged; the shadow
+      only adds a vote per striking finger. Mic + motion stays the default.
+  - Each frame the sampler measures every allowed finger's gap and a shadow confidence:
+    0 if no shadow region was found, else the region's contrast mapped linearly from 0.1
+    (0) to 0.3 (1) (`CONFIG.shadow.confidence`).
+  - On an onset, each strike's score is multiplied by 1 + c × cue, where c is its median
+    confidence over the stroke's frames (`CONFIG.shadow.vote`):
+    - cue +0.5 if the gap ended near zero (calibrated: under the threshold) or shrank by
+      at least 0.05 over the stroke;
+    - cue -1 if a clear gap persisted without shrinking (calibrated: threshold + 0.1;
+      uncalibrated: 0.6 units or more);
+    - else 0.
+  - A strike whose factor falls under 0.4 is dropped as "shadow says hovering"; only a
+    confident shadow (c ≥ 0.6) can do that. The chord ratio and ranking then run on the
+    adjusted scores.
+  - With no visible shadow c is 0 and every factor exactly 1, so the mode is plain Mic +
+    motion.
+  - Calibration is optional: without it the vote uses the relative cues (shrinking over the
+    stroke, a large gap that doesn't shrink), searching all around the fingertip.
+  - The guess votes only on frames already in, so notes play exactly as fast as in Mic +
+    motion (two votes take 1.4 µs). The stop check votes again on frames up to 50 ms past
+    each stop.
+  - The tap log lists each finger's confidence, gap start → end, cue and factor, for the
+    guess and the check.
+  - Test mode compares Mic + motion and Mic + motion + shadow side by side: accuracy, hover
+    false triggers and median tap-to-sound. A played finger is a hover false trigger if
+    the shadow saw no contact for it around onset + `videoLagMs` (calibrated), or a gap of
+    0.6+ units in every frame with a shadow of contrast 0.18+ (uncalibrated). Fingers it
+    can't see aren't judged. For this, Mic + motion samples shadows while Test runs (about
+    1-2 ms per frame where detection runs), and only then.
+  - Calibration rest/lift steps now start their clock once an index fingertip is in view,
+    so moving the hands back after "take your hands off the desk" doesn't eat the step.
+  - Checked in Node: no frames, no shadow or a contrast under 0.1 give exactly ×1; a gap
+    shrinking 0.9 → 0.4 at full confidence gives ×1.5; a steady 0.8 gap gives ×0 (vetoed),
+    ×0.75 at a 0.15 contrast (kept). Calibrated: ending under the threshold ×1.5, a steady
+    gap above threshold + margin ×0. Not yet tested on camera.

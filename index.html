@@ -31,7 +31,7 @@
         <select id="tap-mode" aria-label="What triggers a tap">
           <option value="hybrid">Mic + motion</option>
           <option value="vision">Vision only</option>
-          <option value="shadow">Mic + shadow</option>
+          <option value="fused">Mic + motion + shadow</option>
         </select>
         <select id="fingers" aria-label="Fingers that can tap">
           <option value="index">Index fingers only</option>
@@ -45,8 +45,8 @@
         <button id="test" type="button">Test</button>
         <button id="cal-taps" type="button">Calibrate taps</button>
         <button id="clear-correction" type="button" disabled>Clear correction</button>
-        <button id="cal-shadow" type="button" title="Learn where fingertip shadows fall, for Mic + shadow">Calibrate shadow</button>
-        <button id="shadow-check-btn" type="button" title="See each index fingertip's shadow as Mic + shadow sees it">Shadow check</button>
+        <button id="cal-shadow" type="button" title="Optional: learn where fingertip shadows fall and the contact gap, for Mic + motion + shadow">Calibrate shadow</button>
+        <button id="shadow-check-btn" type="button" title="See each index fingertip's shadow as the shadow vote sees it">Shadow check</button>
       </div>
       <div id="shadow-check" hidden>
         <div id="shadow-check-warning"></div>
@@ -80,8 +80,6 @@
           <dd id="median-latency">–</dd>
           <dt>Vision tap → sound</dt>
           <dd id="vision-latency">–</dd>
-          <dt>Shadow tap → sound</dt>
-          <dd id="shadow-latency">–</dd>
           <dt>Stop offset</dt>
           <dd id="stop-offset">–</dd>
           <dt>Median stop</dt>
