@@ -208,12 +208,49 @@
         <button id="p-mic" type="button" class="primary">Enable mic</button>
         <span class="stat" id="stat-mic" title="Microphone">Mic off</span>
         <span id="p-instrument" class="instrument-name" title="Current instrument"></span>
+        <span id="p-tapcal" class="notice" aria-live="polite" hidden></span>
         <div id="toasts" aria-live="polite"></div>
         <div id="status-corner" aria-live="polite">
           <span class="stat" id="stat-latency" title="Median tap-to-sound latency">– ms</span>
           <span class="stat" id="stat-hands" title="Hands detected">0 hands</span>
         </div>
         <button id="p-edit-bar" type="button" class="ghost" title="Back to the setup steps">Setup</button>
+        <div class="settings">
+          <button id="p-settings" type="button" class="ghost icon" title="Settings" aria-label="Settings" aria-haspopup="dialog" aria-expanded="false" aria-controls="settings-pop">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M19.14 12.94a7.07 7.07 0 0 0 0-1.88l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.03 7.03 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2.4h-3.84a.5.5 0 0 0-.49.42l-.36 2.54c-.59.24-1.13.56-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.67 8.88a.5.5 0 0 0 .12.64l2.03 1.58a7.07 7.07 0 0 0 0 1.88l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.39.3.6.22l2.39-.96c.5.38 1.04.7 1.63.94l.36 2.54c.04.24.25.42.49.42h3.84c.24 0 .45-.18.49-.42l.36-2.54c.59-.24 1.13-.56 1.63-.94l2.39.96c.22.08.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.6a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2Z"/></svg>
+          </button>
+          <div id="settings-pop" role="dialog" aria-label="Settings" hidden>
+            <h2>Settings</h2>
+            <div class="field">
+              <span class="label" id="s-fingers-label">Fingers</span>
+              <div class="seg" role="radiogroup" aria-labelledby="s-fingers-label">
+                <label><input type="radio" name="s-fingers" value="index" /><span>Index only</span></label>
+                <label><input type="radio" name="s-fingers" value="all" /><span>All fingers</span></label>
+              </div>
+            </div>
+            <label class="field">
+              <span class="label">Detection</span>
+              <select id="s-tap-mode">
+                <option value="hybrid">Mic + motion</option>
+                <option value="fused">Mic + motion + shadow</option>
+                <option value="vision">Vision only</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="label">Instrument preset</span>
+              <select id="s-layout"></select>
+            </label>
+            <div class="field">
+              <span class="label">Smoothing <button id="s-smoothing-reset" type="button" class="link">Defaults</button></span>
+              <label class="slider"><span>Min cutoff</span><input id="s-min-cutoff" type="range" /><output id="s-min-cutoff-value"></output></label>
+              <label class="slider"><span>Beta</span><input id="s-beta" type="range" /><output id="s-beta-value"></output></label>
+            </div>
+            <div class="field">
+              <button id="s-cal-taps" type="button" class="wide">Calibrate taps</button>
+              <p class="help">Tap the center of each highlighted key with an index finger to correct for camera angle.</p>
+            </div>
+          </div>
+        </div>
       </footer>
     </div>
     <script type="module" src="/src/main.ts"></script>

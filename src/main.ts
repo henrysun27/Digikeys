@@ -2028,6 +2028,12 @@ const RIPPLE_MS = 700;
 const ECHO_MS = 110;
 const FONT = "Inter, system-ui, sans-serif";
 
+// Canvas pixels per CSS pixel, for sizes given in screen pixels. The CSS width comes from a
+// ResizeObserver, so drawing never reads layout (no forced reflow mid-frame).
+let canvasCssWidth = 0;
+new ResizeObserver(([e]) => (canvasCssWidth = e.contentRect.width)).observe(canvas);
+const pxScale = () => canvas.width / Math.max(1, canvasCssWidth || canvas.width);
+
 // Restricts drawing to outside every object pad, so keys under a pad are hidden just as
 // hit-testing hides them. One even-odd clip per pad: clips intersect, so overlapping pads
 // stay covered.
@@ -2051,18 +2057,25 @@ function glowOf(id: string, now: number): number {
   return Math.min(1, t / ATTACK_MS) * Math.exp(-t / DECAY_MS) * (1 - t / HIT_MS);
 }
 
-// The current path, lit by a hit: an accent bloom that rings out with the envelope, and a
-// brief white strike on top (glow^4 falls away in the first ~100 ms).
+// The current path, lit by a hit: an accent fill that rings out with the envelope, a
+// brief white strike on top (glow^4 falls away in the first ~100 ms), and a halo of two
+// wide translucent strokes. No shadowBlur: a canvas blur costs milliseconds per zone at
+// camera resolution, on the main thread that also handles the mic's onsets.
 function fillGlow(glow: number) {
   if (glow <= 0) return;
+  const s = pxScale();
   ctx.save();
-  ctx.shadowColor = ACCENT;
-  ctx.shadowBlur = 40 * glow;
   ctx.fillStyle = `rgba(${ACCENT_RGB}, ${0.85 * glow})`;
   ctx.fill();
-  ctx.shadowBlur = 0;
   ctx.fillStyle = `rgba(255, 255, 255, ${0.5 * glow ** 4})`;
   ctx.fill();
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = `rgba(${ACCENT_RGB}, ${0.22 * glow})`;
+  ctx.lineWidth = 16 * glow * s;
+  ctx.stroke();
+  ctx.strokeStyle = `rgba(${ACCENT_RGB}, ${0.45 * glow})`;
+  ctx.lineWidth = 7 * glow * s;
+  ctx.stroke();
   ctx.restore();
 }
 
@@ -2129,18 +2142,11 @@ function drawLayoutPlay(active: Set<string>, now: number) {
     const xs = outline.map((p) => p.x);
     const ys = outline.map((p) => p.y);
     const extent = Math.min(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+    const img = labelSprite(zone.label, Math.max(11, Math.min(26, extent * 0.32)), isAccidental(zone));
     // The struck key's label pops, then settles with the ring-out.
-    const size = Math.max(11, Math.min(26, extent * 0.32)) * (1 + 0.28 * glowOf(zone.id, now));
-    ctx.save();
-    ctx.font = `600 ${size}px ${FONT}`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    // A tight dark halo keeps labels legible now that the desk shows through.
-    ctx.shadowColor = "rgba(0, 0, 0, 0.8)";
-    ctx.shadowBlur = 3;
-    ctx.fillStyle = isAccidental(zone) ? "rgba(255, 255, 255, 0.9)" : "#ffffff";
-    ctx.fillText(zone.label, c.x, c.y);
-    ctx.restore();
+    const pop = 1 + 0.28 * glowOf(zone.id, now);
+    const [w, h] = [img.width * pop, img.height * pop];
+    ctx.drawImage(img, c.x - w / 2, c.y - h / 2, w, h);
   }
   ctx.restore();
   if (tapCal?.zone) drawCrosshair(boardToScreen(zoneAnchor(layout, tapCal.zone)));
@@ -2162,10 +2168,12 @@ function drawObjectsPlay(active: Set<string>, now: number) {
     ctx.fillStyle = `rgba(${ACCENT_RGB}, ${active.has(zone.id) ? 0.28 : 0.1})`;
     ctx.fill();
     fillGlow(glow);
+    // A soft accent band under a crisp white outline, both widening when struck.
     ctx.lineJoin = "round";
+    ctx.lineWidth = 7 + 10 * glow;
+    ctx.strokeStyle = `rgba(${ACCENT_RGB}, ${0.3 + 0.35 * glow})`;
+    ctx.stroke();
     ctx.lineWidth = 2 + 2.5 * glow;
-    ctx.shadowColor = `rgba(${ACCENT_RGB}, ${0.6 + 0.4 * glow})`;
-    ctx.shadowBlur = 8 + 22 * glow;
     ctx.strokeStyle = `rgba(255, 255, 255, ${0.75 + 0.25 * glow})`;
     ctx.stroke();
     ctx.restore();
@@ -2174,38 +2182,88 @@ function drawObjectsPlay(active: Set<string>, now: number) {
   for (const { c, zone } of pills) drawPill(c, zone.label, soundName(zone.sound));
 }
 
+// Text sprites: canvas text costs ~0.1 ms per call (measured, strokeText), and labels
+// were redrawn every frame, ~1.3 ms per frame for 13 keys on the main thread that also
+// takes the mic's onsets. Each label or pill is drawn once into a detached canvas and
+// copied with drawImage. Cleared when web fonts finish loading, so a fallback font
+// rendered early doesn't stick.
+const sprites = new Map<string, HTMLCanvasElement>();
+const measureCtx = document.createElement("canvas").getContext("2d")!;
+document.fonts?.addEventListener("loadingdone", () => sprites.clear());
+
+// The sprite for key, made on first use: size() measures (only then), paint draws.
+function sprite(key: string, size: () => [number, number], paint: (g: CanvasRenderingContext2D, w: number, h: number) => void) {
+  let img = sprites.get(key);
+  if (!img) {
+    if (sprites.size > 400) sprites.clear();
+    const [w, h] = size();
+    img = document.createElement("canvas");
+    img.width = Math.max(1, Math.ceil(w));
+    img.height = Math.max(1, Math.ceil(h));
+    paint(img.getContext("2d")!, w, h);
+    sprites.set(key, img);
+  }
+  return img;
+}
+
+// A key label: bold white text with a dark outline (not a blurred shadow) for legibility
+// over the desk; sharps slightly dimmer. size: font px, rounded to half pixels.
+function labelSprite(text: string, size: number, sharp: boolean) {
+  const px = Math.round(size * 2) / 2;
+  const font = `600 ${px}px ${FONT}`;
+  const stroke = Math.max(2, px * 0.18);
+  const measure = (): [number, number] => {
+    measureCtx.font = font;
+    return [measureCtx.measureText(text).width + 2 * stroke + 4, px * 1.4 + 2 * stroke];
+  };
+  return sprite(`L|${text}|${px}|${sharp}`, measure, (g, w, h) => {
+    g.font = font;
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.lineJoin = "round";
+    g.lineWidth = stroke;
+    g.strokeStyle = "rgba(0, 0, 0, 0.6)";
+    g.strokeText(text, w / 2, h / 2);
+    g.fillStyle = sharp ? "rgba(255, 255, 255, 0.9)" : "#ffffff";
+    g.fillText(text, w / 2, h / 2);
+  });
+}
+
 // A rounded label: bold name, then a dimmer detail (if any), outlined in rgb (default the
-// accent).
+// accent). Sized in screen pixels: the canvas is drawn at camera resolution and scaled.
 function drawPill(c: Pt, name: string, detail: string, rgb: [number, number, number] | null = null) {
-  // Sized in screen pixels: the canvas is drawn at camera resolution and scaled to fit.
-  const k = canvas.width / Math.max(1, canvas.getBoundingClientRect().width);
-  ctx.save();
-  ctx.textBaseline = "middle";
+  const k = Math.round(pxScale() * 20) / 20;
   const bold = `600 ${13 * k}px ${FONT}`;
   const thin = `400 ${13 * k}px ${FONT}`;
-  ctx.font = bold;
-  const nameW = ctx.measureText(name).width;
-  ctx.font = thin;
   const detailText = detail ? ` · ${detail}` : "";
-  const detailW = ctx.measureText(detailText).width;
-  const w = nameW + detailW + 20 * k;
+  const line = (rgb ? 1.5 : 1) * k;
   const h = 26 * k;
-  const x = c.x - w / 2;
-  ctx.beginPath();
-  ctx.roundRect(x, c.y - h / 2, w, h, h / 2);
-  ctx.fillStyle = "rgba(16, 15, 26, 0.82)";
-  ctx.fill();
-  ctx.strokeStyle = rgb ? `rgb(${rgb.join(", ")})` : `rgba(${ACCENT_RGB}, 0.7)`;
-  ctx.lineWidth = (rgb ? 1.5 : 1) * k;
-  ctx.stroke();
-  ctx.textAlign = "left";
-  ctx.font = bold;
-  ctx.fillStyle = "#ffffff";
-  ctx.fillText(name, x + 10 * k, c.y);
-  ctx.font = thin;
-  ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
-  ctx.fillText(detailText, x + 10 * k + nameW, c.y);
-  ctx.restore();
+  let nameW = 0;
+  let w = 0;
+  const size = (): [number, number] => {
+    measureCtx.font = bold;
+    nameW = measureCtx.measureText(name).width;
+    measureCtx.font = thin;
+    w = nameW + measureCtx.measureText(detailText).width + 20 * k;
+    return [w + 2 * line, h + 2 * line];
+  };
+  const img = sprite(`P|${name}|${detailText}|${rgb?.join(",")}|${k}`, size, (g) => {
+    g.textBaseline = "middle";
+    g.beginPath();
+    g.roundRect(line, line, w, h, h / 2);
+    g.fillStyle = "rgba(16, 15, 26, 0.82)";
+    g.fill();
+    g.strokeStyle = rgb ? `rgb(${rgb.join(", ")})` : `rgba(${ACCENT_RGB}, 0.7)`;
+    g.lineWidth = line;
+    g.stroke();
+    g.font = bold;
+    g.fillStyle = "#ffffff";
+    g.fillText(name, line + 10 * k, line + h / 2);
+    g.font = thin;
+    g.fillStyle = "rgba(255, 255, 255, 0.7)";
+    g.fillText(detailText, line + 10 * k + nameW, line + h / 2);
+  });
+  ctx.drawImage(img, Math.round(c.x - img.width / 2), Math.round(c.y - img.height / 2));
 }
 
 // Fingertips only, as soft dots: the fingers that can tap brighter and larger.
@@ -2232,7 +2290,7 @@ function drawTipsPlay(hands: TrackedHand[]) {
 function drawRipples(now: number) {
   while (ripples.length && now - ripples[0].t > RIPPLE_MS) ripples.shift();
   if (!calibration.boardToCam || !ripples.length) return;
-  const s = canvas.width / Math.max(1, canvas.getBoundingClientRect().width);
+  const s = pxScale();
   const easeOut = (k: number) => 1 - (1 - k) ** 3;
   const ring = (p: Pt, k: number, alpha: number, reach: number, width: number) => {
     if (k <= 0 || k >= 1) return;
@@ -2407,6 +2465,14 @@ ui.initUi(
     scan: scanObjectsBtn,
     clearObjects: clearObjectsBtn,
     mic: micBtn,
+    fingers: fingersSelect,
+    tapMode: tapModeSelect,
+    layout: layoutSelect,
+    minCutoff: document.querySelector<HTMLInputElement>("#min-cutoff")!,
+    beta: document.querySelector<HTMLInputElement>("#beta")!,
+    resetSmoothing: document.querySelector<HTMLButtonElement>("#reset-smoothing")!,
+    calTaps: calTapsBtn,
+    tapCalStatus: tapCalStatusEl,
     startTalk,
     stopTalk,
     build: (request) => {

@@ -4,6 +4,8 @@
 // API logic: its buttons click the Debug controls (or call what main.ts hands it), and
 // their enabled/hidden state is mirrored back, so both views always agree.
 
+import { CONFIG } from "./config.ts";
+
 export type Step = "surface" | "instrument" | "objects";
 export type Model = "sam" | "spark" | "voice";
 export type ToastKind = "info" | "success" | "error";
@@ -23,6 +25,15 @@ export type UiControls = {
   scan: HTMLButtonElement;
   clearObjects: HTMLButtonElement;
   mic: HTMLButtonElement;
+  // Settings popover twins.
+  fingers: HTMLSelectElement;
+  tapMode: HTMLSelectElement;
+  layout: HTMLSelectElement; // presets, plus the last Muse Spark layout
+  minCutoff: HTMLInputElement;
+  beta: HTMLInputElement;
+  resetSmoothing: HTMLButtonElement;
+  calTaps: HTMLButtonElement;
+  tapCalStatus: HTMLElement;
   startTalk: () => void;
   stopTalk: () => void;
   build: (request: string) => void; // generate from free text
@@ -47,7 +58,8 @@ const busy = new Map<Model, number>();
 const tasks = new Map<Model, string>(); // what each working model is doing, for the activity line
 let busyOrder: Model[] = []; // most recently started last
 let busySince = 0;
-let busyTimer: number | null = null;
+let busyFrame: number | null = null; // the activity timer's requestAnimationFrame
+let busyShownAt = 0;
 const dismissed = new Map<string, string>(); // banner id -> text dismissed
 let fit: (() => void) | null = null;
 
@@ -205,8 +217,132 @@ export function initUi(c: UiControls, onModeChange: () => void) {
   });
   if (!welcome.hidden) start.focus();
 
+  initSettings(c);
+
   setDebug(new URLSearchParams(location.search).has("debug"));
   render();
+}
+
+// Settings saved by the popover (and by the Debug selects it drives): fingers, detection
+// mode and the instrument preset. Smoothing and tap correction save themselves.
+type Saved = { fingers?: string; tapMode?: string; preset?: string };
+let presetSelect: HTMLSelectElement | null = null; // the Debug instrument picker, once set up
+
+function loadSettings(): Saved {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(CONFIG.settings.storageKey) ?? "null");
+    return v && typeof v === "object" ? (v as Saved) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveSetting(patch: Saved) {
+  try {
+    localStorage.setItem(CONFIG.settings.storageKey, JSON.stringify({ ...loadSettings(), ...patch }));
+  } catch {}
+}
+
+// Sets a Debug select as the player would, so main.ts's change handler applies it.
+function choose(select: HTMLSelectElement, value: string | undefined, force = false) {
+  if (value === undefined || ![...select.options].some((o) => o.value === value)) return;
+  if (select.value === value && !force) return;
+  select.value = value;
+  select.dispatchEvent(new Event("change"));
+}
+
+// The gear in the control bar: a popover of the Debug view's play settings, each one a
+// twin of its Debug control. Restores the saved settings first.
+function initSettings(c: UiControls) {
+  const saved = loadSettings();
+  choose(c.fingers, saved.fingers);
+  choose(c.tapMode, saved.tapMode);
+  // A saved preset is applied even when it's the default, so it counts as chosen. The
+  // preset is saved by setInstrument from here on, however it was picked.
+  presetSelect = c.layout;
+  choose(c.layout, saved.preset, true);
+  c.fingers.addEventListener("change", () => saveSetting({ fingers: c.fingers.value }));
+  c.tapMode.addEventListener("change", () => saveSetting({ tapMode: c.tapMode.value }));
+
+  const gear = $<HTMLButtonElement>("#p-settings");
+  const pop = $("#settings-pop");
+  const radios = [...document.querySelectorAll<HTMLInputElement>('input[name="s-fingers"]')];
+  const tapMode = $<HTMLSelectElement>("#s-tap-mode");
+  const preset = $<HTMLSelectElement>("#s-layout");
+  const sliders = [
+    { input: $<HTMLInputElement>("#s-min-cutoff"), twin: c.minCutoff, out: $("#s-min-cutoff-value"), unit: " Hz" },
+    { input: $<HTMLInputElement>("#s-beta"), twin: c.beta, out: $("#s-beta-value"), unit: "" },
+  ];
+  const cal = $<HTMLButtonElement>("#s-cal-taps");
+
+  const syncSliders = () => {
+    for (const { input, twin, out, unit } of sliders) {
+      [input.min, input.max, input.step, input.value] = [twin.min, twin.max, twin.step, twin.value];
+      out.textContent = `${twin.value}${unit}`;
+    }
+  };
+  // Read everything from the Debug controls, which stay the source of truth.
+  const sync = () => {
+    for (const r of radios) r.checked = r.value === c.fingers.value;
+    tapMode.value = c.tapMode.value;
+    preset.replaceChildren(...[...c.layout.options].map((o) => new Option(title(o.text), o.value)));
+    preset.value = c.layout.value;
+    syncSliders();
+  };
+  const setOpen = (open: boolean) => {
+    if (open) sync();
+    pop.hidden = !open;
+    gear.setAttribute("aria-expanded", String(open));
+    gear.classList.toggle("on", open);
+  };
+  gear.addEventListener("click", () => setOpen(!!pop.hidden));
+  document.addEventListener("pointerdown", (e) => {
+    if (!pop.hidden && !(e.target instanceof Node && gear.parentElement!.contains(e.target))) setOpen(false);
+  });
+  pop.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    setOpen(false);
+    gear.focus();
+  });
+
+  for (const r of radios) r.addEventListener("change", () => choose(c.fingers, r.value));
+  tapMode.addEventListener("change", () => choose(c.tapMode, tapMode.value));
+  preset.addEventListener("change", () => choose(c.layout, preset.value));
+  for (const { input, twin } of sliders) {
+    input.addEventListener("input", () => {
+      twin.value = input.value;
+      twin.dispatchEvent(new Event("input"));
+      syncSliders();
+    });
+  }
+  $("#s-smoothing-reset").addEventListener("click", () => {
+    c.resetSmoothing.click();
+    syncSliders();
+  });
+
+  // Calibrate taps closes the popover so the stage (and its crosshair) is clear; progress
+  // shows in the control bar, and the result as a toast.
+  mirror(c.calTaps, cal, { text: true, on: (on) => cal.classList.toggle("on", on) });
+  cal.addEventListener("click", () => {
+    c.calTaps.click();
+    if (c.calTaps.classList.contains("on")) setOpen(false);
+  });
+  const notice = $("#p-tapcal");
+  let calibrating = false;
+  const showCal = () => {
+    const on = c.calTaps.classList.contains("on");
+    const text = c.tapCalStatus.textContent ?? "";
+    notice.hidden = !on;
+    notice.textContent = on ? text.replace(/^Calibrating taps: /, "") : "";
+    if (calibrating && !on) {
+      if (text.startsWith("Tap correction saved")) toast("Tap calibration saved", "success");
+      else if (text.startsWith("No tap correction")) toast("No consistent offset found, so no tap correction applied");
+    }
+    calibrating = on;
+  };
+  const watch = { attributes: true, childList: true, characterData: true, subtree: true };
+  new MutationObserver(showCal).observe(c.tapCalStatus, watch);
+  new MutationObserver(showCal).observe(c.calTaps, { attributes: true, attributeFilter: ["class"] });
 }
 
 function render() {
@@ -305,7 +441,10 @@ export function setSurfaceDone(on: boolean) {
 }
 
 // A new instrument is in place (name, and e.g. "13 keys").
+// A preset is remembered for next time; a Muse Spark layout can't be rebuilt from storage,
+// so the last preset stays saved.
 export function setInstrument(name: string, detail: string) {
+  if (presetSelect && /^\d+$/.test(presetSelect.value)) saveSetting({ preset: presetSelect.value });
   instrument = { name: title(name), detail };
   if (chosen === "instrument") chosen = null;
   if (objects !== null) expanded = false;
@@ -349,12 +488,21 @@ export function working(model: Model, on: boolean, task = "") {
   }
   document.querySelector(`#models [data-model="${model}"]`)!.classList.toggle("busy", n > 0);
   const anyBusy = [...busy.values()].some((k) => k > 0);
-  if (anyBusy && busyTimer === null) busyTimer = window.setInterval(renderActivity, 100);
-  if (!anyBusy && busyTimer !== null) {
-    clearInterval(busyTimer);
-    busyTimer = null;
+  if (anyBusy && busyFrame === null) busyFrame = requestAnimationFrame(tickActivity);
+  if (!anyBusy && busyFrame !== null) {
+    cancelAnimationFrame(busyFrame);
+    busyFrame = null;
   }
   renderActivity();
+}
+
+// The activity timer: on animation frames, but its text written at most every 100 ms.
+function tickActivity(now: number) {
+  if (now - busyShownAt >= 100) {
+    busyShownAt = now;
+    renderActivity();
+  }
+  busyFrame = requestAnimationFrame(tickActivity);
 }
 
 // The status corner: median tap-to-sound (null before any), mic state, hands in view.

@@ -58,6 +58,11 @@ export const CONFIG = {
     storageKey: "desk-instrument.smoothing",
     jitterWindowMs: 1000, // the jitter readout: RMS distance from the mean tip over this long
   },
+  // The Play view's Settings popover: fingers, detection mode and instrument preset are
+  // saved here (smoothing and tap correction keep their own keys).
+  settings: {
+    storageKey: "desk-instrument.settings",
+  },
   calibration: {
     storageKey: "desk-instrument.calibration",
     // Both in normalized camera coords. minCornerCross is twice the triangle area any

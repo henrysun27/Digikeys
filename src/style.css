@@ -963,6 +963,219 @@ kbd {
   box-shadow: 0 0 8px var(--ok);
 }
 
+/* Tap calibration progress, in the control bar while it runs. */
+.notice {
+  overflow: hidden;
+  max-width: 40%;
+  padding: 7px var(--space-3);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  animation: rise-in 0.2s var(--ease-out);
+}
+
+.notice[hidden] {
+  display: none;
+}
+
+/* Settings: a gear in the control bar opening a popover above it. */
+.settings {
+  position: relative;
+}
+
+#controlbar .icon {
+  display: grid;
+  place-items: center;
+  width: var(--control-h);
+  padding: 0;
+  color: var(--muted);
+}
+
+#controlbar .icon:hover:enabled,
+#controlbar .icon.on {
+  border-color: var(--line-hover);
+  background: var(--hover);
+  color: var(--text);
+}
+
+#controlbar .icon svg {
+  transition: transform 0.3s var(--ease-out);
+}
+
+#controlbar .icon.on svg {
+  transform: rotate(45deg);
+}
+
+#settings-pop {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 10px);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 320px;
+  padding: var(--space-4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  transform-origin: bottom right;
+  animation: rise-in 0.18s var(--ease-out);
+}
+
+#settings-pop[hidden] {
+  display: none;
+}
+
+#settings-pop h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+#settings-pop .field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#settings-pop .field > .label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* Fingers: a two-way segmented control over radio buttons. */
+#settings-pop .seg {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+#settings-pop .seg label {
+  position: relative;
+}
+
+#settings-pop .seg input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+#settings-pop .seg span {
+  display: block;
+  padding: 6px 0;
+  border-radius: 6px;
+  color: var(--muted);
+  font-weight: 500;
+  text-align: center;
+  transition:
+    background var(--fast),
+    color var(--fast);
+}
+
+#settings-pop .seg input:checked + span {
+  background: var(--accent-fill);
+  color: var(--on-accent);
+}
+
+#settings-pop .seg input:focus-visible + span {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+#settings-pop select {
+  height: 36px;
+  padding: 0 32px 0 var(--space-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position:
+    right 16px center,
+    right 11px center;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  color: var(--text);
+  font: 500 14px var(--font);
+  appearance: none;
+  cursor: pointer;
+}
+
+#settings-pop select:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+#settings-pop option {
+  background: var(--panel-2);
+}
+
+#settings-pop .slider {
+  display: grid;
+  grid-template-columns: 72px 1fr 52px;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+#settings-pop .slider input {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+#settings-pop .slider output {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+#settings-pop .link {
+  height: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent-light);
+  font-size: 12px;
+}
+
+#settings-pop .link:hover:enabled {
+  background: none;
+  text-decoration: underline;
+}
+
+#settings-pop .wide {
+  width: 100%;
+}
+
+#settings-pop .wide.on {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+#settings-pop .help {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
