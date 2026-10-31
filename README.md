@@ -12,7 +12,9 @@ cp .env.example .env   # then put your Meta Model API key in MODEL_API_KEY
 npm run dev
 ```
 
-`npm run dev` starts Vite and the API server in `server/` together. The browser never sees
+`npm run dev` starts Vite and the API server in `server/` together. If port 8787 is
+already taken (often by an API server left running from an earlier `npm run dev`), the
+server says what holds it and keeps retrying, then starts as soon as the port is free. The browser never sees
 the API key: it calls `/api/*`, which Vite proxies to the server, and only the server talks
 to the Meta Model API.
 
@@ -618,3 +620,11 @@ with `latencyHint: "interactive"` and `lookAhead: 0`, and notes trigger at
     - Total 2.9-5.2 s (Muse Spark 2.0-3.9 s, SAM 3.1 0.8-1.3 s).
     - Choosing from the list and from the stage both set the surface. Typing "white
       paper" ran SAM 3.1 alone (2.2 s) and offered Accept.
+- [x] API server startup fix. When port 8787 was already taken, `listen` threw an
+      unhandled `EADDRINUSE` and the server died at startup. `node --watch` then printed
+      only "Failed running 'server/index.ts'" and waited for a file change, so every `/api`
+      call got ECONNREFUSED even after the port freed. Now a busy port is reported with
+      what holds it: another Digikeys API server (it answers `/api/health`, possibly with
+      old code) or another program. The server retries every second
+      (`CONFIG.server.listenRetryMs`) and takes over when the port frees. Other listen
+      errors exit with a one-line message.

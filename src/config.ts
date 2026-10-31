@@ -252,6 +252,7 @@ export const CONFIG = {
   // The Node server in server/ (holds the API key; the browser only talks to it via /api).
   server: {
     port: 8787,
+    listenRetryMs: 1000, // while another process holds the port, try again this often
     apiBaseUrl: "https://api.meta.ai/v1",
     maxBodyBytes: 8_000_000, // one JPEG frame as a data URL
     maxPromptChars: 100,

@@ -402,7 +402,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   throw new HttpError(404, `no route for ${req.method} ${path}`);
 }
 
-createServer((req, res) => {
+const server = createServer((req, res) => {
   handle(req, res).catch((err: unknown) => {
     const status = err instanceof HttpError ? err.status : 500;
     const message = err instanceof Error ? err.message : String(err);
@@ -410,7 +410,47 @@ createServer((req, res) => {
     if (!res.headersSent) send(res, status, { error: message });
     else res.end();
   });
-}).listen(CONFIG.server.port, "127.0.0.1", () => {
-  console.log(`api server on http://127.0.0.1:${CONFIG.server.port}`);
+});
+
+// What holds the port, from its /api/health: another Digikeys API server (often one left
+// running by an earlier `npm run dev`, which then answers with its old code), or something
+// else.
+async function portHolder(): Promise<string> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${CONFIG.server.port}/api/health`, { signal: AbortSignal.timeout(1000) });
+    const body = (await res.json()) as { ok?: unknown };
+    if (body?.ok === true) return "another Digikeys API server, possibly running older code; stop it (or close its terminal)";
+  } catch {
+    // not ours, or not answering
+  }
+  return "another program";
+}
+
+// A busy port used to crash the server with an unhandled EADDRINUSE; under `node --watch`
+// (npm run dev) a crashed server waits for a file change and never retries, so /api stayed
+// refused even after the port freed. Now it says what holds the port and retries every
+// listenRetryMs until it gets it. Other listen errors still end the process, with a message.
+let waiting = false;
+server.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code !== "EADDRINUSE") {
+    console.error(`api server can't listen on 127.0.0.1:${CONFIG.server.port}: ${err.message}`);
+    process.exit(1);
+  }
+  if (!waiting) {
+    waiting = true;
+    portHolder().then((holder) =>
+      console.warn(
+        `port ${CONFIG.server.port} is in use by ${holder}. ` +
+          `Retrying every ${CONFIG.server.listenRetryMs / 1000} s; this server starts once the port is free.`,
+      ),
+    );
+  }
+  setTimeout(listen, CONFIG.server.listenRetryMs);
+});
+server.on("listening", () => {
+  console.log(`api server on http://127.0.0.1:${CONFIG.server.port}${waiting ? " (port freed)" : ""}`);
   if (!apiKey) console.warn("MODEL_API_KEY is not set; the model routes under /api will fail");
 });
+
+const listen = () => server.listen(CONFIG.server.port, "127.0.0.1");
+listen();
