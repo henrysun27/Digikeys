@@ -1,5 +1,6 @@
-// Play-mode presentation: the Play/Debug switch, the setup stepper, toasts, the model chip,
-// the status corner, warning banners, and sizing the stage. It holds no tap, audio or Meta
+// Play-mode presentation: the welcome screen, the Play/Debug switch, the setup stepper,
+// toasts, the model chip and activity line, the control bar's status, warning banners, and
+// sizing the stage. It holds no tap, audio or Meta
 // API logic: its buttons click the Debug controls (or call what main.ts hands it), and
 // their enabled/hidden state is mirrored back, so both views always agree.
 
@@ -29,6 +30,8 @@ export type UiControls = {
 };
 
 const TOAST_MS = { info: 4000, success: 4000, error: 7000 };
+const MODEL_NAMES: Record<Model, string> = { sam: "SAM 3.1", spark: "Muse Spark", voice: "Muse Voice Transcribe" };
+const WELCOME_OUT_MS = 380;
 const MAX_TOASTS = 2;
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
@@ -41,6 +44,10 @@ let objects: { count: number } | "skipped" | null = null;
 let chosen: Step | null = null; // the step the player opened; null: the first not done
 let expanded = false; // reopened with "Edit setup" after setup was complete
 const busy = new Map<Model, number>();
+const tasks = new Map<Model, string>(); // what each working model is doing, for the activity line
+let busyOrder: Model[] = []; // most recently started last
+let busySince = 0;
+let busyTimer: number | null = null;
 const dismissed = new Map<string, string>(); // banner id -> text dismissed
 let fit: (() => void) | null = null;
 
@@ -168,13 +175,35 @@ export function initUi(c: UiControls, onModeChange: () => void) {
     chosen = "instrument";
     render();
   };
-  $("#p-edit").addEventListener("click", edit);
   $("#p-edit-bar").addEventListener("click", edit);
 
-  // Control bar: the mic button is the Debug one's twin.
+  // Control bar: the mic button is the Debug one's twin. Once audio is live it gives way to
+  // the green "Mic on" status; while starting it shows a spinner.
   const pMic = $<HTMLButtonElement>("#p-mic");
+  const bar = $("#controlbar");
   pMic.addEventListener("click", () => c.mic.click());
-  mirror(c.mic, pMic, { text: true });
+  mirror(c.mic, pMic, {
+    text: true,
+    on: () => {
+      const text = c.mic.textContent ?? "";
+      bar.classList.toggle("audio-live", c.mic.disabled && /^(Mic|Sound) on$/.test(text));
+      pMic.classList.toggle("loading", c.mic.disabled && /…$/.test(text));
+    },
+  });
+
+  // Welcome: Start opens the first unfinished step (step 1 before calibration).
+  const welcome = $("#welcome");
+  const start = $<HTMLButtonElement>("#start");
+  start.addEventListener("click", () => {
+    chosen = null;
+    render();
+    welcome.classList.add("leaving");
+    setTimeout(() => {
+      welcome.hidden = true;
+      document.querySelector<HTMLElement>("#stepper [data-step].active button")?.focus({ preventScroll: true });
+    }, WELCOME_OUT_MS);
+  });
+  if (!welcome.hidden) start.focus();
 
   setDebug(new URLSearchParams(location.search).has("debug"));
   render();
@@ -205,10 +234,44 @@ function render() {
   for (const panel of stepper.querySelectorAll<HTMLElement>("[data-panel]")) {
     panel.hidden = collapsed || panel.dataset.panel !== active;
   }
-  const parts = [`✓ Surface`, `✓ ${instrument?.name ?? ""}${instrument?.detail ? ` · ${instrument.detail}` : ""}`];
-  parts.push(objects === "skipped" || objects === null ? "No object pads" : `✓ ${objectsText()}`);
-  stepper.querySelector(".slim .summary")!.textContent = parts.join("   ");
-  $("#p-instrument").textContent = instrument ? `${instrument.name}${instrument.detail ? ` · ${instrument.detail}` : ""}` : "";
+  const pads = objects !== null && objects !== "skipped" && objects.count > 0 ? objectsText() : null;
+  $("#p-instrument").textContent = instrument
+    ? [instrument.name, instrument.detail, pads].filter(Boolean).join(" · ")
+    : "";
+  renderActivity();
+}
+
+// The activity line: the model working now, what it's doing and for how long, with a
+// spinner and a sweeping bar. It sits in the open setup panel, else in the control bar, and
+// the open step's number turns into a spinner.
+const activity = (() => {
+  const el = document.createElement("div");
+  el.className = "activity";
+  el.setAttribute("role", "status");
+  el.innerHTML = '<span class="spinner" aria-hidden="true"></span><b class="who"></b><span class="what"></span><span class="time"></span><span class="sweep" aria-hidden="true"></span>';
+  el.hidden = true;
+  return el;
+})();
+
+function renderActivity() {
+  const model = [...busyOrder].reverse().find((m) => (busy.get(m) ?? 0) > 0) ?? null;
+  const stepper = $("#stepper");
+  const panel = stepper.classList.contains("collapsed")
+    ? null
+    : stepper.querySelector<HTMLElement>("[data-panel]:not([hidden])");
+  for (const li of stepper.querySelectorAll<HTMLElement>("[data-step]")) {
+    li.classList.toggle("busy", model !== null && panel !== null && li.dataset.step === panel.dataset.panel);
+  }
+  if (model === null) {
+    activity.hidden = true;
+    return;
+  }
+  const home = panel ?? $("#toasts");
+  if (activity.parentElement !== home) home.prepend(activity);
+  activity.hidden = false;
+  activity.querySelector(".who")!.textContent = MODEL_NAMES[model];
+  activity.querySelector(".what")!.textContent = tasks.get(model) || "Working";
+  activity.querySelector(".time")!.textContent = `${((performance.now() - busySince) / 1000).toFixed(1)} s`;
 }
 
 const objectsText = () =>
@@ -273,11 +336,25 @@ export function toast(text: string, kind: ToastKind = "info") {
   }, TOAST_MS[kind]);
 }
 
-// Marks a model as working (calls nest); its name in the chip lights up with a spinner.
-export function working(model: Model, on: boolean) {
+// Marks a model as working (calls nest), with what it's doing ("Building your
+// instrument"): its name in the chip lights up and the activity line shows it with a timer.
+export function working(model: Model, on: boolean, task = "") {
+  const wasIdle = [...busy.values()].every((n) => n === 0);
   const n = Math.max(0, (busy.get(model) ?? 0) + (on ? 1 : -1));
   busy.set(model, n);
+  if (on) {
+    tasks.set(model, task);
+    busyOrder = [...busyOrder.filter((m) => m !== model), model];
+    if (wasIdle) busySince = performance.now();
+  }
   document.querySelector(`#models [data-model="${model}"]`)!.classList.toggle("busy", n > 0);
+  const anyBusy = [...busy.values()].some((k) => k > 0);
+  if (anyBusy && busyTimer === null) busyTimer = window.setInterval(renderActivity, 100);
+  if (!anyBusy && busyTimer !== null) {
+    clearInterval(busyTimer);
+    busyTimer = null;
+  }
+  renderActivity();
 }
 
 // The status corner: median tap-to-sound (null before any), mic state, hands in view.

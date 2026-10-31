@@ -1,21 +1,54 @@
-/* Play view: header, setup stepper, banners, the stage and one control bar, nothing over
-   the stage. Debug view (body.debug): the full toolbar, with the HUD, debug panel and
-   Shadow check over the stage, styled as before. */
+/* Play view: a welcome screen, then header, setup stepper, banners, the stage and one
+   control bar, nothing over the stage. Debug view (body.debug): the full toolbar, with the
+   HUD, debug panel and Shadow check over the stage, styled as before.
+
+   All design tokens live here. The canvas in main.ts mirrors --accent (ACCENT, ACCENT_RGB)
+   and --font (FONT); change those together. */
 
 :root {
   --bg: #09090f;
   --panel: #13131c;
   --panel-2: #1b1b28;
+  --hover: #232334;
   --line: rgba(255, 255, 255, 0.08);
   --line-strong: rgba(255, 255, 255, 0.16);
+  --line-hover: rgba(255, 255, 255, 0.3);
   --text: #ececf3;
-  --muted: #9696aa;
+  --muted: #9696aa; /* 6.4:1 on --panel, 6.8:1 on --bg */
+  --on-accent: #ffffff;
+
+  /* One accent. Filled controls use a deeper shade of it so white text passes AA:
+     #8b5cf6 is 4.2:1, --accent-fill 5.7:1, --accent-fill-hover 7.1:1. */
   --accent: #8b5cf6;
+  --accent-fill: #7c3aed;
+  --accent-fill-hover: #6d28d9;
+  --accent-light: #a78bfa;
   --accent-soft: rgba(139, 92, 246, 0.16);
+  --accent-line: rgba(139, 92, 246, 0.45);
+  --accent-glow: rgba(139, 92, 246, 0.45);
+
   --ok: #34d399;
+  --ok-soft: rgba(52, 211, 153, 0.16);
   --warn: #f59e0b;
+  --warn-text: #fcd34d;
+  --warn-soft: rgba(245, 158, 11, 0.1);
+  --warn-line: rgba(245, 158, 11, 0.4);
   --err: #f43f5e;
+
   --radius: 12px;
+  --radius-sm: 8px;
+  --radius-pill: 999px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --control-h: 38px;
+
+  --font: Inter, system-ui, sans-serif;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --fast: 0.15s;
+  --step: 0.28s;
 }
 
 * {
@@ -28,7 +61,7 @@ body {
   height: 100%;
   background: var(--bg);
   color: var(--text);
-  font-family: Inter, system-ui, sans-serif;
+  font-family: var(--font);
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
 }
@@ -42,8 +75,13 @@ body.debug .play-only {
   height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 16px 24px 18px;
+  gap: var(--space-3);
+  padding: 14px 20px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* Shared controls in the Play shell. */
@@ -51,38 +89,41 @@ body.debug .play-only {
 #stepper button,
 #controlbar button,
 #stepper input {
-  height: 38px;
-  padding: 0 16px;
+  height: var(--control-h);
+  padding: 0 var(--space-4);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
   background: var(--panel-2);
   color: var(--text);
-  font: 500 14px Inter, system-ui, sans-serif;
+  font: 500 14px var(--font);
   cursor: pointer;
   transition:
-    background 0.15s,
-    border-color 0.15s,
-    opacity 0.15s;
+    background var(--fast),
+    border-color var(--fast),
+    box-shadow var(--fast),
+    opacity var(--fast);
 }
 
 #topbar button:hover:enabled,
 #stepper button:hover:enabled,
 #controlbar button:hover:enabled {
-  border-color: rgba(255, 255, 255, 0.3);
-  background: #232334;
+  border-color: var(--line-hover);
+  background: var(--hover);
 }
 
 #stepper .primary,
 #controlbar .primary {
   border-color: transparent;
-  background: var(--accent);
-  color: #fff;
+  background: var(--accent-fill);
+  color: var(--on-accent);
+  font-weight: 600;
 }
 
 #stepper .primary:hover:enabled,
 #controlbar .primary:hover:enabled {
   border-color: transparent;
-  background: #9b72f8;
+  background: var(--accent-fill-hover);
+  box-shadow: 0 4px 18px var(--accent-glow);
 }
 
 #stepper .ghost,
@@ -104,25 +145,162 @@ body.debug .play-only {
 }
 
 kbd {
-  margin-left: 4px;
+  margin-left: var(--space-1);
   padding: 1px 5px;
   border: 1px solid var(--line-strong);
   border-radius: 4px;
   color: var(--muted);
-  font: 500 11px Inter, system-ui, sans-serif;
+  font: 500 11px var(--font);
 }
 
-/* Header: brand, model chip, status corner. */
+.spinner,
+#p-mic.loading::before {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--accent-soft);
+  border-top-color: var(--accent-light);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@keyframes drop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+/* Welcome: the first screen, until Start. Solid (no backdrop blur) so it costs the GPU
+   nothing while hand tracking warms up behind it. */
+#welcome {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: var(--space-5);
+  background:
+    radial-gradient(55% 45% at 50% 40%, var(--accent-soft), transparent 70%),
+    var(--bg);
+  transition:
+    opacity 0.38s var(--ease-out),
+    transform 0.38s var(--ease-out);
+}
+
+#welcome[hidden] {
+  display: none;
+}
+
+#welcome.leaving {
+  opacity: 0;
+  transform: scale(1.03);
+  pointer-events: none;
+}
+
+.welcome-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.welcome-inner > * {
+  animation: rise-in 0.6s var(--ease-out) both;
+}
+
+.welcome-inner > :nth-child(2) {
+  animation-delay: 0.06s;
+}
+
+.welcome-inner > :nth-child(3) {
+  animation-delay: 0.12s;
+}
+
+.welcome-inner > :nth-child(4) {
+  animation-delay: 0.2s;
+}
+
+.welcome-inner > :nth-child(5) {
+  animation-delay: 0.3s;
+}
+
+#welcome h1 {
+  margin: var(--space-5) 0 0;
+  font-size: clamp(56px, 7vw, 96px);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
+
+.welcome-tagline {
+  margin: var(--space-3) 0 44px;
+  color: var(--muted);
+  font-size: clamp(18px, 1.8vw, 24px);
+}
+
+.start {
+  height: 60px;
+  padding: 0 64px;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--accent-fill);
+  color: var(--on-accent);
+  font: 600 20px var(--font);
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  box-shadow: 0 10px 40px var(--accent-glow);
+  transition:
+    background var(--fast),
+    transform var(--fast) var(--ease-out),
+    box-shadow var(--fast);
+}
+
+.start:hover {
+  background: var(--accent-fill-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 14px 48px var(--accent-glow);
+}
+
+.start:active {
+  transform: translateY(1px) scale(0.98);
+}
+
+.start:focus-visible {
+  outline: 3px solid var(--accent-light);
+  outline-offset: 4px;
+}
+
+.welcome-models {
+  margin: 48px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* Header: brand, model chip, Play/Debug. */
 #topbar {
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: var(--space-4);
 }
 
 .brand {
   display: flex;
   align-items: baseline;
-  gap: 12px;
+  gap: var(--space-3);
   margin-right: auto;
 }
 
@@ -133,8 +311,15 @@ kbd {
   border-radius: 7px;
   background:
     linear-gradient(90deg, transparent 0 30%, rgba(9, 9, 15, 0.9) 30% 36%, transparent 36% 64%, rgba(9, 9, 15, 0.9) 64% 70%, transparent 70%),
-    linear-gradient(135deg, #a78bfa, var(--accent));
-  box-shadow: 0 0 18px rgba(139, 92, 246, 0.5);
+    linear-gradient(135deg, var(--accent-light), var(--accent));
+  box-shadow: 0 0 18px var(--accent-glow);
+}
+
+.logo.big {
+  width: 72px;
+  height: 72px;
+  border-radius: 20px;
+  box-shadow: 0 0 70px var(--accent-glow);
 }
 
 .brand h1 {
@@ -153,9 +338,9 @@ kbd {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
+  padding: 6px var(--space-3);
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--panel);
   color: var(--muted);
   font-size: 12px;
@@ -178,9 +363,9 @@ kbd {
 }
 
 #models .model.busy {
-  color: #fff;
+  color: var(--on-accent);
   font-weight: 600;
-  text-shadow: 0 0 12px rgba(139, 92, 246, 0.9);
+  text-shadow: 0 0 12px var(--accent);
 }
 
 #models .model.busy::before {
@@ -188,65 +373,48 @@ kbd {
   width: 10px;
   height: 10px;
   border: 2px solid var(--accent-soft);
-  border-top-color: var(--accent);
+  border-top-color: var(--accent-light);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
 }
 
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+/* Setup stepper: three connected steps over the open step's panel. Hidden once setup is
+   complete; the control bar's Setup button brings it back. */
+#stepper {
+  animation: drop-in var(--step) var(--ease-out);
 }
 
-#status-corner {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-variant-numeric: tabular-nums;
+#stepper.collapsed {
+  display: none;
 }
 
-#status-corner .stat {
-  padding: 5px 10px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--panel);
-  color: var(--muted);
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-#stat-mic::before {
-  content: "";
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  margin-right: 6px;
-  border-radius: 50%;
-  background: var(--muted);
-  vertical-align: 1px;
-}
-
-#stat-mic.on {
-  color: var(--text);
-}
-
-#stat-mic.on::before {
-  background: var(--ok);
-  box-shadow: 0 0 8px var(--ok);
-}
-
-/* Setup stepper. */
 #stepper .steps {
   display: flex;
-  gap: 10px;
+  gap: var(--space-5);
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
 #stepper .steps li {
+  position: relative;
   flex: 1;
+}
+
+/* The connector into each step after the first, green once the step before it is done. */
+#stepper .steps li + li::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 100%;
+  width: var(--space-5);
+  height: 2px;
+  background: var(--line-strong);
+  transition: background var(--step);
+}
+
+#stepper .steps li.done + li::before {
+  background: var(--ok);
 }
 
 #stepper .steps li button {
@@ -255,6 +423,7 @@ kbd {
   gap: 10px;
   width: 100%;
   height: 46px;
+  padding: 0 14px 0 10px;
   border-color: var(--line);
   background: var(--panel);
   text-align: left;
@@ -264,13 +433,17 @@ kbd {
   display: grid;
   flex: none;
   place-items: center;
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
   border: 1px solid var(--line-strong);
   border-radius: 50%;
   color: var(--muted);
   font-size: 12px;
   font-weight: 600;
+  transition:
+    background var(--step),
+    border-color var(--step),
+    color var(--step);
 }
 
 #stepper .name {
@@ -286,33 +459,66 @@ kbd {
   white-space: nowrap;
 }
 
-#stepper li.active button {
-  border-color: var(--accent);
-  background: linear-gradient(0deg, var(--accent-soft), var(--accent-soft)), var(--panel);
-}
-
-#stepper li.active .num {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: #fff;
-}
-
 #stepper li.done .num {
   border-color: transparent;
-  background: rgba(52, 211, 153, 0.18);
-  color: transparent;
-  position: relative;
+  background: var(--ok-soft);
+  color: var(--ok);
+  font-size: 0;
 }
 
 #stepper li.done .num::after {
   content: "✓";
-  position: absolute;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+#stepper li.done .sub {
   color: var(--ok);
 }
 
+#stepper li.active button {
+  border-color: var(--accent);
+  background: linear-gradient(0deg, var(--accent-soft), var(--accent-soft)), var(--panel);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+#stepper li.active .num {
+  border-color: transparent;
+  background: var(--accent-fill);
+  color: var(--on-accent);
+}
+
+#stepper li.active.done .num {
+  font-size: 12px;
+}
+
+#stepper li.active.done .num::after {
+  content: none;
+}
+
+/* A model is working on this step: its number becomes a spinner. */
+#stepper li.busy .num {
+  border: 2px solid var(--accent-soft);
+  border-top-color: var(--accent-light);
+  background: transparent;
+  color: transparent;
+  font-size: 0;
+  animation: spin 0.7s linear infinite;
+}
+
+#stepper li.busy .num::after {
+  content: none;
+}
+
 #stepper li.locked button {
+  border-style: dashed;
+  background: transparent;
   cursor: not-allowed;
-  opacity: 0.4;
+}
+
+#stepper li.locked .name {
+  color: var(--muted);
+  font-weight: 500;
 }
 
 #stepper .panel {
@@ -321,10 +527,11 @@ kbd {
   align-items: center;
   gap: 10px;
   margin-top: 10px;
-  padding: 12px 14px;
+  padding: var(--space-3) 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--panel);
+  animation: drop-in var(--step) var(--ease-out);
 }
 
 #controlbar button[hidden],
@@ -346,6 +553,11 @@ kbd {
   flex-basis: 100%;
   flex-wrap: wrap;
   order: 1;
+  animation: rise-in var(--step) var(--ease-out);
+}
+
+#p-proposal {
+  animation: rise-in var(--step) var(--ease-out);
 }
 
 #surface-hint.error {
@@ -355,33 +567,45 @@ kbd {
 #stepper .group {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 #p-build {
   flex: 1;
 }
 
-#p-surface {
-  width: 150px;
+#p-surface,
+#p-request {
   cursor: text;
   background: var(--bg);
 }
 
-#p-surface::placeholder {
+#p-surface {
+  width: 150px;
+}
+
+#p-request {
+  flex: 1;
+  min-width: 160px;
+}
+
+#p-surface::placeholder,
+#p-request::placeholder {
   color: var(--muted);
 }
 
-#p-surface:focus {
+#p-surface:focus,
+#p-request:focus {
   border-color: var(--accent);
   outline: none;
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 /* Detected surfaces to choose from, each marked with its outline's color on the stage. */
 #stepper .choice {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   border-color: var(--choice);
   white-space: nowrap;
 }
@@ -399,22 +623,6 @@ kbd {
   background: color-mix(in srgb, var(--choice) 18%, var(--panel-2));
 }
 
-#p-request {
-  flex: 1;
-  min-width: 160px;
-  cursor: text;
-  background: var(--bg);
-}
-
-#p-request::placeholder {
-  color: var(--muted);
-}
-
-#p-request:focus {
-  border-color: var(--accent);
-  outline: none;
-}
-
 .mic-big {
   display: flex;
   align-items: center;
@@ -422,11 +630,11 @@ kbd {
   height: 44px !important;
   padding: 0 20px !important;
   border-color: transparent !important;
-  border-radius: 999px !important;
-  background: linear-gradient(135deg, #a78bfa, var(--accent)) !important;
-  color: #fff !important;
+  border-radius: var(--radius-pill) !important;
+  background: linear-gradient(135deg, var(--accent-fill), var(--accent-fill-hover)) !important;
+  color: var(--on-accent) !important;
   font-weight: 600 !important;
-  box-shadow: 0 6px 24px rgba(139, 92, 246, 0.35);
+  box-shadow: 0 6px 24px var(--accent-glow);
   user-select: none;
   touch-action: none;
 }
@@ -437,7 +645,7 @@ kbd {
 
 @keyframes listening {
   50% {
-    box-shadow: 0 0 0 8px rgba(139, 92, 246, 0.25);
+    box-shadow: 0 0 0 8px var(--accent-soft);
   }
 }
 
@@ -446,7 +654,7 @@ kbd {
   width: 10px;
   height: 16px;
   border-radius: 5px;
-  background: #fff;
+  background: var(--on-accent);
 }
 
 .mic-icon::after {
@@ -456,7 +664,7 @@ kbd {
   top: 6px;
   width: 14px;
   height: 10px;
-  border: 2px solid #fff;
+  border: 2px solid var(--on-accent);
   border-top: none;
   border-radius: 0 0 9px 9px;
 }
@@ -468,8 +676,8 @@ kbd {
 
 #stepper .chips button {
   height: 32px;
-  padding: 0 12px;
-  border-radius: 999px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-pill);
   background: transparent;
   font-size: 13px;
 }
@@ -479,41 +687,73 @@ kbd {
   background: var(--accent-soft);
 }
 
-#stepper .slim {
-  display: none;
-}
-
-#stepper.collapsed .steps,
-#stepper.collapsed .panel {
-  display: none;
-}
-
-#stepper.collapsed .slim {
+/* The activity line: which Meta model is working, on what, for how long. In the open setup
+   panel (its own row, on top) or in the control bar. */
+.activity {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 6px 6px 6px 14px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--panel);
+  gap: 10px;
+  overflow: hidden;
+  padding: 9px 14px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  white-space: nowrap;
+  animation: rise-in 0.2s var(--ease-out);
 }
 
-#stepper .slim .summary {
-  flex: 1;
+.activity[hidden] {
+  display: none;
+}
+
+#stepper .activity {
+  flex-basis: 100%;
+  order: -1;
+}
+
+.activity .who {
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+.activity .what {
+  overflow: hidden;
   color: var(--muted);
-  white-space: pre;
+  text-overflow: ellipsis;
 }
 
-#stepper .slim button {
-  height: 30px;
-  font-size: 13px;
+.activity .time {
+  margin-left: auto;
+  padding-left: var(--space-2);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.activity .sweep {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 30%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent-light), transparent);
+  animation: sweep 1.3s ease-in-out infinite;
+}
+
+@keyframes sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(340%);
+  }
 }
 
 /* Warnings: dismissible, above the stage. */
 #banners {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 #banners:empty {
@@ -524,11 +764,12 @@ kbd {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 8px 8px 14px;
-  border: 1px solid rgba(245, 158, 11, 0.4);
+  padding: var(--space-2) var(--space-2) var(--space-2) 14px;
+  border: 1px solid var(--warn-line);
   border-radius: var(--radius);
-  background: rgba(245, 158, 11, 0.1);
-  color: #fcd34d;
+  background: var(--warn-soft);
+  color: var(--warn-text);
+  animation: drop-in var(--step) var(--ease-out);
 }
 
 .banner span {
@@ -552,7 +793,7 @@ kbd {
   width: 26px;
   height: 26px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: inherit;
   font-size: 18px;
@@ -560,7 +801,7 @@ kbd {
 }
 
 .banner .close:hover {
-  background: rgba(245, 158, 11, 0.2);
+  background: var(--warn-soft);
 }
 
 /* The stage: the camera large and centered, rounded, with a soft vignette. main.ts sizes
@@ -603,20 +844,44 @@ kbd {
   background: radial-gradient(ellipse at center, transparent 58%, rgba(0, 0, 0, 0.42) 100%);
 }
 
-/* Control bar: one row; toasts live here so they never cover the stage. */
+/* Control bar: the one row of controls and status; toasts and the activity line live here
+   so nothing covers the stage. */
 #controlbar {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   min-height: 54px;
-  padding: 8px;
+  padding: var(--space-2);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--panel);
 }
 
+#p-mic.loading {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  opacity: 1;
+}
+
+#p-mic.loading::before {
+  content: "";
+  border-color: rgba(255, 255, 255, 0.3);
+  border-top-color: var(--on-accent);
+}
+
+#controlbar.audio-live #p-mic,
+#controlbar:not(.audio-live) #stat-mic {
+  display: none;
+}
+
 .instrument-name {
-  color: var(--muted);
+  overflow: hidden;
+  max-width: 34%;
+  padding-left: var(--space-1);
+  color: var(--text);
+  font-weight: 500;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -628,21 +893,21 @@ kbd {
   flex: 1;
   display: flex;
   justify-content: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
 }
 
 .toast {
   overflow: hidden;
   max-width: 100%;
-  padding: 8px 14px;
+  padding: var(--space-2) 14px;
   border: 1px solid var(--line-strong);
   border-left: 3px solid var(--accent);
   border-radius: var(--radius);
   background: var(--panel-2);
   text-overflow: ellipsis;
   white-space: nowrap;
-  animation: toast-in 0.2s ease-out;
+  animation: rise-in 0.2s var(--ease-out);
   transition:
     opacity 0.3s,
     transform 0.3s;
@@ -661,10 +926,50 @@ kbd {
   transform: translateY(6px);
 }
 
-@keyframes toast-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
+#status-corner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-variant-numeric: tabular-nums;
+}
+
+#controlbar .stat {
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+#stat-mic::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+  vertical-align: 1px;
+}
+
+#stat-mic.on {
+  color: var(--text);
+}
+
+#stat-mic.on::before {
+  background: var(--ok);
+  box-shadow: 0 0 8px var(--ok);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }
 

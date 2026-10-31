@@ -10,14 +10,25 @@
   </head>
   <body>
     <div id="app">
-      <!-- Play mode: header, setup stepper, banners, the stage, one control bar. Debug mode
-           (D key or ?debug) swaps the stepper and control bar for the full toolbar and
-           shows the HUD, debug panel and Shadow check over the stage. -->
+      <!-- Play mode: a welcome screen first, then the header, setup stepper, banners, the
+           stage and one control bar. Debug mode (D key or ?debug) swaps the stepper and
+           control bar for the full toolbar and shows the HUD, debug panel and Shadow check
+           over the stage. -->
+      <section id="welcome" class="play-only" aria-labelledby="welcome-title">
+        <div class="welcome-inner">
+          <span class="logo big" aria-hidden="true"></span>
+          <h1 id="welcome-title">Digikeys</h1>
+          <p class="welcome-tagline">Any desk is an instrument</p>
+          <button id="start" type="button" class="start">Start</button>
+          <p class="welcome-models">Powered by SAM 3.1 · Muse Spark · Muse Voice Transcribe</p>
+        </div>
+      </section>
+
       <header id="topbar">
         <div class="brand">
           <span class="logo" aria-hidden="true"></span>
           <h1>Digikeys</h1>
-          <span class="tagline">Any desk is an instrument.</span>
+          <span class="tagline">Any desk is an instrument</span>
         </div>
         <div id="models" title="Meta models behind Digikeys; the working one lights up">
           <span class="powered">Powered by</span>
@@ -27,12 +38,7 @@
           <span class="sep">·</span>
           <span class="model" data-model="voice">Muse Voice Transcribe</span>
         </div>
-        <div id="status-corner" aria-live="polite">
-          <span class="stat" id="stat-latency" title="Median tap-to-sound latency">– ms</span>
-          <span class="stat" id="stat-mic" title="Microphone">Mic off</span>
-          <span class="stat" id="stat-hands" title="Hands detected">0 hands</span>
-          <button id="mode-toggle" type="button" class="ghost small" title="Switch between Play and Debug (D)">Debug <kbd>D</kbd></button>
-        </div>
+        <button id="mode-toggle" type="button" class="ghost small" title="Switch between Play and Debug (D)">Debug <kbd>D</kbd></button>
       </header>
 
       <nav id="stepper" class="play-only" aria-label="Setup">
@@ -77,10 +83,6 @@
           <button id="p-scan" type="button" class="primary">Scan objects</button>
           <button id="p-clear-objects" type="button" class="ghost" hidden>Clear objects</button>
           <button id="p-skip" type="button" class="ghost">Skip</button>
-        </div>
-        <div class="slim">
-          <span class="summary"></span>
-          <button id="p-edit" type="button" class="ghost">Edit setup</button>
         </div>
       </nav>
 
@@ -204,8 +206,13 @@
 
       <footer id="controlbar" class="play-only">
         <button id="p-mic" type="button" class="primary">Enable mic</button>
+        <span class="stat" id="stat-mic" title="Microphone">Mic off</span>
         <span id="p-instrument" class="instrument-name" title="Current instrument"></span>
         <div id="toasts" aria-live="polite"></div>
+        <div id="status-corner" aria-live="polite">
+          <span class="stat" id="stat-latency" title="Median tap-to-sound latency">– ms</span>
+          <span class="stat" id="stat-hands" title="Hands detected">0 hands</span>
+        </div>
         <button id="p-edit-bar" type="button" class="ghost" title="Back to the setup steps">Setup</button>
       </footer>
     </div>

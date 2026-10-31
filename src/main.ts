@@ -387,7 +387,7 @@ async function generateLayout(heard = "") {
   };
   generating = true;
   updateHint();
-  ui.working("spark", true);
+  ui.working("spark", true, "Building your instrument");
   layoutStatusEl.textContent = `${heard}Asking Muse Spark for "${request}"…`;
   try {
     const reply = await requestLayout(video, calibration.corners, request, orientation);
@@ -476,7 +476,7 @@ async function stopTalk() {
     }
     const secs = (speech.audioMs / 1000).toFixed(1);
     layoutStatusEl.textContent = `Transcribing ${secs} s of speech…`;
-    ui.working("voice", true);
+    ui.working("voice", true, "Transcribing what you said");
     const t = await transcribe(speech.wav).finally(() => ui.working("voice", false));
     const boost = speech.gain > 1 ? ` ×${speech.gain.toFixed(1)}` : "";
     const timing =
@@ -718,7 +718,7 @@ async function detectSurface() {
 }
 
 async function detectTyped(prompt: string) {
-  ui.working("sam", true);
+  ui.working("sam", true, `Outlining the ${prompt}`);
   samStatusEl.textContent = `Asking SAM 3.1 for "${prompt}"…`;
   try {
     const seg = await segmentFrame(video, prompt);
@@ -757,13 +757,14 @@ async function detectTyped(prompt: string) {
 async function detectAuto() {
   const started = performance.now();
   let model: ui.Model = "spark";
-  ui.working(model, true);
+  const task = { spark: "Finding the playing surface", sam: "Outlining the surface", voice: "" };
+  ui.working(model, true, task[model]);
   const progress = (text: string) => {
     samStatusEl.textContent = text;
     const next: ui.Model = text.startsWith("SAM") ? "sam" : "spark";
     if (next === model) return;
     ui.working(model, false);
-    ui.working((model = next), true);
+    ui.working((model = next), true, task[model]);
   };
   try {
     const r = await scanSurfaces(video, progress);
@@ -853,14 +854,19 @@ async function scanForObjects() {
   updateHint();
   const started = performance.now();
   // The model chip follows the scan's stages from its progress lines.
+  // Muse Spark lists, SAM 3.1 outlines, then Muse Spark again picks the sounds.
   let stage: ui.Model = "spark";
-  ui.working(stage, true);
+  let outlined = false;
+  const task = (m: ui.Model) =>
+    m === "sam" ? "Outlining each object" : outlined ? "Picking a sound for each object" : "Spotting objects on your desk";
+  ui.working(stage, true, task(stage));
   const progress = (text: string) => {
     objectStatusEl.textContent = text;
     const next: ui.Model = text.includes("SAM 3.1") ? "sam" : "spark";
     if (next === stage) return;
+    if (stage === "sam") outlined = true;
     ui.working(stage, false);
-    ui.working((stage = next), true);
+    ui.working((stage = next), true, task(stage));
   };
   try {
     const r = await scanObjects(video, H, calibration.corners, progress);
@@ -2010,12 +2016,16 @@ function drawCalPrompt() {
 }
 
 // The Play view's stage drawing (Debug keeps the drawing above). ACCENT matches the
-// stylesheet's --accent; a played zone glows for HIT_MS, and a ripple spreads from where the
-// tap landed for RIPPLE_MS.
+// stylesheet's --accent. A played zone rings like a struck note for HIT_MS (a near-instant
+// attack, then an exponential decay with time constant DECAY_MS), and two rings spread from
+// where the tap landed for RIPPLE_MS, the second an echo ECHO_MS behind.
 const ACCENT = "#8B5CF6";
 const ACCENT_RGB = "139, 92, 246";
-const HIT_MS = 250;
-const RIPPLE_MS = 450;
+const HIT_MS = 520;
+const ATTACK_MS = 16;
+const DECAY_MS = 150;
+const RIPPLE_MS = 700;
+const ECHO_MS = 110;
 const FONT = "Inter, system-ui, sans-serif";
 
 // Restricts drawing to outside every object pad, so keys under a pad are hidden just as
@@ -2033,18 +2043,42 @@ function clipOutObjects() {
   }
 }
 
-// 1 right after a zone played, fading to 0 over HIT_MS.
-const glowOf = (id: string, now: number) => Math.max(0, 1 - (now - (hits.get(id) ?? -Infinity)) / HIT_MS);
+// A zone's hit envelope: 0 before it played, rising to 1 within ATTACK_MS, then ringing
+// out exponentially and tapered to exactly 0 at HIT_MS.
+function glowOf(id: string, now: number): number {
+  const t = now - (hits.get(id) ?? -Infinity);
+  if (!(t >= 0 && t < HIT_MS)) return 0;
+  return Math.min(1, t / ATTACK_MS) * Math.exp(-t / DECAY_MS) * (1 - t / HIT_MS);
+}
 
+// The current path, lit by a hit: an accent bloom that rings out with the envelope, and a
+// brief white strike on top (glow^4 falls away in the first ~100 ms).
 function fillGlow(glow: number) {
   if (glow <= 0) return;
   ctx.save();
   ctx.shadowColor = ACCENT;
-  ctx.shadowBlur = 30 * glow;
-  ctx.fillStyle = `rgba(${ACCENT_RGB}, ${0.8 * glow})`;
+  ctx.shadowBlur = 40 * glow;
+  ctx.fillStyle = `rgba(${ACCENT_RGB}, ${0.85 * glow})`;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = `rgba(255, 255, 255, ${0.5 * glow ** 4})`;
   ctx.fill();
   ctx.restore();
 }
+
+// Scales the context about c, so a struck zone dips slightly as if pressed.
+function pressAbout(c: Pt, glow: number) {
+  if (glow <= 0) return;
+  const k = 1 - 0.045 * glow;
+  ctx.translate(c.x, c.y);
+  ctx.scale(k, k);
+  ctx.translate(-c.x, -c.y);
+}
+
+const centroid = (pts: Pt[]): Pt => ({
+  x: pts.reduce((s, p) => s + p.x, 0) / pts.length,
+  y: pts.reduce((s, p) => s + p.y, 0) / pts.length,
+});
 
 // See-through keys: light frosted naturals, darker sharps (drawn after, by z), a violet tint
 // under a fingertip, the glow when played, and the test or tap-calibration target in green;
@@ -2066,6 +2100,8 @@ function drawLayoutPlay(active: Set<string>, now: number) {
       }
       ctx.clip("evenodd");
     }
+    const glow = glowOf(zone.id, now);
+    pressAbout(centroid(outline), glow);
     tracePath(outline, true);
     const sharp = isAccidental(zone);
     ctx.fillStyle = sharp ? "rgba(14, 12, 28, 0.4)" : "rgba(255, 255, 255, 0.18)";
@@ -2079,10 +2115,11 @@ function drawLayoutPlay(active: Set<string>, now: number) {
       ctx.fillStyle = "rgba(52, 211, 153, 0.3)";
       ctx.fill();
     }
-    fillGlow(glowOf(zone.id, now));
+    fillGlow(glow);
     ctx.lineJoin = "round";
-    ctx.strokeStyle = isTarget ? "#34d399" : sharp ? "rgba(255, 255, 255, 0.5)" : "rgba(255, 255, 255, 0.7)";
-    ctx.lineWidth = isTarget ? 3 : 1.5;
+    const edge = sharp ? 0.5 : 0.7;
+    ctx.strokeStyle = isTarget ? "#34d399" : `rgba(255, 255, 255, ${edge + (1 - edge) * glow})`;
+    ctx.lineWidth = isTarget ? 3 : 1.5 + 1.5 * glow;
     ctx.stroke();
     ctx.restore();
   }
@@ -2092,7 +2129,8 @@ function drawLayoutPlay(active: Set<string>, now: number) {
     const xs = outline.map((p) => p.x);
     const ys = outline.map((p) => p.y);
     const extent = Math.min(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
-    const size = Math.max(11, Math.min(26, extent * 0.32));
+    // The struck key's label pops, then settles with the ring-out.
+    const size = Math.max(11, Math.min(26, extent * 0.32)) * (1 + 0.28 * glowOf(zone.id, now));
     ctx.save();
     ctx.font = `600 ${size}px ${FONT}`;
     ctx.textAlign = "center";
@@ -2116,22 +2154,21 @@ function drawObjectsPlay(active: Set<string>, now: number) {
   const pills: { c: Pt; zone: Zone }[] = [];
   for (const zone of objects.zones) {
     const outline = shapeOutline(zone.shape).map(boardToScreen);
+    const c = centroid(outline);
+    const glow = glowOf(zone.id, now);
     ctx.save();
+    pressAbout(c, glow);
     tracePath(outline, true);
     ctx.fillStyle = `rgba(${ACCENT_RGB}, ${active.has(zone.id) ? 0.28 : 0.1})`;
     ctx.fill();
-    fillGlow(glowOf(zone.id, now));
+    fillGlow(glow);
     ctx.lineJoin = "round";
-    ctx.lineWidth = 2;
-    ctx.shadowColor = `rgba(${ACCENT_RGB}, 0.6)`;
-    ctx.shadowBlur = 8;
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.75)";
+    ctx.lineWidth = 2 + 2.5 * glow;
+    ctx.shadowColor = `rgba(${ACCENT_RGB}, ${0.6 + 0.4 * glow})`;
+    ctx.shadowBlur = 8 + 22 * glow;
+    ctx.strokeStyle = `rgba(255, 255, 255, ${0.75 + 0.25 * glow})`;
     ctx.stroke();
     ctx.restore();
-    const c = {
-      x: outline.reduce((s, p) => s + p.x, 0) / outline.length,
-      y: outline.reduce((s, p) => s + p.y, 0) / outline.length,
-    };
     pills.push({ c, zone });
   }
   for (const { c, zone } of pills) drawPill(c, zone.label, soundName(zone.sound));
@@ -2190,19 +2227,38 @@ function drawTipsPlay(hands: TrackedHand[]) {
   }
 }
 
-// An accent ring spreading and fading from each recent tap.
+// From each recent tap: a soft bloom, an accent ring easing outward and fading, and a fainter
+// echo ring just behind it. Sized in screen pixels, like the pills.
 function drawRipples(now: number) {
   while (ripples.length && now - ripples[0].t > RIPPLE_MS) ripples.shift();
-  if (!calibration.boardToCam) return;
+  if (!calibration.boardToCam || !ripples.length) return;
+  const s = canvas.width / Math.max(1, canvas.getBoundingClientRect().width);
+  const easeOut = (k: number) => 1 - (1 - k) ** 3;
+  const ring = (p: Pt, k: number, alpha: number, reach: number, width: number) => {
+    if (k <= 0 || k >= 1) return;
+    ctx.strokeStyle = `rgba(${ACCENT_RGB}, ${alpha * (1 - k) ** 1.5})`;
+    ctx.lineWidth = (width * (1 - k) + 0.75) * s;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, (6 + reach * easeOut(k)) * s, 0, Math.PI * 2);
+    ctx.stroke();
+  };
+  ctx.save();
   for (const { at, t } of ripples) {
     const k = (now - t) / RIPPLE_MS;
     const p = boardToScreen(at);
-    ctx.strokeStyle = `rgba(${ACCENT_RGB}, ${0.9 * (1 - k)})`;
-    ctx.lineWidth = 2.5 * (1 - k) + 0.5;
+    const r = (10 + 22 * easeOut(k)) * s;
+    const bloom = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+    bloom.addColorStop(0, `rgba(255, 255, 255, ${0.55 * (1 - k) ** 3})`);
+    bloom.addColorStop(0.4, `rgba(${ACCENT_RGB}, ${0.35 * (1 - k) ** 2})`);
+    bloom.addColorStop(1, `rgba(${ACCENT_RGB}, 0)`);
+    ctx.fillStyle = bloom;
     ctx.beginPath();
-    ctx.arc(p.x, p.y, 6 + 30 * k, 0, Math.PI * 2);
-    ctx.stroke();
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ring(p, k, 0.95, 46, 3);
+    ring(p, (now - t - ECHO_MS) / (RIPPLE_MS - ECHO_MS), 0.5, 64, 1.5);
   }
+  ctx.restore();
 }
 
 const HAND_ID_COLORS: Record<string, string> = { A: "#00dcff", B: "#ffb300" };
