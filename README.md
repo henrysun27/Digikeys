@@ -23,8 +23,9 @@ to the Meta Model API.
 
 The page opens in **Play** mode: the camera stage, a three-step setup, one control bar.
 
-1. **Surface**: press Detect surface (SAM 3.1 finds the sheet; accept its corners) or
-   click the four corners on the camera view.
+1. **Surface**: press Detect surface. Muse Spark names the flat surfaces in view and SAM
+   3.1 outlines them; if several qualify, click the one to play on (on the stage or in the
+   list). Type a name ("desk mat") to skip Muse Spark, or click the four corners yourself.
 2. **Instrument**: hold the mic button (or Space) and say an instrument (Muse Voice
    Transcribe, then Muse Spark builds it), type one, or pick a chip. Piano and Drum kit
    are instant presets; Pentatonic and Marimba are built by Muse Spark.
@@ -579,3 +580,41 @@ with `latencyHint: "interactive"` and `lookAhead: 0`, and notes trigger at
   - **Status corner.** Median tap-to-sound, mic state and hands in view.
   - **Banners.** Low light (camera under 25 fps), slow (Bluetooth) audio output and
     narrow keys show as dismissible banners above the stage.
+- [x] Automatic playing surface. Detect surface used to ask SAM 3.1 for "sheet of paper".
+      With the surface box empty it now works in three steps:
+  - **Muse Spark lists the surfaces.** It gets the frame and returns the flat surfaces
+    that could be a playing area (paper, desk mat, mouse pad, notebook, bare desk...),
+    leaving out hands, arms and tall objects. The output is structured
+    (`{surfaces: [{name, reason}]}`, at most 5), ranked best first: flat, edges visible,
+    large enough, not covered (`server/surface-prompt.ts`, `POST /api/surfaces/list`).
+  - **SAM 3.1 segments every name at once.** Each name's largest match is fitted with
+    corners as before (`src/surface-scan.ts`), and a candidate is dropped if:
+    - it covers under 5% of the frame,
+    - no quad fits, or the corners fail the checks,
+    - its quad is looser than 1.3× the mask, or
+    - it overlaps an earlier candidate by more than 70% (the same surface under two
+      names).
+  - **Loose fits are dropped** because they are surfaces whose edges are hidden or cut
+    off. In testing the bare desk, around everything on it, fitted a quad the size of the
+    frame (1.93× its mask). As a choice it would also have caught every click meant for
+    the corners.
+  - **One survivor** is offered with Accept / Retry / Discard as before. **Several** are
+    drawn on the stage as colored outlines labelled "White paper · fully visible, clean"
+    and listed as buttons in the surface step (and in the Debug HUD):
+    - clicking inside one chooses it; overlapping outlines pick the smallest, so a
+      notebook on a desk mat can be chosen;
+    - a click elsewhere drops the choices and starts corner clicking.
+  - **Typed name.** A name in the surface box (Play or Debug) goes straight to SAM 3.1 as
+    before.
+  - **Feedback.** The model chip follows the step (Muse Spark, then SAM 3.1), and the
+    toast gives the count and both timings. The Debug status line lists what Muse Spark
+    named, with its reasons, and why each name was kept or dropped.
+  - **Tested end to end** with the real models, using a synthetic desk (white paper, a
+    dark desk mat with a blue notebook on it, a mug) as the camera:
+    - Muse Spark named white paper, black desk mat, blue notebook and wooden desk, with
+      reasons.
+    - SAM 3.1 found the paper and the notebook (quad/mask 1.01 each), none for the
+      synthetic mat; the desk was dropped as a loose fit.
+    - Total 2.9-5.2 s (Muse Spark 2.0-3.9 s, SAM 3.1 0.8-1.3 s).
+    - Choosing from the list and from the stage both set the surface. Typing "white
+      paper" ran SAM 3.1 alone (2.2 s) and offered Accept.

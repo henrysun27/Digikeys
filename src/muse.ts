@@ -63,6 +63,20 @@ export async function listObjectsIn(image: string): Promise<{ list: unknown; ser
   return { list: body.list, serverMs: body.ms };
 }
 
+// Asks Muse Spark, through the server, which flat surfaces in view could be the playing area,
+// best first. image: the unmirrored frame. list is unchecked (checkSurfaceList in
+// surface-scan.ts).
+export async function listSurfacesIn(image: string): Promise<{ list: unknown; serverMs: number }> {
+  const res = await fetch("/api/surfaces/list", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image }),
+  });
+  const body = await res.json().catch(() => ({ error: `server returned ${res.status}` }));
+  if (!res.ok) throw new Error(body.error ?? `server returned ${res.status}`);
+  return { list: body.list, serverMs: body.ms };
+}
+
 // Asks Muse Spark, through the server, what one object crop is and what it should sound
 // like; prompt is the name SAM found it under. description is unchecked (checkDescription
 // in objects.ts).

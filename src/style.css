@@ -317,6 +317,7 @@ kbd {
 
 #stepper .panel {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   margin-top: 10px;
@@ -335,8 +336,16 @@ kbd {
 
 #stepper .lead {
   flex: 1;
+  min-width: 260px;
   margin: 0;
   color: var(--muted);
+}
+
+/* Detected surfaces take their own row under the surface step's controls. */
+#p-choices {
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  order: 1;
 }
 
 #surface-hint.error {
@@ -351,6 +360,43 @@ kbd {
 
 #p-build {
   flex: 1;
+}
+
+#p-surface {
+  width: 150px;
+  cursor: text;
+  background: var(--bg);
+}
+
+#p-surface::placeholder {
+  color: var(--muted);
+}
+
+#p-surface:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+/* Detected surfaces to choose from, each marked with its outline's color on the stage. */
+#stepper .choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-color: var(--choice);
+  white-space: nowrap;
+}
+
+#stepper .choice::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--choice);
+}
+
+#stepper .choice:hover:enabled {
+  border-color: var(--choice);
+  background: color-mix(in srgb, var(--choice) 18%, var(--panel-2));
 }
 
 #p-request {
@@ -635,9 +681,26 @@ kbd {
   pointer-events: auto;
 }
 
-#sam-actions {
+#sam-actions,
+#sam-choices {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+}
+
+#sam-choices:empty {
+  display: none;
+}
+
+#sam-choices button {
+  padding: 6px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.6);
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
 }
 
 #sam-actions[hidden] {
@@ -673,7 +736,9 @@ kbd {
   font-variant-numeric: tabular-nums;
 }
 
-/* The pads, then one line per SAM match not used; a scan can leave a dozen or more. */
+/* The pads, then one line per SAM match not used; a scan can leave a dozen or more. The
+   surface search lists what Muse Spark named and what became of each. */
+#sam-status,
 #object-status {
   white-space: pre-line;
   max-height: 40vh;

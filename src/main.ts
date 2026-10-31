@@ -1,5 +1,5 @@
 import "./style.css";
-import { Calibration, CORNER_NAMES, checkCorners, orderCorners } from "./calibration.ts";
+import { Calibration, CORNER_NAMES } from "./calibration.ts";
 import { CONFIG } from "./config.ts";
 import {
   initSmoothingControls,
@@ -26,7 +26,7 @@ import {
   showShadow,
   showTest,
 } from "./debug.ts";
-import { applyH, convexHull, distToPolygon, fitQuad, polygonArea, type Pt } from "./geometry.ts";
+import { applyH, distToPolygon, pointInPolygon, polygonArea, type Pt } from "./geometry.ts";
 import { HAND_CONNECTIONS, HandTracking, type TrackedHand } from "./hand-tracking.ts";
 import { createDetector, type Detector, type FrameTiming } from "./detectors.ts";
 import { StepTimes } from "./frame-steps.ts";
@@ -44,9 +44,10 @@ import {
 } from "./orientation.ts";
 import { requestLayout } from "./muse.ts";
 import { scanObjects } from "./object-scan.ts";
+import { largest, scanSurfaces, surfaceCandidate, type SurfaceCandidate } from "./surface-scan.ts";
 import { soundName } from "./objects.ts";
 import { Recording, transcribe } from "./voice.ts";
-import { maskArea, maskImage, maskOutline, maskPixels, segmentFrame, type SamObject, type Segmentation } from "./sam.ts";
+import { maskImage, segmentFrame } from "./sam.ts";
 import type { ShadowReading, ShadowRequest, ShadowResult } from "./shadow.ts";
 import {
   dirDegrees,
@@ -113,6 +114,7 @@ const detectBtn = document.querySelector<HTMLButtonElement>("#detect")!;
 const samPromptInput = document.querySelector<HTMLInputElement>("#sam-prompt")!;
 const samStatusEl = document.querySelector<HTMLDivElement>("#sam-status")!;
 const samActions = document.querySelector<HTMLDivElement>("#sam-actions")!;
+const samChoicesEl = document.querySelector<HTMLDivElement>("#sam-choices")!;
 const acceptBtn = document.querySelector<HTMLButtonElement>("#accept")!;
 const retryBtn = document.querySelector<HTMLButtonElement>("#retry")!;
 const discardBtn = document.querySelector<HTMLButtonElement>("#discard")!;
@@ -169,16 +171,12 @@ let tapCal: TapCalibration | null = null;
 // Board-coord tap positions for the last CONFIG.taps.dotTaps taps that had a target.
 type TapDot = { p: Pt; hit: boolean };
 const dots: { guess: TapDot | null; check: TapDot | null }[] = [];
-// A SAM 3.1 surface detection waiting for Accept. The largest match is taken as the playing
-// surface; corners (raw cam coords, click order) are null if no quad could be fitted.
-type Proposal = {
-  seg: Segmentation;
-  pick: SamObject;
-  image: HTMLCanvasElement;
-  corners: Pt[] | null;
-  problem: string | null;
-};
-let proposal: Proposal | null = null;
+// Detect surface's candidates (surface-scan.ts) waiting for the player: one for Accept, or
+// several to choose from. color: its outline's RGB; image: its mask tinted for drawing.
+// hoverProposal: the choice under the pointer, if any.
+type Proposal = SurfaceCandidate & { color: [number, number, number]; image: HTMLCanvasElement };
+let proposals: Proposal[] = [];
+let hoverProposal: number | null = null;
 // Audio: one context for the mic detector and Tone, started by the mic button.
 const audio = { ctx: null as AudioContext | null, micOn: false, soundOn: false, starting: false };
 // Recent onset times (performance.now() ms) and mic level reports, for missed-tap checks.
@@ -243,16 +241,38 @@ function updateHint() {
   hintEl.textContent = hintError ? `${hintError}. ${next}` : next;
 }
 
-canvas.addEventListener("click", (e) => {
-  if (calibration.done || video.videoWidth === 0) return;
+// The camera point under a pointer event on the canvas.
+function eventCam(e: MouseEvent): Pt {
   const rect = canvas.getBoundingClientRect();
-  const screen = {
+  return screenToCam({
     x: ((e.clientX - rect.left) * canvas.width) / rect.width,
     y: ((e.clientY - rect.top) * canvas.height) / rect.height,
-  };
-  hintError = calibration.add(screenToCam(screen));
+  });
+}
+
+// With several surface candidates on show, a click inside one chooses it; a click anywhere
+// else starts clicking corners instead, and the choices go.
+canvas.addEventListener("click", (e) => {
+  if (calibration.done || video.videoWidth === 0) return;
+  const cam = eventCam(e);
+  const choice = proposalAt(cam);
+  if (choice !== null) {
+    useProposal(proposals[choice]);
+    return;
+  }
+  if (proposals.length > 1) setProposals([]);
+  hintError = calibration.add(cam);
   updateHint();
   if (calibration.done) ui.toast("Surface set. Pick an instrument.", "success");
+});
+
+canvas.addEventListener("mousemove", (e) => {
+  if (proposals.length < 2) return;
+  const hover = proposalAt(eventCam(e));
+  if (hover === hoverProposal) return;
+  hoverProposal = hover;
+  canvas.style.cursor = hover === null ? "" : "pointer";
+  dirty = true;
 });
 
 resetBtn.addEventListener("click", () => {
@@ -260,7 +280,7 @@ resetBtn.addEventListener("click", () => {
   forgetPlayerEdge();
   clearObjects();
   setCorrections(null);
-  setProposal(null);
+  setProposals([]);
   samStatusEl.textContent = "";
   hintError = null;
   updateHint();
@@ -615,84 +635,168 @@ clearCorrectionBtn.addEventListener("click", () => {
   updateTapCalStatus("Tap correction cleared.");
 });
 
-// Playing-surface corners from a SAM mask: convex hull, then the enclosing quad, in click
-// order. fit is quad area / mask area (1 = the mask is exactly a quadrilateral).
-function fitSurface(seg: Segmentation, pick: SamObject): { corners: Pt[]; fit: number } | null {
-  const { pts, area } = maskOutline(pick);
-  const quad = fitQuad(convexHull(pts));
-  if (!quad) return null;
-  const norm = quad.map((p) => ({ x: p.x / seg.width, y: p.y / seg.height }));
-  return {
-    corners: orderCorners(norm, seg.width / seg.height),
-    fit: Math.abs(polygonArea(quad)) / area,
-  };
+// Candidates waiting for the player: one is offered for Accept, several are drawn on the
+// stage as outlined choices (and listed as buttons) to click. Each has a color for its
+// outline and mask image.
+const CHOICE_COLORS: [number, number, number][] = [
+  [139, 92, 246],
+  [34, 211, 238],
+  [245, 158, 11],
+  [52, 211, 153],
+  [244, 114, 182],
+];
+
+function proposalOf(c: SurfaceCandidate, i: number): Proposal {
+  const color = CHOICE_COLORS[i % CHOICE_COLORS.length];
+  return { ...c, color, image: maskImage(c.pick, [...color, 80]) };
 }
 
-function setProposal(p: Proposal | null) {
-  proposal = p;
-  samActions.hidden = p === null;
-  acceptBtn.disabled = !p?.corners || p.problem !== null;
+const proposalLabel = (p: Proposal) => (p.reason ? `${ui.title(p.name)} — ${p.reason}` : ui.title(p.name));
+
+function setProposals(list: Proposal[]) {
+  proposals = list;
+  hoverProposal = null;
+  canvas.style.cursor = "";
+  samActions.hidden = list.length === 0;
+  acceptBtn.hidden = list.length > 1;
+  acceptBtn.disabled = list.length !== 1 || !list[0].corners || list[0].problem !== null;
+  const choices = list.length > 1 ? list : [];
+  samChoicesEl.replaceChildren(
+    ...choices.map((p) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = proposalLabel(p);
+      b.addEventListener("click", () => useProposal(p));
+      return b;
+    }),
+  );
+  ui.setSurfaceChoices(
+    choices.map((p) => ({ label: proposalLabel(p), color: `rgb(${p.color.join(", ")})` })),
+    (i) => useProposal(choices[i]),
+  );
+  dirty = true;
 }
 
 function setDetecting(busy: boolean) {
   detectBtn.disabled = busy;
   retryBtn.disabled = busy;
   if (busy) acceptBtn.disabled = true;
-  else setProposal(proposal);
+  else setProposals(proposals);
 }
 
+// The choice under a camera point: the smallest candidate quad containing it, so a notebook
+// lying on a desk mat can be picked. Only with several candidates on show.
+function proposalAt(cam: Pt): number | null {
+  if (proposals.length < 2) return null;
+  let best: number | null = null;
+  proposals.forEach((p, i) => {
+    if (!p.corners || !pointInPolygon(cam, p.corners)) return;
+    if (best === null || Math.abs(polygonArea(p.corners)) < Math.abs(polygonArea(proposals[best].corners!))) best = i;
+  });
+  return best;
+}
+
+const secs = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
+
+// Detect surface: the prompt box, if anything is typed, goes straight to SAM 3.1; otherwise
+// Muse Spark picks the candidates (detectAuto). Clicking the corners stays the fallback.
 async function detectSurface() {
   if (video.videoWidth === 0) return;
-  const { minSurfaceFrac, looseFitRatio } = CONFIG.sam;
-  const prompt = samPromptInput.value.trim() || CONFIG.sam.boundaryPrompt;
+  const typed = samPromptInput.value.trim();
   setDetecting(true);
+  setProposals([]);
+  try {
+    if (typed) await detectTyped(typed);
+    else await detectAuto();
+  } catch (err) {
+    console.error(err);
+    samStatusEl.textContent = `Surface detection failed: ${err instanceof Error ? err.message : String(err)}`;
+    ui.toast("Surface detection failed. Retry, or click the 4 corners.", "error");
+  } finally {
+    setDetecting(false);
+  }
+}
+
+async function detectTyped(prompt: string) {
   ui.working("sam", true);
   samStatusEl.textContent = `Asking SAM 3.1 for "${prompt}"…`;
   try {
     const seg = await segmentFrame(video, prompt);
     const found = `${seg.objects.length} match(es) for "${prompt}" in ${seg.ms.toFixed(0)} ms (SAM ${seg.serverMs} ms)`;
-    const pick = seg.objects.reduce<SamObject | null>((a, o) => (!a || maskArea(o) > maskArea(a) ? o : a), null);
+    const pick = largest(seg.objects);
     if (!pick) {
-      setProposal(null);
       samStatusEl.textContent = `SAM 3.1: ${found}. Retry, or click the corners.`;
-      ui.toast(`SAM 3.1 found no “${prompt}”. Retry, or click the 4 corners.`, "error");
+      ui.toast(`SAM 3.1 found no “${prompt}” (${secs(seg.ms)}). Retry, or click the 4 corners.`, "error");
       return;
     }
-    const frac = maskPixels(pick) / (seg.width * seg.height);
-    const fitted = fitSurface(seg, pick);
-    const problem =
-      frac < minSurfaceFrac
-        ? `it covers only ${(frac * 100).toFixed(1)}% of the frame`
-        : !fitted
-          ? "couldn't fit 4 corners to it"
-          : checkCorners(fitted.corners);
-    setProposal({ seg, pick, image: maskImage(pick, [0, 200, 255, 90]), corners: fitted?.corners ?? null, problem });
+    const c = surfaceCandidate(prompt, null, seg.width, seg.height, pick);
+    setProposals([proposalOf(c, 0)]);
     const conf = pick.confidence?.toFixed(2) ?? "?";
-    const fit = fitted ? `, quad/mask area ${fitted.fit.toFixed(2)}` : "";
+    const fit = c.fit !== null ? `, quad/mask area ${c.fit.toFixed(2)}` : "";
     const loose =
-      fitted && fitted.fit > looseFitRatio
+      c.fit !== null && c.fit > CONFIG.sam.looseFitRatio
         ? " (loose fit: something covers part of the surface, or it isn't four-sided)"
         : "";
-    samStatusEl.textContent = problem
-      ? `SAM 3.1: ${found}. Largest (confidence ${conf}): ${problem}. Retry, or click the corners.`
+    samStatusEl.textContent = c.problem
+      ? `SAM 3.1: ${found}. Largest (confidence ${conf}): ${c.problem}. Retry, or click the corners.`
       : `SAM 3.1: ${found}. Largest (confidence ${conf})${fit}${loose}. Accept to use these corners.`;
     ui.toast(
-      problem
-        ? `SAM 3.1 found the surface, but ${problem}. Retry, or click the corners.`
-        : `SAM 3.1 found the surface in ${(seg.ms / 1000).toFixed(1)} s. Use these corners?`,
-      problem ? "error" : "info",
+      c.problem
+        ? `SAM 3.1 found the ${prompt}, but ${c.problem}. Retry, or click the corners.`
+        : `SAM 3.1 found the ${prompt} in ${secs(seg.ms)}. Use it?`,
+      c.problem ? "error" : "info",
     );
-  } catch (err) {
-    console.error(err);
-    samStatusEl.textContent = `SAM 3.1 failed: ${err instanceof Error ? err.message : String(err)}`;
-    ui.toast("SAM 3.1 didn't answer. Retry, or click the 4 corners.", "error");
   } finally {
-    setDetecting(false);
     ui.working("sam", false);
   }
 }
 
-samPromptInput.value = CONFIG.sam.boundaryPrompt;
+// Muse Spark names the surfaces, SAM 3.1 outlines them (surface-scan.ts); the model chip
+// follows the step. The status line lists what Muse Spark named and why each was kept or
+// dropped, with both models' times.
+async function detectAuto() {
+  const started = performance.now();
+  let model: ui.Model = "spark";
+  ui.working(model, true);
+  const progress = (text: string) => {
+    samStatusEl.textContent = text;
+    const next: ui.Model = text.startsWith("SAM") ? "sam" : "spark";
+    if (next === model) return;
+    ui.working(model, false);
+    ui.working((model = next), true);
+  };
+  try {
+    const r = await scanSurfaces(video, progress);
+    setProposals(r.candidates.map(proposalOf));
+    const times = `Muse Spark ${secs(r.listMs)}, SAM 3.1 ${secs(r.segmentMs)}`;
+    const total = secs(performance.now() - started);
+    const lines = [
+      r.listed.length
+        ? `Muse Spark named ${r.listed.map((l) => `${l.name} (${l.reason})`).join(", ")}.`
+        : "Muse Spark saw no flat surface.",
+      ...r.candidates.map(
+        (c) => `✓ ${c.name}: ${(c.frac * 100).toFixed(0)}% of the frame, quad/mask area ${c.fit!.toFixed(2)}`,
+      ),
+      ...r.dropped.map((d) => `✗ ${d}`),
+      ...r.failed.map((f) => `✗ SAM 3.1 failed for ${f}`),
+      `Times: ${times}, total ${total}.`,
+    ];
+    samStatusEl.textContent = lines.join("\n");
+    const n = r.candidates.length;
+    if (n === 0) {
+      const why = r.listed.length ? "none of them had 4 usable corners" : "Muse Spark saw no flat surface";
+      ui.toast(`No usable surface (${why}; ${times}). Click the 4 corners, or type what it is.`, "error");
+    } else if (n === 1) {
+      ui.toast(`Found the ${r.candidates[0].name} in ${total} (${times}). Use it?`);
+    } else {
+      ui.toast(`Found ${n} surfaces in ${total} (${times}). Click one to play on.`);
+    }
+  } finally {
+    ui.working(model, false);
+  }
+}
+
+samPromptInput.placeholder = "auto (Muse Spark picks)";
 samPromptInput.maxLength = CONFIG.server.maxPromptChars;
 samPromptInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !detectBtn.disabled) detectSurface();
@@ -700,12 +804,17 @@ samPromptInput.addEventListener("keydown", (e) => {
 detectBtn.addEventListener("click", detectSurface);
 retryBtn.addEventListener("click", detectSurface);
 discardBtn.addEventListener("click", () => {
-  setProposal(null);
+  setProposals([]);
   samStatusEl.textContent = "";
 });
 acceptBtn.addEventListener("click", () => {
-  if (!proposal?.corners) return;
-  const problem = calibration.set(proposal.corners);
+  if (proposals.length === 1) useProposal(proposals[0]);
+});
+
+// A candidate becomes the playing surface, as accepted SAM corners always have.
+function useProposal(p: Proposal) {
+  if (!p.corners) return;
+  const problem = calibration.set(p.corners);
   if (problem) {
     samStatusEl.textContent = `Can't use these corners: ${problem}. Retry, or click the corners.`;
     return;
@@ -713,12 +822,12 @@ acceptBtn.addEventListener("click", () => {
   setCorrections(null);
   forgetPlayerEdge();
   clearObjects();
-  setProposal(null);
-  samStatusEl.textContent = "Using the corners from SAM 3.1.";
+  setProposals([]);
+  samStatusEl.textContent = `Using the ${p.name} outlined by SAM 3.1.`;
   hintError = null;
   updateHint();
-  ui.toast("Surface set by SAM 3.1. Pick an instrument.", "success");
-});
+  ui.toast(`${ui.title(p.name)} is the playing surface. Pick an instrument.`, "success");
+}
 
 // Object pads replace any earlier scan's.
 function setObjects(zones: Zone[]) {
@@ -1746,14 +1855,40 @@ function drawLabel(zone: Zone, outline: Pt[]) {
 // The pending detection: the mask, drawn in camera pixels through the mirror transform like
 // the video, and its fitted corners.
 function drawProposal() {
-  if (!proposal) return;
-  const { seg, pick, image, corners } = proposal;
-  const s = canvas.width / seg.width;
-  const b = pick.bounds;
-  ctx.setTransform(-s, 0, 0, s, canvas.width, 0);
-  ctx.drawImage(image, b.left, b.top, b.right - b.left, b.bottom - b.top);
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  if (corners) drawCorners(corners, true, "#00dcff");
+  if (proposals.length === 0) return;
+  // Largest first, so a smaller surface lying on a bigger one stays visible and clickable.
+  const area = (p: Proposal) => (p.corners ? Math.abs(polygonArea(p.corners)) : 0);
+  const order = proposals.map((p, i) => ({ p, i })).sort((a, b) => area(b.p) - area(a.p));
+  for (const { p, i } of order) {
+    const s = canvas.width / p.width;
+    const b = p.pick.bounds;
+    ctx.setTransform(-s, 0, 0, s, canvas.width, 0);
+    ctx.drawImage(p.image, b.left, b.top, b.right - b.left, b.bottom - b.top);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    if (!p.corners) continue;
+    if (proposals.length === 1) {
+      drawCorners(p.corners, true, `rgb(${p.color.join(", ")})`);
+      continue;
+    }
+    const pts = p.corners.map(camToScreen);
+    const hover = i === hoverProposal;
+    tracePath(pts, true);
+    ctx.lineJoin = "round";
+    if (hover) {
+      ctx.fillStyle = `rgba(${p.color.join(", ")}, 0.25)`;
+      ctx.fill();
+    }
+    ctx.strokeStyle = `rgb(${p.color.join(", ")})`;
+    ctx.lineWidth = hover ? 4 : 2.5;
+    ctx.stroke();
+  }
+  // Labels last, on top of every outline.
+  for (const p of proposals) {
+    if (!p.corners) continue;
+    const pts = p.corners.map(camToScreen);
+    const c = { x: pts.reduce((a, q) => a + q.x, 0) / 4, y: pts.reduce((a, q) => a + q.y, 0) / 4 };
+    drawPill(c, ui.title(p.name), p.reason ?? "", p.color);
+  }
 }
 
 // Numbered corner dots joined by a dashed outline; corners in cam coords.
@@ -2000,34 +2135,37 @@ function drawObjectsPlay(active: Set<string>, now: number) {
   }
 }
 
-// A rounded label: bold name, then a dimmer detail.
-function drawPill(c: Pt, name: string, detail: string) {
+// A rounded label: bold name, then a dimmer detail (if any), outlined in rgb (default the
+// accent).
+function drawPill(c: Pt, name: string, detail: string, rgb: [number, number, number] | null = null) {
+  // Sized in screen pixels: the canvas is drawn at camera resolution and scaled to fit.
+  const k = canvas.width / Math.max(1, canvas.getBoundingClientRect().width);
   ctx.save();
   ctx.textBaseline = "middle";
-  const bold = `600 13px ${FONT}`;
-  const thin = `400 13px ${FONT}`;
+  const bold = `600 ${13 * k}px ${FONT}`;
+  const thin = `400 ${13 * k}px ${FONT}`;
   ctx.font = bold;
   const nameW = ctx.measureText(name).width;
   ctx.font = thin;
-  const detailText = ` · ${detail}`;
+  const detailText = detail ? ` · ${detail}` : "";
   const detailW = ctx.measureText(detailText).width;
-  const w = nameW + detailW + 20;
-  const h = 26;
+  const w = nameW + detailW + 20 * k;
+  const h = 26 * k;
   const x = c.x - w / 2;
   ctx.beginPath();
   ctx.roundRect(x, c.y - h / 2, w, h, h / 2);
   ctx.fillStyle = "rgba(16, 15, 26, 0.82)";
   ctx.fill();
-  ctx.strokeStyle = `rgba(${ACCENT_RGB}, 0.7)`;
-  ctx.lineWidth = 1;
+  ctx.strokeStyle = rgb ? `rgb(${rgb.join(", ")})` : `rgba(${ACCENT_RGB}, 0.7)`;
+  ctx.lineWidth = (rgb ? 1.5 : 1) * k;
   ctx.stroke();
   ctx.textAlign = "left";
   ctx.font = bold;
   ctx.fillStyle = "#ffffff";
-  ctx.fillText(name, x + 10, c.y);
+  ctx.fillText(name, x + 10 * k, c.y);
   ctx.font = thin;
   ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
-  ctx.fillText(detailText, x + 10 + nameW, c.y);
+  ctx.fillText(detailText, x + 10 * k + nameW, c.y);
   ctx.restore();
 }
 
@@ -2204,6 +2342,7 @@ ui.initUi(
     retry: retryBtn,
     discard: discardBtn,
     proposal: samActions,
+    surfacePrompt: samPromptInput,
     hint: hintEl,
     talk: talkBtn,
     generate: generateBtn,

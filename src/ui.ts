@@ -14,8 +14,9 @@ export type UiControls = {
   accept: HTMLButtonElement;
   retry: HTMLButtonElement;
   discard: HTMLButtonElement;
-  proposal: HTMLElement; // shown while a SAM 3.1 surface waits for Accept
+  proposal: HTMLElement; // shown while SAM 3.1 surfaces wait for Accept or a choice
   hint: HTMLElement; // the corner-clicking hint
+  surfacePrompt: HTMLInputElement; // empty: Muse Spark picks the surface; else SAM's prompt
   talk: HTMLButtonElement;
   generate: HTMLButtonElement;
   scan: HTMLButtonElement;
@@ -94,7 +95,15 @@ export function initUi(c: UiControls, onModeChange: () => void) {
   $("#p-discard").addEventListener("click", () => c.discard.click());
   $("#p-reset").addEventListener("click", () => c.reset.click());
   mirror(c.detect, pDetect);
-  mirror(c.accept, pAccept);
+  mirror(c.accept, pAccept, { hidden: true });
+  // The optional surface name, kept in step with the Debug prompt box both ways.
+  const pSurface = $<HTMLInputElement>("#p-surface");
+  pSurface.maxLength = c.surfacePrompt.maxLength;
+  pSurface.addEventListener("input", () => (c.surfacePrompt.value = pSurface.value));
+  c.surfacePrompt.addEventListener("input", () => (pSurface.value = c.surfacePrompt.value));
+  pSurface.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !c.detect.disabled) c.detect.click();
+  });
   mirror(c.retry, pRetry);
   mirror(c.proposal, $("#p-proposal"), { hidden: true });
   const hint = $("#surface-hint");
@@ -204,6 +213,24 @@ function render() {
 
 const objectsText = () =>
   objects === "skipped" ? "Skipped" : objects ? `${objects.count} object pad${objects.count === 1 ? "" : "s"}` : null;
+
+// Several detected surfaces to choose from, as buttons in the surface step (each with its
+// outline's color); an empty list removes them.
+export function setSurfaceChoices(choices: { label: string; color: string }[], choose: (i: number) => void) {
+  const box = $("#p-choices");
+  box.hidden = choices.length === 0;
+  box.replaceChildren(
+    ...choices.map(({ label, color }, i) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "choice";
+      b.style.setProperty("--choice", color);
+      b.textContent = label;
+      b.addEventListener("click", () => choose(i));
+      return b;
+    }),
+  );
+}
 
 // Setup progress, from main.ts.
 export function setSurfaceDone(on: boolean) {

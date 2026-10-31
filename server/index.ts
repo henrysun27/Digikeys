@@ -5,6 +5,7 @@ import { CONFIG } from "../src/config.ts";
 import { LAYOUT_INSTRUCTIONS, LAYOUT_SCHEMA, layoutRequestText, toZones, type Corner } from "./layout-prompt.ts";
 import { EDGES, type Edge, type Orientation } from "../src/orientation.ts";
 import { describeText, LIST_INSTRUCTIONS, LIST_SCHEMA, OBJECT_INSTRUCTIONS, OBJECT_SCHEMA } from "./object-prompt.ts";
+import { SURFACE_INSTRUCTIONS, SURFACE_SCHEMA } from "./surface-prompt.ts";
 
 const apiKey = process.env.MODEL_API_KEY?.trim() || null;
 
@@ -202,6 +203,20 @@ async function listObjects(image: string) {
   return { list: out, usage };
 }
 
+// Detect surface with no prompt: Muse Spark names the flat surfaces in view, best first, as
+// {surfaces: [{name, reason}]}, unchecked. The browser then segments each name through
+// /api/objects/segment.
+async function listSurfaces(image: string) {
+  const { out, usage } = await museJson(
+    SURFACE_INSTRUCTIONS,
+    "List the flat surfaces in view that could be the playing area, best first.",
+    image,
+    { name: "playing_surfaces", schema: SURFACE_SCHEMA },
+    CONFIG.sam.autoSurface.listMaxCompletionTokens,
+  );
+  return { list: out, usage };
+}
+
 // Step 2: SAM 3.1 has no prompt-free mode, so each listed name runs as a text prompt, all in
 // parallel. Matches come back tagged with their name; the browser merges them. A name that
 // fails is reported, unless all do.
@@ -287,6 +302,19 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     const ms = Math.round(performance.now() - started);
     console.log(`segment "${prompt}": ${out.objects.length} object(s), ${out.outcome}, ${ms} ms`);
     send(res, 200, { ...out, ms });
+    return;
+  }
+  if (req.method === "POST" && path === "/api/surfaces/list") {
+    if (!apiKey) throw new HttpError(500, "MODEL_API_KEY is not set in .env");
+    const body = (await readJson(req)) as { image?: unknown };
+    if (typeof body?.image !== "string" || !body.image.startsWith("data:image/")) {
+      throw new HttpError(400, "image must be an image data URL");
+    }
+    const started = performance.now();
+    const out = await listSurfaces(body.image);
+    const ms = Math.round(performance.now() - started);
+    console.log(`surface list: ${JSON.stringify(out.list)}, ${ms} ms`);
+    send(res, 200, { ...out, model: CONFIG.muse.model, ms });
     return;
   }
   if (req.method === "POST" && path.startsWith("/api/objects/")) {

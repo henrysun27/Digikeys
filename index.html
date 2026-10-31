@@ -49,7 +49,9 @@
         </ol>
         <div class="panel" data-panel="surface">
           <p class="lead" id="surface-hint"></p>
+          <input id="p-surface" type="text" spellcheck="false" placeholder="Surface (auto)" title="Leave empty and Muse Spark picks the surface; or name it, e.g. desk mat" aria-label="Surface name, optional" />
           <button id="p-detect" type="button" class="primary">Detect surface</button>
+          <span id="p-choices" class="group" hidden></span>
           <span id="p-proposal" class="group" hidden>
             <button id="p-accept" type="button" class="primary">Use these corners</button>
             <button id="p-retry" type="button">Retry</button>
@@ -129,6 +131,7 @@
             <button id="retry" type="button">Retry</button>
             <button id="discard" type="button">Discard</button>
           </div>
+          <div id="sam-choices"></div>
         </div>
         <div id="shadow-check" class="debug-only" hidden>
           <div id="shadow-check-warning"></div>

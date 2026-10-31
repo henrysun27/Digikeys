@@ -259,11 +259,17 @@ export const CONFIG = {
   // Surface detection with SAM 3.1 (model ID from https://dev.meta.ai/docs/models).
   sam: {
     model: "sam-3.1",
-    boundaryPrompt: "sheet of paper", // default for the prompt box; a short noun phrase
     jpegQuality: 0.9,
     minBlobFrac: 0.02, // mask pieces smaller than this fraction of the mask are specks
     minSurfaceFrac: 0.05, // reject a surface mask smaller than this fraction of the frame
     looseFitRatio: 1.3, // warn when the fitted quad's area exceeds the mask's by this ratio
+    // Detect surface with the prompt box empty: Muse Spark names up to maxCandidates flat
+    // surfaces in view, best first, SAM 3.1 segments every name at once, and each name's
+    // largest match that passes the corner checks, with a quad no looser than looseFitRatio,
+    // is a candidate. Two candidates whose quads
+    // overlap by more than sameSurfaceIoU (intersection over union) are one surface, and the
+    // better-ranked name is kept. overlapGrid: cells across the frame when measuring that.
+    autoSurface: { maxCandidates: 5, listMaxCompletionTokens: 1500, sameSurfaceIoU: 0.7, overlapGrid: 96 },
   },
   // Instrument specs from Muse Spark, through Chat Completions with a JSON schema (model ID
   // from https://dev.meta.ai/docs/models). It picks what to build; instrument.ts builds it.
