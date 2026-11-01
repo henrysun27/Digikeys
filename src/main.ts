@@ -65,6 +65,7 @@ import {
   type ShadowVote,
 } from "./shadow-contact.ts";
 import { drawShadowCheck, type CheckPatch } from "./shadow-view.ts";
+import { SessionLog, type DecisionNote } from "./session-log.ts";
 import { JitterMeter } from "./smoothing.ts";
 import { initSound, playNow } from "./sound.ts";
 import {
@@ -77,6 +78,7 @@ import {
   ranked,
   type FingerPick,
   stopWindow,
+  type StopWindow,
 } from "./taps.ts";
 import {
   applyCorrection,
@@ -102,6 +104,8 @@ const probeBtn = document.querySelector<HTMLButtonElement>("#probe-camera")!;
 const tapCalStatusEl = document.querySelector<HTMLDivElement>("#tap-cal-status")!;
 const calShadowBtn = document.querySelector<HTMLButtonElement>("#cal-shadow")!;
 const shadowStatusEl = document.querySelector<HTMLDivElement>("#shadow-status")!;
+const exportBtn = document.querySelector<HTMLButtonElement>("#export-session")!;
+const sessionStatusEl = document.querySelector<HTMLDivElement>("#session-status")!;
 const checkBtn = document.querySelector<HTMLButtonElement>("#shadow-check-btn")!;
 const checkPanel = document.querySelector<HTMLDivElement>("#shadow-check")!;
 const checkWarningEl = document.querySelector<HTMLDivElement>("#shadow-check-warning")!;
@@ -166,6 +170,9 @@ const dropouts = {
 };
 let lastTap: { hand: string; t: number } | null = null; // onset time, performance.now() ms
 const test = new TestMode();
+// Every onset's decision since the page loaded, for Debug's "Export session".
+const session = new SessionLog();
+let lastMicInfo: MicInfo | null = null;
 let corrections: TapCorrections | null = loadCorrections();
 let tapCal: TapCalibration | null = null;
 // Board-coord tap positions for the last CONFIG.taps.dotTaps taps that had a target.
@@ -938,6 +945,7 @@ function updateAudioButton() {
 
 // Debug panel, plus the Play view's Bluetooth banner.
 function micInfo(i: MicInfo) {
+  lastMicInfo = i;
   showMicInfo(i);
   ui.banner(
     "bluetooth",
@@ -1006,11 +1014,22 @@ function visionTap(m: FingerPick) {
   const latencyMs = played ? performance.now() - m.at.t + played.outputMs : null;
   setLastTap(m.finger, m.at.t);
   const line = logVisionTap(n, m.finger, zone?.label ?? null, latencyMs);
+  const rec = session.vision(n, m, { mode: CONFIG.taps.mode, handsInFrame, frameMs });
+  const note: DecisionNote = { pick: m, at, zone };
+  const notChosen = zone && !played ? [`${m.finger} ${zone.label} in refractory`] : [];
+  rec.guess = {
+    candidates: session.candidates([note], [note], notChosen, [], played ? [m.finger] : [], null),
+    chord: [m.finger],
+  };
+  if (played && zone) rec.played.push({ finger: m.finger, zone: zone.id, label: zone.label, at, latencyMs });
+  rec.latencyMs = latencyMs;
+  rec.outcome = played ? "played" : zone ? "silent (refractory)" : "silent (no zone)";
 
   if (tapCal) {
     const cal = tapCal;
     const target = cal.take();
     if (!target) return;
+    rec.tapCalibration = { target: target.label };
     if (at) pushDot({ guess: { p: at, hit: zone?.id === target.id }, check: null });
     cal.add("guess", target, at);
     cal.add("check", target, at);
@@ -1022,6 +1041,7 @@ function visionTap(m: FingerPick) {
   const joined = test.active ? test.join(m.at.t, fingerSetting(), tapModeName(), layout) : null;
   if (!joined) return;
   const { attempt, opened } = joined;
+  session.joinAttempt(rec, attempt, attempt.target, opened);
   if (zone) {
     attempt.played.add(zone.id);
     attempt.checked.add(zone.id);
@@ -1038,6 +1058,7 @@ function visionTap(m: FingerPick) {
 function closeAttemptAt(a: Attempt, t: number) {
   setTimeout(() => {
     const hit = test.record(a);
+    session.attemptScored(a, hit);
     if (a.line) logTest(a.line, a.target.label, hit);
     updateTest();
   }, Math.max(0, t + 5 - performance.now()));
@@ -1076,6 +1097,13 @@ function checkMiss(m: FingerPick) {
     const at = tapPoint("check", landing(m.at));
     const zone = at ? zoneAt(at) : null;
     logMissed(m.finger, zone?.label ?? null, peak, rejectedOnsets.some(inWindow));
+    session.miss({
+      t: m.at.t,
+      finger: m.finger,
+      zone: zone?.label ?? null,
+      peak: peak && { level: peak.level, threshold: peak.threshold },
+      onsetRejected: rejectedOnsets.some(inWindow),
+    });
   }, Math.max(0, hi + CONFIG.taps.settleMarginMs - performance.now()));
 }
 
@@ -1180,16 +1208,24 @@ const zoneList = (notes: Note[]) => notes.map((x) => x.zone?.label ?? "off board
 // In every mode, the check's fingers teach their touching baselines when shadows are
 // sampled.
 function onOnset(onset: Onset) {
-  if (tapsPaused() || CONFIG.taps.mode === "vision") return;
+  const state = (win: StopWindow | null) => ({ mode: CONFIG.taps.mode, handsInFrame, frameMs, stopWindow: win });
+  if (tapsPaused() || CONFIG.taps.mode === "vision") {
+    const why = CONFIG.taps.mode === "vision" ? "ignored (vision-only mode)" : "ignored (taps paused)";
+    session.onset(null, onset, why, state(null));
+    return;
+  }
   const fused = CONFIG.taps.mode === "fused";
   const n = ++tapCount;
   if (handsInFrame === 0) {
     logIgnored(n, "no hand");
+    session.onset(n, onset, "ignored (no hand)", state(null));
     return;
   }
   const { videoLagMs, settleMarginMs } = CONFIG.taps;
   // One window for both the guess and the check of this onset.
   const win = stopWindow(frameMs);
+  const rec = session.onset(n, onset, "rejected", state(win));
+  const expected = onset.time + videoLagMs;
   const recent = lastTap && onset.time - lastTap.t <= CONFIG.guess.lastHandMs;
   const picks = history.guessAll(onset.time, { toBoard, onBoard, lastHand: recent ? lastTap!.hand : null, window: win });
   const votes = fused ? applyShadowVotes(picks, () => Infinity, true) : [];
@@ -1201,6 +1237,7 @@ function onOnset(onset: Onset) {
   if (chord.length === 0) {
     keepRecent(rejectedOnsets, onset.time);
     noteShadowVotes(logRejected(n, onset, rejected), "shadow", votes);
+    rec.guess = { candidates: session.candidates(guesses, [], rejected, votes, [], expected), chord: [] };
     return;
   }
   keepRecent(acceptedOnsets, onset.time);
@@ -1217,9 +1254,18 @@ function onOnset(onset: Onset) {
     if (!p) continue;
     played.push(zone);
     playedFingers.push(pick.finger);
-    latencyMs ??= (p.ctxTime - onset.ctxTime) * 1000 + p.outputMs;
+    const noteMs = (p.ctxTime - onset.ctxTime) * 1000 + p.outputMs;
+    latencyMs ??= noteMs;
+    rec.played.push({ finger: pick.finger, zone: zone.id, label: zone.label, at, latencyMs: noteMs });
   }
   const handlerMs = performance.now() - onset.receivedAt;
+  rec.guess = {
+    candidates: session.candidates(guesses, chord, rejected, votes, playedFingers, expected),
+    chord: chord.map((c) => c.pick.finger),
+  };
+  rec.outcome = played.length ? "played" : "silent (refractory or between zones)";
+  rec.latencyMs = latencyMs;
+  rec.handlerMs = handlerMs;
   const best = chord[0] ?? null;
   if (best) setLastTap(best.pick.finger, onset.time);
   const line = logPlayed({
@@ -1238,6 +1284,8 @@ function onOnset(onset: Onset) {
   const cal = calTarget ? tapCal : null;
   const joined = !tapCal && test.active ? test.join(onset.time, fingerSetting(), tapModeName(), layout) : null;
   const attempt = joined?.attempt ?? null;
+  if (joined) session.joinAttempt(rec, joined.attempt, joined.attempt.target, joined.opened);
+  if (calTarget) rec.tapCalibration = { target: calTarget.label };
   // Late enough for the shadow's confirm window too, when it judges hovering.
   const resolveAt =
     onset.time + videoLagMs + Math.max(win.hi, CONFIG.shadow.confirmWindowMs[1]) + settleMarginMs;
@@ -1268,14 +1316,13 @@ function onOnset(onset: Onset) {
     const guessAt = new Map(guesses.map((g) => [g.pick.finger, g.at]));
     const stops = history.resolveAll(onset.time, toBoard, win);
     const checkVotes = fused ? applyShadowVotes(stops, (p) => p.at.t + CONFIG.shadow.vote.stopSlackMs, false) : [];
-    const { chord: checks, rejected: checkRejected } = chordOf(
-      stops.map((pick): Note => {
-        const early = guessAt.get(pick.finger) ?? null;
-        const late = pick.stopOffset! > CONFIG.taps.lateStopMs && early !== null;
-        const at = late ? early : tapPoint("check", landing(pick.at));
-        return { pick, at, zone: at ? zoneAt(at) : null, late };
-      }),
-    );
+    const stopNotes = stops.map((pick): Note => {
+      const early = guessAt.get(pick.finger) ?? null;
+      const late = pick.stopOffset! > CONFIG.taps.lateStopMs && early !== null;
+      const at = late ? early : tapPoint("check", landing(pick.at));
+      return { pick, at, zone: at ? zoneAt(at) : null, late };
+    });
+    const { chord: checks, rejected: checkRejected } = chordOf(stopNotes);
     const top = checks[0] ?? null;
     if (top) setLastTap(top.pick.finger, onset.time);
     resolveTap(line, fingerList(chord), {
@@ -1290,6 +1337,16 @@ function onOnset(onset: Onset) {
     if ((calTarget || attempt) && top?.at) dot.check = { p: top.at, hit: targetHas(top.zone) };
     const { judged, hovering } = judgeHovering(playedFingers, onset.time);
     noteHovering(line, hovering);
+    const checkZones = checks.flatMap((c) => (c.zone ? [c.zone.id] : [])).sort();
+    rec.check = {
+      candidates: session.candidates(stopNotes, checks, checkRejected, checkVotes, [], expected),
+      chord: checks.map((c) => c.pick.finger),
+      zones: checks.map((c) => c.zone?.label ?? "off board"),
+      stopOffsetMs: top?.pick.stopOffset ?? null,
+      late: !!top?.late,
+      agrees: checkZones.join() === played.map((z) => z.id).sort().join(),
+      hovering: judged.length ? { judged, hovering } : null,
+    };
     if (attempt) {
       attempt.judged += judged.length;
       attempt.hoverTriggers += hovering.length;
@@ -2414,7 +2471,17 @@ function loop() {
       }
       showDropouts(dropouts);
       showJitter(jitter.read(now));
-      showFrameSteps(frameSteps.take(), TOTAL_STEP, frameMs);
+      const steps = frameSteps.take();
+      showFrameSteps(steps, TOTAL_STEP, frameMs);
+      session.second({
+        t: Math.round(now),
+        cameraFps: Math.round(fps * 10) / 10,
+        detectionsPerSec: Math.round((n / secs) * 10) / 10,
+        detectMeanMs: n ? (counts.detectMs - last.detectMs) / n : null,
+        drawsPerSec: Math.round((draws / secs) * 10) / 10,
+        handsInFrame: hands.length,
+        steps,
+      });
       updatePlayerPanel();
       last = { ...counts };
       fpsStart = now;
@@ -2492,6 +2559,73 @@ ui.initUi(
   },
   () => (dirty = true),
 );
+
+// Debug "Export session": the session log plus everything the decisions depended on. The
+// server writes it to sessions/ in the repo; without the server it downloads instead.
+const zoneSummary = (l: Layout) => ({
+  instrument: l.instrument,
+  zones: l.zones.map((z) => ({ id: z.id, label: z.label, sound: z.sound, z: z.z, shape: z.shape })),
+});
+
+function sessionContext(): Record<string, unknown> {
+  return {
+    config: JSON.parse(JSON.stringify(CONFIG)),
+    environment: {
+      userAgent: navigator.userAgent,
+      timeOrigin: performance.timeOrigin,
+      screen: { width: screen.width, height: screen.height, devicePixelRatio },
+      hardwareConcurrency: navigator.hardwareConcurrency,
+    },
+    camera: camera && {
+      asked: camera.asked,
+      settings: camera.settings,
+      measuredFps: frameMs ? Math.round(10000 / frameMs) / 10 : null,
+      frameMs,
+    },
+    detection: detector && { kind: detector.kind, info: detector.info, autoChoice: detectorChoice },
+    mic: lastMicInfo,
+    calibration: { done: calibration.done, corners: calibration.corners, orientation, playerEdge: CONFIG.playerEdge },
+    layout: zoneSummary(layout),
+    objects: zoneSummary(objects),
+    tapCorrection: corrections,
+    shadowFit,
+    test: {
+      active: test.active,
+      scores: Object.fromEntries(test.scores),
+      byMode: Object.fromEntries(test.byMode),
+    },
+  };
+}
+
+function downloadJson(name: string, text: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+  const a = Object.assign(document.createElement("a"), { href: url, download: name });
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+exportBtn.addEventListener("click", async () => {
+  const data = session.export(sessionContext());
+  const text = JSON.stringify(data);
+  const what = `${data.summary.onsets} onsets, ${data.summary.visionTaps} vision taps, ${data.timeline.length} s of timing`;
+  exportBtn.disabled = true;
+  sessionStatusEl.textContent = "Saving session…";
+  try {
+    const res = await fetch("/api/sessions", { method: "POST", headers: { "Content-Type": "application/json" }, body: text });
+    const out = (await res.json()) as { file?: string; error?: string };
+    if (!res.ok || !out.file) throw new Error(out.error ?? `HTTP ${res.status}`);
+    sessionStatusEl.textContent = `Session saved to ${out.file} (${what}).`;
+    ui.toast(`Session saved to ${out.file}`, "success");
+  } catch (err) {
+    const name = `session-${data.exportedAt.replace(/[:.]/g, "-").slice(0, 19)}.json`;
+    downloadJson(name, text);
+    const why = err instanceof Error ? err.message : String(err);
+    sessionStatusEl.textContent = `Server couldn't save the session (${why}); downloaded ${name} instead (${what}).`;
+    ui.toast(`Server couldn't save the session; downloaded ${name}`, "error");
+  } finally {
+    exportBtn.disabled = false;
+  }
+});
 
 // Before any hand track builds its filters, so saved slider values are in CONFIG.
 initSmoothingControls();

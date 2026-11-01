@@ -1,3 +1,4 @@
+import type { BandReading } from "./band-rise.ts";
 import { ClockSync, type ClockStats } from "./clock-sync.ts";
 import { CONFIG } from "./config.ts";
 import type { OnsetMessage } from "./onset-worklet.ts";
@@ -10,6 +11,7 @@ export type Onset = {
   level: number;
   threshold: number;
   rise: number; // level over the baseline before it, linear
+  bands: BandReading[]; // per-band level and rise at the onset block (CONFIG.onset.bands)
 };
 // time: performance.now() ms of the report; level is the peak since the previous one.
 export type MicLevel = { time: number; level: number; floor: number; threshold: number };
@@ -103,7 +105,7 @@ export async function startMic(ctx: AudioContext, h: MicHandlers) {
     if (msg.type === "level") h.onLevel({ ...msg, time: clock.toPerf(msg.time) });
     else {
       const time = clock.toPerf(msg.time);
-      h.onOnset({ time, ctxTime: msg.time, receivedAt, level: msg.level, threshold: msg.threshold, rise: msg.rise });
+      h.onOnset({ time, ctxTime: msg.time, receivedAt, level: msg.level, threshold: msg.threshold, rise: msg.rise, bands: msg.bands });
     }
     if (logged) h.onInfo(info());
   };

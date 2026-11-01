@@ -28,3 +28,6 @@ public/mediapipe
 
 # Meta API key (server only)
 .env
+
+# Debug "Export session" files (written by the server)
+sessions/

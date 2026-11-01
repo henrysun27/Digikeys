@@ -5,6 +5,8 @@ import { CONFIG } from "./src/config.ts";
 export default defineConfig({
   server: {
     proxy: { "/api": `http://127.0.0.1:${CONFIG.server.port}` },
+    // Session exports land in sessions/; they are data, not source.
+    watch: { ignored: ["**/sessions/**"] },
   },
   // The hand worker is a module worker in dev, so build it as one too: MediaPipe then
   // loads its ES module wasm loader the same way in both.

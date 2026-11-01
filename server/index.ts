@@ -1,5 +1,8 @@
 // Minimal API server: the only place that sees MODEL_API_KEY. Vite proxies /api here.
+import { mkdir, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { decodeMaskToRaster, parseImageStream, recordsOfKind, type ResponsesEvent } from "@meta-sam/parser";
 import { CONFIG } from "../src/config.ts";
 import { LAYOUT_INSTRUCTIONS, LAYOUT_SCHEMA, layoutRequestText, toZones, type Corner } from "./layout-prompt.ts";
@@ -281,6 +284,34 @@ function isOrientation(o: unknown): o is Orientation {
   return i >= 0 && j >= 0 && (i - j + 4) % 2 === 1;
 }
 
+// Debug "Export session" files: the repo's sessions/ folder (gitignored), one file per
+// export, named by the server's clock. Local only, no model call.
+const SESSIONS_DIR = fileURLToPath(new URL("../sessions/", import.meta.url));
+
+async function saveSession(body: Buffer): Promise<{ file: string; bytes: number }> {
+  let data: unknown;
+  try {
+    data = JSON.parse(body.toString("utf8"));
+  } catch {
+    throw new HttpError(400, "body is not JSON");
+  }
+  if ((data as { kind?: unknown } | null)?.kind !== "digikeys-session") {
+    throw new HttpError(400, 'body must be a session export (kind "digikeys-session")');
+  }
+  await mkdir(SESSIONS_DIR, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const text = JSON.stringify(data, null, 1);
+  for (let k = 1; ; k++) {
+    const name = `session-${stamp}${k > 1 ? `-${k}` : ""}.json`;
+    try {
+      await writeFile(join(SESSIONS_DIR, name), text, { flag: "wx" });
+      return { file: `sessions/${name}`, bytes: Buffer.byteLength(text) };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
+  }
+}
+
 async function handle(req: IncomingMessage, res: ServerResponse) {
   const path = new URL(req.url ?? "/", "http://localhost").pathname;
   if (req.method === "GET" && path === "/api/health") {
@@ -384,6 +415,12 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     console.log(`layout "${request}": ${ms} ms, aspect ${String(out.aspect)}, ${JSON.stringify(brief)}`);
     console.log(`  usage ${JSON.stringify(out.usage)}`);
     send(res, 200, { ...out, model: CONFIG.muse.model, ms });
+    return;
+  }
+  if (req.method === "POST" && path === "/api/sessions") {
+    const out = await saveSession(await readBody(req, CONFIG.session.maxBytes));
+    console.log(`session saved: ${out.file}, ${(out.bytes / 1024).toFixed(0)} KB`);
+    send(res, 200, out);
     return;
   }
   if (req.method === "POST" && path === "/api/transcribe") {

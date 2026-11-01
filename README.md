@@ -628,3 +628,23 @@ with `latencyHint: "interactive"` and `lookAhead: 0`, and notes trigger at
       old code) or another program. The server retries every second
       (`CONFIG.server.listenRetryMs`) and takes over when the port frees. Other listen
       errors exit with a one-line message.
+- [x] Debug **Export session** (toolbar button in Debug). Saves everything since the page
+      loaded to `sessions/session-<time>.json` in the repo (gitignored), written by the API
+      server (`POST /api/sessions`, no model call). Without the server, the browser downloads
+      the file instead. Contents:
+      - Every mic onset, including ignored ones (no hand, taps paused, vision-only mode):
+        - time, main-thread wait, level, threshold and broadband rise;
+        - rise per band (low 40-250 Hz, mid 250-2000 Hz, high 2-8 kHz, `CONFIG.onset.bands`),
+          measured in the worklet for the record only, so the onset decision is unchanged;
+        - every candidate finger for the guess and for the stop-based check: stroke depth
+          and speed, stop offset, landing point (camera and board), zone, score, why it is
+          no strike or wasn't chosen, and its shadow vote in fused mode;
+        - zones played, with latency per note; whether the check agrees; hover judgments;
+        - Test-mode target and the attempt's guess/check result; the tap-calibration target.
+      - Vision-only taps, missed taps (test mode), and a once-a-second timeline of camera
+        fps, detection rate and time, and every frame step's mean and max.
+      - The full `CONFIG`, camera settings, detector and GPU, audio latency and clock,
+        calibration, layout and object zones, tap correction, shadow fit, test scores.
+      - Tested headless (fake camera, click-track mic): 35 onsets with band rises and 14 s
+        of timeline saved, 73 KB. Candidate records were checked with synthetic picks;
+        records from real hands still need a run on camera.

@@ -88,6 +88,14 @@ export const CONFIG = {
     // onset. Short, so a second finger landing just after the first still gets its own.
     mergeMs: 25,
     reportMs: 30, // how often the worklet posts levels for the debug panel
+    // Per-band rise, recorded with each onset for the session export only (the decision
+    // above uses the broadband level): bandpass edges in Hz, rise measured against the
+    // same baseline window as minRiseDb.
+    bands: [
+      { name: "low", hz: [40, 250] },
+      { name: "mid", hz: [250, 2000] },
+      { name: "high", hz: [2000, 8000] },
+    ] as { name: string; hz: [number, number] }[],
   },
   mic: {
     maxLatencyCorrectionMs: 100, // any latency correction is clamped to 0..this
@@ -229,6 +237,12 @@ export const CONFIG = {
     storageKey: "desk-instrument.shadow.v2",
   },
   // Test mode targets.
+  // Debug's "Export session": records kept since the page loaded (each list drops its
+  // oldest past maxRecords) and the largest export the server will write to sessions/.
+  session: {
+    maxRecords: 20_000,
+    maxBytes: 64_000_000,
+  },
   test: {
     chordChance: 0.3, // share of targets that are a two-zone chord
     chordWindowMs: 120, // taps this soon after a chord attempt's first one count toward it

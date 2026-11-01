@@ -2,6 +2,7 @@
 // OnsetDetector (running-median floor, transient check, short merge window). Posts onsets
 // and periodic level reports.
 import type { OnsetParams } from "./config.ts";
+import { BandRise, type BandReading } from "./band-rise.ts";
 import { OnsetDetector } from "./onset-detector.ts";
 
 declare const sampleRate: number;
@@ -14,12 +15,13 @@ declare class AudioWorkletProcessor {
 // time: the block's audio-clock time, s. rise: the onset's level over the baseline before
 // it, linear. A level report's level is the peak since the previous report.
 export type OnsetMessage =
-  | { type: "onset"; time: number; level: number; threshold: number; rise: number }
+  | { type: "onset"; time: number; level: number; threshold: number; rise: number; bands: BandReading[] }
   | { type: "level"; time: number; level: number; floor: number; threshold: number };
 
 class OnsetProcessor extends AudioWorkletProcessor {
   private p: OnsetParams;
   private detector: OnsetDetector | null = null;
+  private bands: BandRise | null = null;
   private reportPeak = 0;
   private lastReport = 0;
 
@@ -32,12 +34,15 @@ class OnsetProcessor extends AudioWorkletProcessor {
     const ch = inputs[0]?.[0];
     if (!ch || ch.length === 0) return true;
     // Block size is fixed in practice; the detector's windows are set from the first one.
-    this.detector ??= new OnsetDetector(this.p, (ch.length / sampleRate) * 1000);
+    const blockMs = (ch.length / sampleRate) * 1000;
+    this.detector ??= new OnsetDetector(this.p, blockMs);
+    this.bands ??= new BandRise(this.p, sampleRate, blockMs);
 
     let sum = 0;
     for (let i = 0; i < ch.length; i++) sum += ch[i] * ch[i];
     const level = Math.sqrt(sum / ch.length);
     const d = this.detector.push(level, currentTime);
+    this.bands.push(ch);
     if (d.onset) {
       this.port.postMessage({
         type: "onset",
@@ -45,6 +50,7 @@ class OnsetProcessor extends AudioWorkletProcessor {
         level,
         threshold: d.threshold,
         rise: d.rise,
+        bands: this.bands.last.map((b) => ({ ...b })),
       } satisfies OnsetMessage);
     }
 

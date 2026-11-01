@@ -35,6 +35,8 @@ Anything bigger: report it as FAIL with the cause and a proposed fix, and leave 
        `EDGES` in `src/orientation.ts`, corners are pixel positions inside the image)
      - `POST /api/transcribe` with a short WAV body (Muse Voice Transcribe; generate ~1 s of
        16-bit PCM silence or a tone; an empty transcript is fine, a 4xx/5xx is not)
+     - `POST /api/sessions` `{ "kind": "digikeys-session" }` (local, no model; writes a
+       file to `sessions/`, delete the one you made)
    - A 200 with a well-formed body passes. Report empty results (e.g. no objects found) as a
      note, not a failure. Stop the server you started when done.
    - Never print the API key or full request/response bodies containing it.
