@@ -337,6 +337,12 @@ and the output latency is shown on its own, with a warning above 60 ms (usually 
 audio). Measured: 66 ms median tap-to-sound, of which 52 ms is output latency. Tone runs
 with `latencyHint: "interactive"` and `lookAhead: 0`, and notes trigger at
 `Tone.immediate()`, so the rest is the time between the onset block and the trigger.
+
+Session export of 2026-11-01, laptop mic and wired output, 30 fps: **57 ms median
+tap-to-sound (p95 63 ms, max 63 ms, 103 taps)**. Of that, 52 ms is output latency; the
+main-thread wait for the onset message has a median of 6 ms (p95 10 ms), and guess plus
+trigger takes at most 1 ms. Mic input latency isn't counted: the track reports 18 ms.
+Taps rescued by the late guess (below) play later, by the wait shown in their log line.
 - [x] Wider stop window: real taps were rejected as "stopped too early" at -204 to -265 ms.
       A finger's stop now counts from 300 ms before to 150 ms after onset + `videoLagMs`
       (`CONFIG.taps.stopWindowMs`, was +-150 ms), for both the instant guess and the
@@ -648,3 +654,16 @@ with `latencyHint: "interactive"` and `lookAhead: 0`, and notes trigger at
       - Tested headless (fake camera, click-track mic): 35 onsets with band rises and 14 s
         of timeline saved, 73 KB. Candidate records were checked with synthetic picks;
         records from real hands still need a run on camera.
+- [x] Late guess (`CONFIG.taps.lateGuessMs`, 70 ms). Found in the first hardware session
+      export (222 s, piano, index fingers only, Mic + motion, Test mode): 28 of the 31
+      onsets rejected during targeted testing were real taps. Each had a strike stop 4-73 ms
+      after the onset, but at onset time the guess saw only the finger's earlier small
+      movement ("too shallow", "stopped too early"), so the tap stayed silent. Now:
+      - an onset with no strike yet is guessed again on every new hand frame until one
+        70 ms past it, and plays as soon as a strike shows up;
+      - after any guess plays, the other fingers get the same window to join the chord
+        (one note per zone);
+      - a late strike must have started before the contact shows in frames
+        (onset + `videoLagMs`), so the next tap's stroke can't play early.
+      Taps decided at the onset play exactly as before. Rescued taps log "late guess" and
+      their real latency; the export records the wait (`lateGuess`, `played[].lateMs`).

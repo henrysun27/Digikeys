@@ -62,9 +62,13 @@ export type OnsetRecord = {
     bands: { name: string; hz: [number, number]; level: number; levelDb: number | null; rise: number | null; riseDb: number | null }[];
   } | null;
   guess: { candidates: Candidate[]; chord: string[] } | null;
-  played: { finger: string; zone: string; label: string; at: Pt | null; latencyMs: number | null }[];
+  // lateMs: a finger that joined the chord from a later frame, ms after the onset message.
+  played: { finger: string; zone: string; label: string; at: Pt | null; latencyMs: number | null; lateMs?: number }[];
   latencyMs: number | null; // first note: (sound ctxTime - onset ctxTime) * 1000 + output latency
-  handlerMs: number | null; // guess + trigger on the main thread
+  handlerMs: number | null; // guess + trigger on the main thread (including any late-guess wait)
+  // Guessed again on later frames (CONFIG.taps.lateGuessMs): how long and how many frames
+  // until it played or was rejected; null if decided at the onset.
+  lateGuess: { waitedMs: number; frames: number } | null;
   check: {
     candidates: Candidate[];
     chord: string[];
@@ -149,6 +153,7 @@ export class SessionLog {
       played: [],
       latencyMs: null,
       handlerMs: null,
+      lateGuess: null,
       check: null,
       test: null,
       tapCalibration: null,
@@ -173,6 +178,7 @@ export class SessionLog {
       played: [],
       latencyMs: null,
       handlerMs: null,
+      lateGuess: null,
       check: null,
       test: null,
       tapCalibration: null,
@@ -253,6 +259,8 @@ export class SessionLog {
       summary: {
         onsets: mic.length,
         played: mic.filter((r) => r.played.length > 0).length,
+        playedLate: mic.filter((r) => r.played.length > 0 && r.lateGuess).length,
+        lateChordNotes: mic.reduce((k, r) => k + r.played.filter((p) => p.lateMs !== undefined).length, 0),
         rejected: mic.filter((r) => r.outcome === "rejected").length,
         ignored: mic.filter((r) => r.outcome.startsWith("ignored")).length,
         visionTaps: this.onsets.length - mic.length,

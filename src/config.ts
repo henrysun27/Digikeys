@@ -144,6 +144,12 @@ export const CONFIG = {
     // A stop later than this past onset + videoLagMs is likely the finger settling after
     // contact, not the contact: the check then uses the guess position instead.
     lateStopMs: 25,
+    // An onset whose guess sees no strike yet is guessed again on each new frame until one
+    // this long past the onset, and plays if a strike shows up; a played chord's other
+    // fingers get the same window. 0: decide at the onset only. In a hardware session
+    // (30 fps), 28 of 31 rejected onsets were real taps whose strike stopped 4-73 ms after
+    // the onset, too late for the guess.
+    lateGuessMs: 70,
     maxExtrapolateMs: 80, // best guess: how far ahead a still-moving finger is projected
     medianTaps: 20, // taps in the debug panel's medians (stop offset, tap-to-sound)
     keepMs: 1000,

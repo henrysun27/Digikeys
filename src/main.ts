@@ -65,7 +65,7 @@ import {
   type ShadowVote,
 } from "./shadow-contact.ts";
 import { drawShadowCheck, type CheckPatch } from "./shadow-view.ts";
-import { SessionLog, type DecisionNote } from "./session-log.ts";
+import { SessionLog, type DecisionNote, type OnsetRecord } from "./session-log.ts";
 import { JitterMeter } from "./smoothing.ts";
 import { initSound, playNow } from "./sound.ts";
 import {
@@ -1201,12 +1201,59 @@ const zoneList = (notes: Note[]) => notes.map((x) => x.zone?.label ?? "off board
 // logged as rejected, with each moving finger's shortfall. Onsets are ignored in
 // vision-only mode.
 //
+// Late guesses (CONFIG.taps.lateGuessMs): at 30 fps a tap's down-stroke often reaches the
+// frames only after its onset, so the guess at onset time sees no strike yet. Such an
+// onset isn't rejected right away: it is guessed again on every new hand frame until a
+// frame lateGuessMs past the onset, and plays as soon as a strike shows up. After any
+// guess plays, fingers that weren't strikes yet get the same window to join the chord
+// (one note per zone, as always). A late strike must have started by the time the
+// onset's contact shows in frames (onset + videoLagMs): a stroke starting after that
+// can't have made this sound.
+//
 // Fused mode is all of the above with one change: before the chord is picked (and again
 // before the check's), each strike's score can be lowered by its shadow vote
 // (applyShadowVotes, veto-only), logged per finger with its gap, baseline, confidence and
 // factor. Votes only read frames already in, so the guess plays as soon as in Mic + motion.
 // In every mode, the check's fingers teach their touching baselines when shadows are
 // sampled.
+// One guess at an onset's fingers from the frames in so far.
+type GuessResult = { guesses: Note[]; chord: Note[]; rejected: string[]; votes: ShadowVote[] };
+
+function guessOnset(onset: Onset, win: StopWindow, fused: boolean): GuessResult {
+  const recent = lastTap && onset.time - lastTap.t <= CONFIG.guess.lastHandMs;
+  const picks = history.guessAll(onset.time, { toBoard, onBoard, lastHand: recent ? lastTap!.hand : null, window: win });
+  // Only frames that came in after the onset can show a stroke starting this late.
+  const contact = onset.time + CONFIG.taps.videoLagMs;
+  for (const p of picks) {
+    if (!p.why && p.startT > contact) p.why = `started after the onset (+${(p.startT - contact).toFixed(0)} ms)`;
+  }
+  ranked(picks);
+  const votes = fused ? applyShadowVotes(picks, () => Infinity, true) : [];
+  const guesses = picks.map((pick): Note => {
+    const at = tapPoint("guess", landing(pick.at));
+    return { pick, at, zone: at ? zoneAt(at) : null, late: false };
+  });
+  return { guesses, votes, ...chordOf(guesses) };
+}
+
+// An onset whose guess found no strike yet, waiting for frames (see Late guesses above).
+// timer: rejects it if frames stop coming (hand lost).
+type PendingGuess = { onset: Onset; n: number; rec: OnsetRecord; win: StopWindow; fused: boolean; last: GuessResult; frames: number; timer: number };
+const pendingGuesses: PendingGuess[] = [];
+// A played onset whose other fingers may still show a strike.
+type ChordExtension = {
+  onset: Onset;
+  win: StopWindow;
+  fused: boolean;
+  judged: Set<string>; // fingers already decided: strikes at the guess that played, and added ones
+  played: Zone[];
+  playedFingers: string[];
+  rec: OnsetRecord;
+  line: HTMLLIElement;
+  attempt: Attempt | null;
+};
+const extensions: ChordExtension[] = [];
+
 function onOnset(onset: Onset) {
   const state = (win: StopWindow | null) => ({ mode: CONFIG.taps.mode, handsInFrame, frameMs, stopWindow: win });
   if (tapsPaused() || CONFIG.taps.mode === "vision") {
@@ -1221,25 +1268,98 @@ function onOnset(onset: Onset) {
     session.onset(n, onset, "ignored (no hand)", state(null));
     return;
   }
-  const { videoLagMs, settleMarginMs } = CONFIG.taps;
   // One window for both the guess and the check of this onset.
   const win = stopWindow(frameMs);
   const rec = session.onset(n, onset, "rejected", state(win));
-  const expected = onset.time + videoLagMs;
-  const recent = lastTap && onset.time - lastTap.t <= CONFIG.guess.lastHandMs;
-  const picks = history.guessAll(onset.time, { toBoard, onBoard, lastHand: recent ? lastTap!.hand : null, window: win });
-  const votes = fused ? applyShadowVotes(picks, () => Infinity, true) : [];
-  const guesses = picks.map((pick): Note => {
-    const at = tapPoint("guess", landing(pick.at));
-    return { pick, at, zone: at ? zoneAt(at) : null, late: false };
-  });
-  const { chord, rejected } = chordOf(guesses);
-  if (chord.length === 0) {
-    keepRecent(rejectedOnsets, onset.time);
-    noteShadowVotes(logRejected(n, onset, rejected), "shadow", votes);
-    rec.guess = { candidates: session.candidates(guesses, [], rejected, votes, [], expected), chord: [] };
+  const g = guessOnset(onset, win, fused);
+  if (g.chord.length) {
+    acceptOnset(onset, n, rec, win, fused, g, null);
     return;
   }
+  const { lateGuessMs } = CONFIG.taps;
+  if (lateGuessMs <= 0) {
+    rejectOnset(onset, n, rec, g, null);
+    return;
+  }
+  const p: PendingGuess = { onset, n, rec, win, fused, last: g, frames: 0, timer: 0 };
+  const giveUpAt = onset.time + lateGuessMs + (2 * 1000) / CONFIG.camera.mode.frameRate;
+  p.timer = window.setTimeout(() => finishGuess(p, null), Math.max(0, giveUpAt - performance.now()));
+  pendingGuesses.push(p);
+}
+
+// Called after each hand frame's fingers are recorded (frame time t): guesses waiting
+// onsets again and lets played chords pick up late fingers.
+function lateGuesses(t: number) {
+  for (const p of [...pendingGuesses]) {
+    p.frames++;
+    const g = guessOnset(p.onset, p.win, p.fused);
+    if (g.chord.length) finishGuess(p, g);
+    else {
+      p.last = g;
+      if (t >= p.onset.time + CONFIG.taps.lateGuessMs) finishGuess(p, null);
+    }
+  }
+  for (const x of [...extensions]) {
+    extendChord(x);
+    if (t >= x.onset.time + CONFIG.taps.lateGuessMs) extensions.splice(extensions.indexOf(x), 1);
+  }
+}
+
+function finishGuess(p: PendingGuess, g: GuessResult | null) {
+  const i = pendingGuesses.indexOf(p);
+  if (i < 0) return;
+  pendingGuesses.splice(i, 1);
+  clearTimeout(p.timer);
+  const waited = { waitedMs: Math.round((performance.now() - p.onset.receivedAt) * 10) / 10, frames: p.frames };
+  if (g) acceptOnset(p.onset, p.n, p.rec, p.win, p.fused, g, waited);
+  else rejectOnset(p.onset, p.n, p.rec, p.last, waited);
+}
+
+function rejectOnset(onset: Onset, n: number, rec: OnsetRecord, g: GuessResult, waited: OnsetRecord["lateGuess"]) {
+  keepRecent(rejectedOnsets, onset.time);
+  const line = logRejected(n, onset, g.rejected);
+  if (waited) line.textContent += ` · waited ${waited.waitedMs.toFixed(0)} ms, ${waited.frames} frame(s)`;
+  noteShadowVotes(line, "shadow", g.votes);
+  const expected = onset.time + CONFIG.taps.videoLagMs;
+  rec.guess = { candidates: session.candidates(g.guesses, [], g.rejected, g.votes, [], expected), chord: [] };
+  rec.lateGuess = waited;
+}
+
+// A played chord's fingers that weren't strikes yet: any that now strike on a zone not
+// played yet plays too.
+function extendChord(x: ChordExtension) {
+  const g = guessOnset(x.onset, x.win, x.fused);
+  for (const { pick, zone, at } of g.chord) {
+    if (x.judged.has(pick.finger) || !zone || x.played.some((z) => z.id === zone.id)) continue;
+    x.judged.add(pick.finger);
+    if (!zoneReady(zone)) continue;
+    const p = playZone(zone, at);
+    if (!p) continue;
+    x.played.push(zone);
+    x.playedFingers.push(pick.finger);
+    const noteMs = (p.ctxTime - x.onset.ctxTime) * 1000 + p.outputMs;
+    const lateMs = Math.round((performance.now() - x.onset.receivedAt) * 10) / 10;
+    x.rec.played.push({ finger: pick.finger, zone: zone.id, label: zone.label, at, latencyMs: noteMs, lateMs });
+    x.line.textContent += ` · + ${pick.finger} ${zone.label} late (${noteMs.toFixed(0)} ms)`;
+    if (x.attempt) {
+      x.attempt.played.add(zone.id);
+      updateTest();
+    }
+  }
+}
+
+function acceptOnset(
+  onset: Onset,
+  n: number,
+  rec: OnsetRecord,
+  win: StopWindow,
+  fused: boolean,
+  g: GuessResult,
+  waited: OnsetRecord["lateGuess"],
+) {
+  const { videoLagMs, settleMarginMs } = CONFIG.taps;
+  const expected = onset.time + videoLagMs;
+  const { guesses, chord, rejected, votes } = g;
   keepRecent(acceptedOnsets, onset.time);
   const played: Zone[] = [];
   const playedFingers: string[] = [];
@@ -1263,9 +1383,10 @@ function onOnset(onset: Onset) {
     candidates: session.candidates(guesses, chord, rejected, votes, playedFingers, expected),
     chord: chord.map((c) => c.pick.finger),
   };
-  rec.outcome = played.length ? "played" : "silent (refractory or between zones)";
+  rec.outcome = !played.length ? "silent (refractory or between zones)" : waited ? "played (late guess)" : "played";
   rec.latencyMs = latencyMs;
   rec.handlerMs = handlerMs;
+  rec.lateGuess = waited;
   const best = chord[0] ?? null;
   if (best) setLastTap(best.pick.finger, onset.time);
   const line = logPlayed({
@@ -1277,6 +1398,7 @@ function onOnset(onset: Onset) {
     handlerMs,
     rejected,
   });
+  if (waited) line.textContent += ` · late guess (${waited.frames} frame(s))`;
   noteShadowVotes(line, "shadow", votes);
 
   // Taps after the last calibration zone (while its checks resolve) count for nothing.
@@ -1286,6 +1408,10 @@ function onOnset(onset: Onset) {
   const attempt = joined?.attempt ?? null;
   if (joined) session.joinAttempt(rec, joined.attempt, joined.attempt.target, joined.opened);
   if (calTarget) rec.tapCalibration = { target: calTarget.label };
+  if (CONFIG.taps.lateGuessMs > 0) {
+    const judged = new Set(guesses.filter((x) => !x.pick.why).map((x) => x.pick.finger));
+    extensions.push({ onset, win, fused, judged, played, playedFingers, rec, line, attempt });
+  }
   // Late enough for the shadow's confirm window too, when it judges hovering.
   const resolveAt =
     onset.time + videoLagMs + Math.max(win.hi, CONFIG.shadow.confirmWindowMs[1]) + settleMarginMs;
@@ -1706,6 +1832,7 @@ function useDetector(d: Detector) {
     onShadows(hands, t, shadow);
     at = step("main: shadow update (incl. check view)", at);
     recordFingers(hands, t);
+    lateGuesses(t);
     measureJitter(hands, t);
     trackPlayerEdge(hands, t);
     at = step("main: fingers", at);
