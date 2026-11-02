@@ -39,6 +39,11 @@ export class HandTracking {
   private tracks = new Map<string, Track>();
   private present = new Map<string, Pt>(); // id -> filtered index tip, hands in the last frame
 
+  // Hands being followed, each with its smoothing filters.
+  get trackCount() {
+    return this.tracks.size;
+  }
+
   // aspect: frame width / height, so wrist distances are in true proportions.
   // lost: the filtered index tip, last seen, of each hand present last frame but not now.
   // started: IDs of new tracks; finger history under them belongs to some other hand.

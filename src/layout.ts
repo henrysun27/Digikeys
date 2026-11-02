@@ -144,14 +144,23 @@ export function checkLayout(v: unknown): { layout: Layout; warning: string | nul
   const visible = new Array<number>(n).fill(0); // samples where no higher zone covers it
   const shared = new Array<number>(n * n).fill(0); // same-z pairs only
   const inside: number[] = [];
+  // This runs on the main thread that takes the mic's onsets: polygons are only tested inside
+  // their bounding boxes, and nothing is allocated per sample.
+  const boxes = zones.map((z) => bounds(z.shape));
+  const p = { x: 0, y: 0 };
   for (let gy = 0; gy < checkGrid; gy++) {
+    p.y = (gy + 0.5) / checkGrid;
     for (let gx = 0; gx < checkGrid; gx++) {
-      const p = { x: (gx + 0.5) / checkGrid, y: (gy + 0.5) / checkGrid };
+      p.x = (gx + 0.5) / checkGrid;
       inside.length = 0;
-      zones.forEach((z, i) => {
-        if (inShape(p, z.shape)) inside.push(i);
-      });
-      const top = Math.max(...inside.map((i) => zones[i].z));
+      let top = -Infinity;
+      for (let i = 0; i < n; i++) {
+        const b = boxes[i];
+        if (p.x < b.x0 || p.x > b.x1 || p.y < b.y0 || p.y > b.y1) continue;
+        if (!inShape(p, zones[i].shape)) continue;
+        inside.push(i);
+        if (zones[i].z > top) top = zones[i].z;
+      }
       for (const i of inside) {
         area[i]++;
         if (zones[i].z === top) visible[i]++;

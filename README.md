@@ -586,8 +586,9 @@ Taps rescued by the late guess (below) play later, by the wait shown in their lo
     the model that is working, with a spinner; an object scan moves the light between
     Muse Spark and SAM 3.1 as it goes.
   - **Status corner.** Median tap-to-sound, mic state and hands in view.
-  - **Banners.** Low light (camera under 25 fps), slow (Bluetooth) audio output and
-    narrow keys show as dismissible banners above the stage.
+  - **Banners.** Low light (camera under 25 fps for 3 s in a row), slow (Bluetooth) audio
+    output and narrow keys show as dismissible banners over the top of the stage, so they
+    don't change the instrument's size on screen.
 - [x] Automatic playing surface. Detect surface used to ask SAM 3.1 for "sheet of paper".
       With the surface box empty it now works in three steps:
   - **Muse Spark lists the surfaces.** It gets the frame and returns the flat surfaces
@@ -667,3 +668,29 @@ Taps rescued by the late guess (below) play later, by the wait shown in their lo
         (onset + `videoLagMs`), so the next tap's stroke can't play early.
       Taps decided at the onset play exactly as before. Rescued taps log "late guess" and
       their real latency; the export records the wait (`lateGuess`, `played[].lateMs`).
+- [x] Voice switch probe and fixes. Each voice switch is now measured for 10 s before the
+      press, from the press until the layout is in, and 10 s after (`src/switch-probe.ts`,
+      `CONFIG.voiceProbe`): camera and detection rate, longest frame gap, dropouts, jitter,
+      main-thread wait and stalls, worker wait, stage resizes, onset rate, the time of each
+      step and the mic's settings. Results go to the Debug log and the session export
+      (`voiceSwitches`). Measured with fake camera and mic in Edge, on the Intel GPU, with 4
+      switches before and after the fixes:
+      - Detection (at least 29.7/s), frame gaps (at most 59 ms), dropouts (0), jitter
+        (11.7 px), main-thread wait (p95 10 ms) and onset rate (2.0/s for a 2/s click track)
+        did not change around a switch, before or after the fixes. Real cameras and mics
+        still need measuring.
+      - Mic: voice processing stayed off in all 32 readings. Push-to-talk now records a clone
+        of the tap mic's track instead of opening a second capture (2 audio `getUserMedia`
+        calls down to 1) and stops it afterwards; with the tap mic off it opens and stops its
+        own raw stream. If the tap mic's settings ever show processing on after a recording,
+        it is turned back off and reported.
+      - Blocking: frame capture no longer encodes on the main thread (worst 28.7 ms down to
+        0.9 ms). The layout check tests polygons only inside their bounding boxes and
+        allocates nothing per sample: results matched the old code on 303 test layouts, and
+        49 polygons of 16 points went from 536 ms to 15 ms in Node. Audio encoding stays at
+        2.6 ms for 5 s of speech. None of this work runs on the hand worker.
+      - Layout changes clear finger histories, refractory timers and tap decisions in
+        flight. Hand tracks, with their smoothing filters, and the calibration stay.
+      - The instrument no longer changes size on screen during a switch (8 stage resizes down
+        to 0). The activity line moved to the control bar, banners moved over the stage, and
+        the low-light banner waits for 3 slow seconds in a row.

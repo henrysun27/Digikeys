@@ -9,18 +9,22 @@ export type LayoutReply = {
   model: string;
   ms: number; // round trip as seen by the browser
   serverMs: number;
+  captureSyncMs: number; // the longest stretch of frame capture and encoding on the main thread
+  captureMs: number; // frame capture and encoding, start to finish
 };
 
 // The current frame as the player sees it (mirrored), with the board outlined and its
 // corners numbered, and the corners in that image's pixels. corners are cam coords in
-// click order, so corner 1 is board (0,0).
-function captureBoardFrame(video: HTMLVideoElement, corners: Pt[]) {
-  const c = document.createElement("canvas");
-  c.width = video.videoWidth;
-  c.height = video.videoHeight;
+// click order, so corner 1 is board (0,0). The copy and the JPEG encoding run off the main
+// thread, which also takes the mic's onsets; syncMs: the drawing that stays on it.
+async function captureBoardFrame(video: HTMLVideoElement, corners: Pt[]) {
+  const bitmap = await createImageBitmap(video);
+  const drawStart = performance.now();
+  const c = new OffscreenCanvas(bitmap.width, bitmap.height);
   const g = c.getContext("2d")!;
   g.setTransform(-1, 0, 0, 1, c.width, 0);
-  g.drawImage(video, 0, 0);
+  g.drawImage(bitmap, 0, 0);
+  bitmap.close();
   g.setTransform(1, 0, 0, 1, 0, 0);
   const px = corners.map((p) => ({ x: (1 - p.x) * c.width, y: p.y * c.height }));
 
@@ -42,7 +46,18 @@ function captureBoardFrame(video: HTMLVideoElement, corners: Pt[]) {
     g.fillStyle = "#ffffff";
     g.fillText(String(i + 1), p.x, p.y);
   });
-  return { image: c.toDataURL("image/jpeg", CONFIG.muse.jpegQuality), width: c.width, height: c.height, corners: px };
+  const syncMs = performance.now() - drawStart;
+  const blob = await c.convertToBlob({ type: "image/jpeg", quality: CONFIG.muse.jpegQuality });
+  return { image: await asDataUrl(blob), width: c.width, height: c.height, corners: px, syncMs };
+}
+
+function asDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
 }
 
 async function postObjects(path: string, body: unknown) {
@@ -94,13 +109,17 @@ export async function requestLayout(
   orientation: Orientation,
 ): Promise<LayoutReply> {
   const started = performance.now();
-  const frame = captureBoardFrame(video, corners);
+  const { syncMs, ...frame } = await captureBoardFrame(video, corners);
+  const stringifyStart = performance.now();
+  const payload = JSON.stringify({ ...frame, request, orientation });
+  const captureSyncMs = Math.max(syncMs, performance.now() - stringifyStart);
+  const captureMs = performance.now() - started;
   const res = await fetch("/api/layout", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...frame, request, orientation }),
+    body: payload,
   });
   const body = await res.json().catch(() => ({ error: `server returned ${res.status}` }));
   if (!res.ok) throw new Error(body.error ?? `server returned ${res.status}`);
-  return { ...body, ms: performance.now() - started, serverMs: body.ms };
+  return { ...body, ms: performance.now() - started, serverMs: body.ms, captureSyncMs, captureMs };
 }

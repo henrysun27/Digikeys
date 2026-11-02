@@ -6,6 +6,7 @@ import {
   logIgnored,
   medianTapLatency,
   logMissed,
+  logSwitch,
   logPlayed,
   logRejected,
   logTest,
@@ -33,7 +34,8 @@ import { StepTimes } from "./frame-steps.ts";
 import type { HandFrame } from "./hand-detector.ts";
 import { describeSpec, layoutFromSpec, PRESETS, presetFor } from "./instrument.ts";
 import { hitTest, isAccidental, shapeOutline, zoneAnchor, zStack, type Layout, type Zone } from "./layout.ts";
-import { startMic, type MicInfo, type MicLevel, type Onset } from "./mic.ts";
+import { keepTapMicRaw, startMic, tapMicSettings, tapMicTrack, type MicInfo, type MicLevel, type Onset } from "./mic.ts";
+import { SwitchProbe, switchSummary } from "./switch-probe.ts";
 import {
   leftEdge,
   orientLayout,
@@ -172,6 +174,15 @@ let lastTap: { hand: string; t: number } | null = null; // onset time, performan
 const test = new TestMode();
 // Every onset's decision since the page loaded, for Debug's "Export session".
 const session = new SessionLog();
+// Numbers around each voice instrument switch, for the Debug log and the export.
+const probe = new SwitchProbe();
+probe.onReport = (r) => {
+  logSwitch(switchSummary(r));
+  console.info(switchSummary(r), r);
+};
+probe.start();
+let awaitingFirstDraw = false; // a voice switch just placed a layout
+let lowFpsRun = 0; // seconds in a row the camera has been under CONFIG.camera.lowFpsWarn
 let lastMicInfo: MicInfo | null = null;
 let corrections: TapCorrections | null = loadCorrections();
 let tapCal: TapCalibration | null = null;
@@ -309,6 +320,16 @@ function setLayout(l: Layout) {
   layoutSelect.value = PRESETS.includes(l) ? String(PRESETS.indexOf(l)) : "generated";
   source = l;
   flashes.clear();
+  // Everything about taps on the old layout goes, so nothing in flight lands on the new one.
+  // Hand tracks (with their smoothing filters) and the calibration describe the desk, not the
+  // layout, and stay.
+  const fingersCleared = history.clear();
+  const refractoriesCleared = zonePlayedAt.size;
+  zonePlayedAt.clear();
+  hits.clear();
+  for (const p of [...pendingGuesses]) finishGuess(p, null);
+  extensions.length = 0;
+  probe.layoutChanged({ fingersCleared, refractoriesCleared, handTracks: tracking.trackCount, calibrated: calibration.done });
   placeLayout();
   ui.setInstrument(l.instrument, layoutSize(l));
 }
@@ -398,6 +419,7 @@ async function generateLayout(heard = "") {
   layoutStatusEl.textContent = `${heard}Asking Muse Spark for "${request}"…`;
   try {
     const reply = await requestLayout(video, calibration.corners, request, orientation);
+    probe.span("frame capture", reply.captureSyncMs, reply.captureMs);
     const reasoning = reply.usage?.completion_tokens_details?.reasoning_tokens;
     const tokens = reply.usage?.completion_tokens;
     const took =
@@ -405,14 +427,19 @@ async function generateLayout(heard = "") {
       (tokens !== undefined ? `, ${tokens} tokens${reasoning !== undefined ? ` (${reasoning} reasoning)` : ""}` : "");
     const [lo, hi] = CONFIG.layoutLimits.aspectRange;
     const aspect = typeof reply.aspect === "number" && reply.aspect >= lo && reply.aspect <= hi ? reply.aspect : null;
+    const buildStart = performance.now();
     const built = layoutFromSpec(reply.spec);
+    probe.span("layout build and check", performance.now() - buildStart);
     if ("problem" in built) {
       fallback(`${built.problem} (${took})`);
     } else if (built.spec.kind === "freeform" && aspect === null) {
       // Freeform zones were placed for the model's aspect; without a plausible one they're guesses.
       fallback(`board aspect ${String(reply.aspect)} is outside ${lo}-${hi} (${took})`);
     } else {
+      const placeStart = performance.now();
       setLayout(built.layout);
+      probe.span("layout placement", performance.now() - placeStart);
+      awaitingFirstDraw = probe.measuring;
       const { spec, layout: l, warning } = built;
       const size = layoutSize(l).replace(/s$/, "").replace(" ", "-");
       ui.toast(`Muse Spark built a ${size} ${l.instrument} in ${(reply.ms / 1000).toFixed(1)} s`, "success");
@@ -455,8 +482,9 @@ function startTalk() {
     layoutStatusEl.textContent = `Listening… ${secs} of ${CONFIG.voice.maxMs / 1000} s. Release to send; taps are paused.`;
   };
   show();
+  probe.begin(tapMicSettings());
   talk = {
-    rec: new Recording(audio.ctx),
+    rec: new Recording(audio.ctx, tapMicTrack()),
     ticker: window.setInterval(show, 100),
     cutoff: window.setTimeout(stopTalk, CONFIG.voice.maxMs),
   };
@@ -473,14 +501,27 @@ async function stopTalk() {
   transcribing = true;
   talkBtn.classList.remove("on");
   updateHint();
+  let outcome = "no transcript";
+  try {
+    outcome = await transcribeAndBuild(rec);
+  } finally {
+    probe.end(outcome, layout.instrument, tapMicSettings());
+  }
+}
+
+// One recording to a new layout. Returns how it ended, for the switch probe.
+async function transcribeAndBuild(rec: Recording): Promise<string> {
   let heard: string | null = null;
   try {
     const speech = await rec.stop();
+    probe.mic("recording stopped", tapMicSettings());
+    if (await keepTapMicRaw()) probe.mic("voice processing turned back off", tapMicSettings());
     if (!speech) {
       layoutStatusEl.textContent = "Too short: hold Space or the talk button while you speak.";
       ui.toast("Too short: hold the button (or Space) while you speak.");
-      return;
+      return "too short";
     }
+    probe.span("audio encoding", speech.encodeSyncMs, speech.encodeMs);
     const secs = (speech.audioMs / 1000).toFixed(1);
     layoutStatusEl.textContent = `Transcribing ${secs} s of speech…`;
     ui.working("voice", true, "Transcribing what you said");
@@ -493,7 +534,7 @@ async function stopTalk() {
     if (!text) {
       layoutStatusEl.textContent = `Heard nothing (${timing}). Try again closer to the mic.`;
       ui.toast("Heard nothing. Try again closer to the mic.", "error");
-      return;
+      return "heard nothing";
     }
     instrumentInput.value = text;
     heard = `Heard "${text}" (${timing}). `;
@@ -502,11 +543,13 @@ async function stopTalk() {
     console.error(err);
     layoutStatusEl.textContent = `Voice input failed: ${err instanceof Error ? err.message : String(err)}`;
     ui.toast("Voice input failed. Try again, or type the instrument.", "error");
+    return "voice input failed";
   } finally {
     transcribing = false;
     updateHint();
   }
-  if (heard) generateLayout(heard);
+  await generateLayout(heard);
+  return "built";
 }
 
 const inField = (t: EventTarget | null) =>
@@ -956,6 +999,7 @@ function micInfo(i: MicInfo) {
 }
 
 function onLevel(l: MicLevel) {
+  probe.wait(l.receivedAt, l.receivedAt - l.time);
   showLevel(l);
   levels.push(l);
   while (levels.length && levels[0].time < l.time - CONFIG.motion.keepMs) levels.shift();
@@ -1074,6 +1118,7 @@ function zoneReady(zone: Zone): boolean {
 // at: where the tap landed (board coords), for the Play view's ripple.
 function playZone(zone: Zone, at: Pt | null = null): { ctxTime: number; outputMs: number } | null {
   const now = performance.now();
+  probe.note(now);
   zonePlayedAt.set(zone.id, now);
   flashes.set(zone.id, now + CONFIG.taps.flashMs);
   hits.set(zone.id, now);
@@ -1255,7 +1300,8 @@ type ChordExtension = {
 const extensions: ChordExtension[] = [];
 
 function onOnset(onset: Onset) {
-  const state = (win: StopWindow | null) => ({ mode: CONFIG.taps.mode, handsInFrame, frameMs, stopWindow: win });
+  probe.onset(onset.time);
+  const state =(win: StopWindow | null) => ({ mode: CONFIG.taps.mode, handsInFrame, frameMs, stopWindow: win });
   if (tapsPaused() || CONFIG.taps.mode === "vision") {
     const why = CONFIG.taps.mode === "vision" ? "ignored (vision-only mode)" : "ignored (taps paused)";
     session.onset(null, onset, why, state(null));
@@ -1814,6 +1860,7 @@ function useDetector(d: Detector) {
     const start = performance.now();
     counts.detections++;
     counts.detectMs += timing.detect;
+    probe.detection(t, timing.detect, timing.send, frame.landmarks.length);
     const step = (name: string, since: number) => {
       const now = performance.now();
       frameSteps.add(name, now - since);
@@ -1839,6 +1886,7 @@ function useDetector(d: Detector) {
     const hold = CONFIG.taps.mode === "vision" ? CONFIG.taps.visionHoldFrames : 0;
     for (const m of history.newStops(toBoard, onBoard, hold)) onStop(m);
     countDropouts(hands, tracked.lost);
+    probe.lost(t, tracked.lost.length);
     handsInFrame = hands.length;
     dirty = true;
     at = step("main: stops", at);
@@ -2529,6 +2577,7 @@ function loop() {
   let last = { ...counts };
 
   const onFrame = () => {
+    probe.frame(performance.now());
     counts.videoFrames++;
     dirty = true;
     detector?.frame(performance.now(), shadowRequest());
@@ -2566,8 +2615,14 @@ function loop() {
       }
       drawRipples(now);
       drawCalPrompt();
-      counts.drawMs += performance.now() - now;
-      frameSteps.add("main: draw", performance.now() - now);
+      const drawMs = performance.now() - now;
+      counts.drawMs += drawMs;
+      frameSteps.add("main: draw", drawMs);
+      probe.draw(now, drawMs);
+      if (awaitingFirstDraw) {
+        probe.span("first draw of the new layout", drawMs);
+        awaitingFirstDraw = false;
+      }
     }
 
     if (now - fpsStart >= 1000) {
@@ -2585,9 +2640,10 @@ function loop() {
       if (camera) showCamera(camera, fps);
       const mic = audio.micOn ? "Mic on" : audio.soundOn ? "Sound only" : "Mic off";
       ui.setStatus(medianTapLatency(), mic, hands.length);
+      lowFpsRun = fps > 0 && fps < CONFIG.camera.lowFpsWarn ? lowFpsRun + 1 : 0;
       ui.banner(
         "light",
-        fps > 0 && fps < CONFIG.camera.lowFpsWarn
+        lowFpsRun >= CONFIG.camera.lowFpsSeconds
           ? "Low light: the camera slowed below " +
               `${CONFIG.camera.lowFpsWarn} fps. More light on the desk makes tracking smoother.`
           : null,
@@ -2597,7 +2653,10 @@ function loop() {
         showDetection(detector.kind, detector.info, n / secs, meanMs, detectorChoice);
       }
       showDropouts(dropouts);
-      showJitter(jitter.read(now));
+      const jitters = jitter.read(now);
+      showJitter(jitters);
+      probe.jitter(now, jitters);
+      probe.tick(now, tapMicSettings);
       const steps = frameSteps.take();
       showFrameSteps(steps, TOTAL_STEP, frameMs);
       session.second({
@@ -2626,6 +2685,7 @@ async function main() {
     const detectOn = param === "worker" || param === "main" || param === "auto" ? param : CONFIG.hands.detectOn;
     const first = createDetector(detectOn === "main" ? "main" : "worker", video);
     camera = await startCamera();
+    new ResizeObserver(() => probe.resize(performance.now())).observe(canvas);
     showCamera(camera, null);
     calibration.load(`${video.videoWidth}x${video.videoHeight}`);
     // A saved tap correction without the board it was fitted on is stale.
@@ -2711,6 +2771,7 @@ function sessionContext(): Record<string, unknown> {
     },
     detection: detector && { kind: detector.kind, info: detector.info, autoChoice: detectorChoice },
     mic: lastMicInfo,
+    voiceSwitches: probe.reports,
     calibration: { done: calibration.done, corners: calibration.corners, orientation, playerEdge: CONFIG.playerEdge },
     layout: zoneSummary(layout),
     objects: zoneSummary(objects),

@@ -3,6 +3,7 @@ import { ClockSync, type ClockStats } from "./clock-sync.ts";
 import { CONFIG } from "./config.ts";
 import type { OnsetMessage } from "./onset-worklet.ts";
 import workletUrl from "./onset-worklet.ts?worker&url";
+import type { MicSettings } from "./switch-probe.ts";
 
 export type Onset = {
   time: number; // performance.now() ms
@@ -14,7 +15,8 @@ export type Onset = {
   bands: BandReading[]; // per-band level and rise at the onset block (CONFIG.onset.bands)
 };
 // time: performance.now() ms of the report; level is the peak since the previous one.
-export type MicLevel = { time: number; level: number; floor: number; threshold: number };
+// receivedAt: when the main thread got it.
+export type MicLevel = { time: number; receivedAt: number; level: number; floor: number; threshold: number };
 export type MicInfo = {
   outputRawMs: number; // baseLatency + outputLatency as reported
   outputMs: number; // the clamped correction actually applied
@@ -41,14 +43,43 @@ export function outputLatency(ctx: AudioContext): { rawMs: number; ms: number } 
   return { rawMs, ms: Math.min(CONFIG.mic.maxLatencyCorrectionMs, Math.max(0, rawMs)) };
 }
 
+// Browser voice processing smears or removes tap transients.
+export const RAW_AUDIO = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+
+// The tap mic's track and context, once started.
+let tapMic: { track: MediaStreamTrack; ctx: AudioContext } | null = null;
+
+export const tapMicTrack = () => tapMic?.track ?? null;
+
+// Puts voice processing back off if anything turned it on; true if it had to.
+export async function keepTapMicRaw(): Promise<boolean> {
+  const track = tapMic?.track;
+  if (!track) return false;
+  const s = track.getSettings();
+  if (s.echoCancellation === false && s.noiseSuppression === false && s.autoGainControl === false) return false;
+  console.warn("Tap mic voice processing was on; turning it off", s);
+  await track.applyConstraints(RAW_AUDIO);
+  return true;
+}
+
+export function tapMicSettings(): MicSettings | null {
+  if (!tapMic) return null;
+  const s = tapMic.track.getSettings();
+  return {
+    echoCancellation: s.echoCancellation ?? null,
+    noiseSuppression: s.noiseSuppression ?? null,
+    autoGainControl: s.autoGainControl ?? null,
+    sampleRate: s.sampleRate ?? null,
+    ctxRate: tapMic.ctx.sampleRate,
+    readyState: tapMic.track.readyState,
+  };
+}
+
 // ctx must have been created in a user gesture so it may start.
 export async function startMic(ctx: AudioContext, h: MicHandlers) {
-  // Browser voice processing smears or removes tap transients.
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-    video: false,
-  });
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: RAW_AUDIO, video: false });
   const track: AudioTrack = stream.getAudioTracks()[0];
+  tapMic = { track, ctx };
   await ctx.audioWorklet.addModule(workletUrl);
   await ctx.resume();
 
@@ -102,7 +133,7 @@ export async function startMic(ctx: AudioContext, h: MicHandlers) {
     const receivedAt = performance.now();
     const logged = sync();
     const msg = e.data;
-    if (msg.type === "level") h.onLevel({ ...msg, time: clock.toPerf(msg.time) });
+    if (msg.type === "level") h.onLevel({ ...msg, time: clock.toPerf(msg.time), receivedAt });
     else {
       const time = clock.toPerf(msg.time);
       h.onOnset({ time, ctxTime: msg.time, receivedAt, level: msg.level, threshold: msg.threshold, rise: msg.rise, bands: msg.bands });

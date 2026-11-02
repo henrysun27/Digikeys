@@ -134,6 +134,10 @@ export function logRejected(n: number, o: Onset, rejected: string[]): HTMLLIElem
 // Test mode: a finger came down and stopped on the board but no onset was accepted
 // around it. peak: the loudest mic level near when its onset would have been (null if
 // no level reports covered it); rejected: an onset there failed the motion gate.
+export function logSwitch(line: string) {
+  appendLog(line);
+}
+
 export function logMissed(
   finger: string,
   zone: string | null,

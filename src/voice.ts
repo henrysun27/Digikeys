@@ -2,6 +2,7 @@
 // to CONFIG.voice.sampleRate mono, sent as a 16-bit WAV to the server and transcribed there
 // by Muse Voice Transcribe.
 import { CONFIG } from "./config.ts";
+import { RAW_AUDIO } from "./mic.ts";
 import type { RecorderMessage } from "./voice-worklet.ts";
 import workletUrl from "./voice-worklet.ts?worker&url";
 
@@ -9,6 +10,7 @@ export type Speech = {
   wav: Blob;
   audioMs: number; // recorded length
   encodeMs: number; // resampling and WAV encoding
+  encodeSyncMs: number; // the longest stretch of it on the main thread, including joining the chunks
   gain: number; // applied to reach CONFIG.voice.targetPeak
 };
 
@@ -20,35 +22,31 @@ export type Transcript = {
   serverMs: number;
 };
 
-// Opened on the first press and kept, so later presses start recording at once. Voice
-// processing stays off as on the onset detector's stream, so opening this one doesn't
-// change that one's settings.
-let stream: Promise<MediaStream> | null = null;
 const modules = new WeakMap<AudioContext, Promise<void>>();
 
 // One press of the talk button. Recording starts on construction; stop() ends it.
+//
+// With the tap mic on, it records a clone of that track: its own track, so nothing done to
+// it reaches the tap mic's, and no second capture that could reconfigure the device. Without
+// one, it opens a raw stream of its own. Either way the track is stopped with the recording.
 export class Recording {
   private readonly ctx: AudioContext;
-  private readonly ready: Promise<{ source: MediaStreamAudioSourceNode; node: AudioWorkletNode }>;
+  private readonly ready: Promise<{ source: MediaStreamAudioSourceNode; node: AudioWorkletNode; track: MediaStreamTrack }>;
   private readonly chunks: Float32Array[] = [];
 
-  constructor(ctx: AudioContext) {
+  constructor(ctx: AudioContext, tapTrack: MediaStreamTrack | null) {
     this.ctx = ctx;
-    this.ready = this.open();
+    this.ready = this.open(tapTrack);
   }
 
-  private async open() {
+  private async open(tapTrack: MediaStreamTrack | null) {
     const { ctx } = this;
-    stream ??= navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-      video: false,
-    });
     if (!modules.has(ctx)) modules.set(ctx, ctx.audioWorklet.addModule(workletUrl));
-    const [s] = await Promise.all([stream, modules.get(ctx), ctx.resume()]).catch((err) => {
-      stream = null; // let the next press ask again, e.g. after a denied permission
-      throw err;
-    });
-    const source = ctx.createMediaStreamSource(s);
+    const opened = tapTrack
+      ? Promise.resolve(tapTrack.clone())
+      : navigator.mediaDevices.getUserMedia({ audio: RAW_AUDIO, video: false }).then((s) => s.getAudioTracks()[0]);
+    const [track] = await Promise.all([opened, modules.get(ctx), ctx.resume()]);
+    const source = ctx.createMediaStreamSource(new MediaStream([track]));
     const node = new AudioWorkletNode(ctx, "voice-recorder", { numberOfOutputs: 1 });
     node.port.onmessage = (e: MessageEvent<RecorderMessage>) => {
       if (e.data.type === "samples") this.chunks.push(e.data.samples);
@@ -56,12 +54,12 @@ export class Recording {
     source.connect(node);
     // The node writes silence; connecting it to the destination keeps it pulled.
     node.connect(ctx.destination);
-    return { source, node };
+    return { source, node, track };
   }
 
   // Ends the recording and encodes it, or null if it was too short to be meant.
   async stop(): Promise<Speech | null> {
-    const { source, node } = await this.ready;
+    const { source, node, track } = await this.ready;
     await new Promise<void>((resolve) => {
       node.port.onmessage = (e: MessageEvent<RecorderMessage>) => {
         if (e.data.type === "samples") this.chunks.push(e.data.samples);
@@ -71,7 +69,9 @@ export class Recording {
     });
     source.disconnect();
     node.disconnect();
+    track.stop();
 
+    const started = performance.now();
     const rate = this.ctx.sampleRate;
     const samples = new Float32Array(this.chunks.reduce((n, c) => n + c.length, 0));
     let at = 0;
@@ -79,18 +79,19 @@ export class Recording {
       samples.set(c, at);
       at += c.length;
     }
+    const joinMs = performance.now() - started;
     const audioMs = (samples.length / rate) * 1000;
     if (audioMs < CONFIG.voice.minMs) return null;
-    const started = performance.now();
-    const { wav, gain } = await encodeWav(samples, rate);
-    return { wav, audioMs, encodeMs: performance.now() - started, gain };
+    const { wav, gain, syncMs } = await encodeWav(samples, rate);
+    return { wav, audioMs, encodeMs: performance.now() - started, encodeSyncMs: Math.max(joinMs, syncMs), gain };
   }
 }
 
 // Resamples through an OfflineAudioContext (low-passed below the new Nyquist first), boosts
 // quiet speech, and writes mono 16-bit PCM WAV.
-async function encodeWav(samples: Float32Array<ArrayBuffer>, rate: number): Promise<{ wav: Blob; gain: number }> {
+async function encodeWav(samples: Float32Array<ArrayBuffer>, rate: number): Promise<{ wav: Blob; gain: number; syncMs: number }> {
   const { sampleRate: out, maxGain, targetPeak } = CONFIG.voice;
+  const setupStart = performance.now();
   const offline = new OfflineAudioContext(1, Math.ceil((samples.length * out) / rate), out);
   const buffer = offline.createBuffer(1, samples.length, rate);
   buffer.copyToChannel(samples, 0);
@@ -101,8 +102,11 @@ async function encodeWav(samples: Float32Array<ArrayBuffer>, rate: number): Prom
   lowpass.frequency.value = out * 0.45;
   src.connect(lowpass).connect(offline.destination);
   src.start();
-  const pcm = (await offline.startRendering()).getChannelData(0);
+  const rendering = offline.startRendering();
+  const setupMs = performance.now() - setupStart;
+  const pcm = (await rendering).getChannelData(0);
 
+  const writeStart = performance.now();
   const peak = pcm.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
   const gain = peak > 0 ? Math.min(maxGain, Math.max(1, targetPeak / peak)) : 1;
   const view = new DataView(new ArrayBuffer(44 + pcm.length * 2));
@@ -121,7 +125,8 @@ async function encodeWav(samples: Float32Array<ArrayBuffer>, rate: number): Prom
   ascii(36, "data");
   view.setUint32(40, pcm.length * 2, true);
   pcm.forEach((v, i) => view.setInt16(44 + i * 2, Math.round(Math.max(-1, Math.min(1, v * gain)) * 0x7fff), true));
-  return { wav: new Blob([view.buffer], { type: "audio/wav" }), gain };
+  const wav = new Blob([view.buffer], { type: "audio/wav" });
+  return { wav, gain, syncMs: Math.max(setupMs, performance.now() - writeStart) };
 }
 
 export async function transcribe(wav: Blob): Promise<Transcript> {

@@ -378,8 +378,9 @@ function render() {
 }
 
 // The activity line: the model working now, what it's doing and for how long, with a
-// spinner and a sweeping bar. It sits in the open setup panel, else in the control bar, and
-// the open step's number turns into a spinner.
+// spinner and a sweeping bar. It sits in the control bar, whose height it doesn't change, so
+// the instrument doesn't move on screen while a model works. The open step's number turns
+// into a spinner.
 const activity = (() => {
   const el = document.createElement("div");
   el.className = "activity";
@@ -402,7 +403,7 @@ function renderActivity() {
     activity.hidden = true;
     return;
   }
-  const home = panel ?? $("#toasts");
+  const home = $("#toasts");
   if (activity.parentElement !== home) home.prepend(activity);
   activity.hidden = false;
   activity.querySelector(".who")!.textContent = MODEL_NAMES[model];
@@ -468,7 +469,8 @@ export function toast(text: string, kind: ToastKind = "info") {
   el.className = `toast ${kind}`;
   el.textContent = text;
   box.append(el);
-  while (box.children.length > MAX_TOASTS) box.firstElementChild!.remove();
+  const toasts = box.querySelectorAll(".toast"); // the activity line lives here too
+  for (let i = 0; i < toasts.length - MAX_TOASTS; i++) toasts[i].remove();
   setTimeout(() => {
     el.classList.add("leaving");
     setTimeout(() => el.remove(), 300);

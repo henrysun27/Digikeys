@@ -11,6 +11,7 @@ export const CONFIG = {
     probeWarmupMs: 1500,
     probeMs: 1000,
     lowFpsWarn: 25, // warn in the debug panel when the measured frame rate drops below this
+    lowFpsSeconds: 3, // the Play view's low-light banner: this many seconds in a row under it
   },
   hands: {
     wasmPath: "/mediapipe/wasm",
@@ -352,6 +353,14 @@ export const CONFIG = {
     // Recognition is biased toward these terms; it doesn't force them.
     keywords: ["drum kit", "piano", "xylophone", "marimba", "bongos", "glockenspiel", "kalimba", "steel drum"],
     maxWavBytes: 1_000_000, // 5 s at 16 kHz is 160 kB
+  },
+  // Numbers around a voice instrument switch (switch-probe.ts): windowMs before the press and
+  // after the switch ends. The main thread's stalls are heartbeatMs timer gaps, kept from
+  // minStallMs up.
+  voiceProbe: {
+    windowMs: 10_000,
+    heartbeatMs: 10,
+    minStallMs: 5,
   },
   // The layout engine (instrument.ts) for keyboards: black keys are blackKeyDepth of the
   // board deep from the far edge, and minZoneWidth wide, kept within blackKeyWidth (fractions

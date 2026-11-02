@@ -132,6 +132,15 @@ export class FingerHistory {
     }
   }
 
+  // Forgets every finger, when the layout changes: a stroke started over the old layout
+  // must not land on the new one. Returns how many fingers it held.
+  clear(): number {
+    const n = this.tracks.size;
+    this.tracks.clear();
+    this.reported.clear();
+    return n;
+  }
+
   // Strikes that stopped inside the board since the last call and stayed still for
   // holdFrames frames after the stop frame, each stroke reported once (a stroke whose hold
   // is cut short is dropped). Call after every frame's samples are added.
