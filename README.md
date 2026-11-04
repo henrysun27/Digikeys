@@ -694,3 +694,11 @@ Taps rescued by the late guess (below) play later, by the wait shown in their lo
       - The instrument no longer changes size on screen during a switch (8 stage resizes down
         to 0). The activity line moved to the control bar, banners moved over the stage, and
         the low-light banner waits for 3 slow seconds in a row.
+- [x] Chords across two hands: each hand is judged on its own. Every strike still has to
+      pass the strike checks by itself, and `chordRatio` now compares fingers of the same
+      hand only, so a light right-hand note can't be dropped for a harder left-hand one. In
+      the last hardware session (831 played onsets, index fingers only), the old rule dropped
+      148 other-hand strikes on a zone that onset hadn't played. Counted from that export,
+      not re-run live: 87 were also found by the stop check, 64 had stopped over 60 ms before
+      their onset and 66 landed on a zone played under 300 ms earlier, so some would be
+      repeats. Needs a new session with two hands.

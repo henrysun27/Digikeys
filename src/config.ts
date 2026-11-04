@@ -166,9 +166,10 @@ export const CONFIG = {
     minStrokeDepth: 0.02, // real presses measured ~0.025
     minStrikeSpeed: 0.25,
     // Chords: an accepted onset plays every striking finger landing on the board whose
-    // score is at least this fraction of the best such finger's (one note per zone). Lower
-    // catches more of a chord, and more sympathetic finger motion; each note must still
-    // pass the strike test on its own. Real chord fingers measured 0.45-0.53.
+    // score is at least this fraction of the best such finger's on the same hand, never
+    // across hands (one note per zone). Lower catches more of a chord, and more sympathetic
+    // finger motion; each note must still pass the strike test on its own. Real chord
+    // fingers measured 0.45-0.53.
     chordRatio: 0.4,
     zoneRefractoryMs: 80, // a zone can't play again sooner than this; other zones can
     flashMs: 300,

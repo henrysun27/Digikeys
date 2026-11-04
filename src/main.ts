@@ -1189,7 +1189,8 @@ type Note = { pick: FingerPick; at: Pt | null; zone: Zone | null; late: boolean 
 const insideBoard = (p: Pt | null) => !!p && ((p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1) || onObject(p));
 
 // The chord in a ranked list of fingers: every strike (each must pass on its own) landing
-// on the board and scoring at least chordRatio of the best such strike (the best first),
+// on the board and scoring at least chordRatio of the best such strike on its own hand
+// (hands never compete, so each hand's best strike is always in; the best overall first),
 // one per zone. A finger landing off the board can't play, so it is no candidate and
 // doesn't set the ratio; one landing in a gap between zones stays in, with no zone.
 // rejected: why each other finger isn't in it, with the measured value.
@@ -1206,10 +1207,16 @@ function chordOf(notes: Note[]): { chord: Note[]; rejected: string[] } {
     return false;
   });
   if (strikes.length === 0) return { chord: [], rejected };
-  const best = strikes[0].pick.score;
+  // Strikes are ranked, so a hand's first one is its best.
+  const bestOfHand = new Map<string, number>();
+  for (const { pick } of strikes) {
+    const hand = handOf(pick.finger);
+    if (!bestOfHand.has(hand)) bestOfHand.set(hand, pick.score);
+  }
   const { chordRatio } = CONFIG.taps;
   const zones = new Set<string>();
   const chord = strikes.filter(({ pick, zone }) => {
+    const best = bestOfHand.get(handOf(pick.finger))!;
     if (pick.score < best * chordRatio) {
       rejected.push(`${pick.finger} below ratio (${(pick.score / best).toFixed(2)} < ${chordRatio})`);
       return false;
@@ -1227,13 +1234,13 @@ const fingerList = (notes: Note[]) => notes.map((x) => x.pick.finger).sort().joi
 const zoneList = (notes: Note[]) => notes.map((x) => x.zone?.label ?? "off board").join(" + ");
 
 // Plays right away from the best-guess fingers: every striking finger whose score is at
-// least chordRatio of the best one's, one note per zone, except zones still in their
-// refractory. Only fingers whose projected landing point is on the board are candidates.
-// Fingers that move but fall short or land off the board are listed in the tap log with
-// why. The ratio is always taken against the best on-board finger, refractory or not,
-// so a second onset from the same tap can't promote a weaker finger, while the second
-// finger of a slightly staggered chord plays on its own onset if it would have joined
-// the chord anyway.
+// least chordRatio of the best one's on the same hand, one note per zone, except zones
+// still in their refractory. Only fingers whose projected landing point is on the board
+// are candidates. Fingers that move but fall short or land off the board are listed in the
+// tap log with why. The ratio is always taken against the hand's best on-board finger,
+// refractory or not, so a second onset from the same tap can't promote a weaker finger,
+// while the second finger of a slightly staggered chord plays on its own onset if it would
+// have joined the chord anyway.
 //
 // The finger frames for the moment of the onset arrive videoLagMs later and the stop may
 // be up to the stop window's end after that, so the tap is checked against the stopped fingers
