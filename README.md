@@ -1,4 +1,4 @@
-# Desk Instrument
+# Digikeys — any desk is an instrument
 
 Turn any desk into an instrument: a webcam watches your hands over the desk and fingertip
 taps play sounds. Built for the Meta Global AI Developer Hackathon (Oct 26 - Nov 4, 2026),
