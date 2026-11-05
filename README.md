@@ -4,13 +4,67 @@ Turn any desk into an instrument: a webcam watches your hands over the desk and 
 taps play sounds. Built for the Meta Global AI Developer Hackathon (Oct 26 - Nov 4, 2026),
 Build for Your World track.
 
-## Run
+## Run it yourself
 
-```
-npm install
-cp .env.example .env   # then put your Meta Model API key in MODEL_API_KEY
-npm run dev
-```
+You need:
+
+- **Node 22.18 or newer.** The API server runs `server/index.ts` directly as TypeScript,
+  which older versions can't do.
+- **Chrome**, a webcam and a mic.
+- **Internet, even without a key.** The first `npm run dev` downloads the hand model, and
+  Enable mic loads the piano and drum samples from tonejs.github.io.
+
+Then:
+
+1. Clone and install:
+
+   ```
+   git clone https://github.com/henrysun27/Digikeys.git
+   cd Digikeys
+   npm install
+   ```
+
+2. Add your own Meta Model API key, or skip this step to play without one (see below):
+
+   ```
+   cp .env.example .env
+   ```
+
+   Get a key from [dev.meta.ai](https://dev.meta.ai) and paste it after `MODEL_API_KEY=` in
+   `.env`. In Windows `cmd`, use `copy` instead of `cp`.
+
+3. Start the app:
+
+   ```
+   npm run dev
+   ```
+
+4. Open <http://localhost:5173> in Chrome and press **Start**. Allow the camera when Chrome
+   asks, and the mic when you press Enable mic.
+
+### What works without a key
+
+Without a key the server logs `MODEL_API_KEY is not set`, which is expected. These all work:
+
+- **Click-corner calibration:** click the four corners of the playing surface. The corners
+  are saved across reloads.
+- **Preset instruments:** Piano and Drum kit.
+- **Tapping and sound:** hand tracking, both the Mic + motion and Vision only tap modes, and
+  the Debug view.
+
+To play: press Start, click the four corners, pick Piano or Drum kit, press Enable mic, and
+tap.
+
+### What needs a key
+
+| Feature | Meta models | Without a key |
+| --- | --- | --- |
+| Surface detection (Detect surface) | SAM 3.1, Muse Spark | Shows an error; click the corners instead |
+| Voice (hold to talk, or hold Space) | Muse Voice Transcribe, Muse Spark | Shows an error; pick a preset instead |
+| Generated layouts (typed requests, Pentatonic, Marimba) | Muse Spark | Shows an error and falls back to a preset |
+| Object scan (Scan objects) | Muse Spark, SAM 3.1 | Shows an error; the instrument keeps playing |
+
+### Notes
 
 `npm run dev` starts Vite and the API server in `server/` together. If port 8787 is
 already taken (often by an API server left running from an earlier `npm run dev`), the
