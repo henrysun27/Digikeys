@@ -27,7 +27,13 @@ dist-ssr
 public/mediapipe
 
 # Meta API key (server only)
-.env
+.env*
+!.env.example
 
 # Debug "Export session" files (written by the server)
 sessions/
+
+# Local agent files
+AGENTS.md
+.agents/
+.claude/settings.json
