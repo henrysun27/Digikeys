@@ -1,5 +1,7 @@
 # Digikeys — any desk is an instrument
 
+Built solo by Henry Sun (GitHub: henrysun27; commits show as harvardlawscchool, my other GitHub account).
+
 Turn any desk into an instrument: a webcam watches your hands over the desk and fingertip
 taps play sounds. Built for the Meta Global AI Developer Hackathon (Oct 26 - Nov 4, 2026),
 Build for Your World track.
