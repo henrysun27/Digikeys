@@ -722,6 +722,19 @@ Taps rescued by the late guess (below) play later, by the wait shown in their lo
         (onset + `videoLagMs`), so the next tap's stroke can't play early.
       Taps decided at the onset play exactly as before. Rescued taps log "late guess" and
       their real latency; the export records the wait (`lateGuess`, `played[].lateMs`).
+- [x] `videoLagMs` 50 -> 0. Found in a hardware session export (308 s, piano, index fingers
+      only, Mic + motion, 44 Test attempts): deep strikes stopped a median 53 ms before
+      onset + 50, so about at the onset. Still-moving guesses were projected to the wrong
+      moment:
+      - all 177 with an on-time stop landed past it (median 0.15 board units, 90th
+        percentile 0.32), and 35 landed in a different zone, 22 of them on a black key
+        instead of the white key the stop was on;
+      - the check searched around onset + 50, so it could pick a small settling movement
+        instead of the real stop.
+      `stopWindowMs` moved from [-300, 150] to [-250, 200], so the window covers the same
+      time around the onset. `lateStopMs` now counts from the onset, and the Test-mode miss
+      and hover windows are centered on it. A synthetic 30 fps tap through `FingerHistory`
+      overshoots 0.008 instead of 0.082; the effect on real taps still needs a new session.
 - [x] Voice switch probe and fixes. Each voice switch is now measured for 10 s before the
       press, from the press until the layout is in, and 10 s after (`src/switch-probe.ts`,
       `CONFIG.voiceProbe`): camera and detection rate, longest frame gap, dropouts, jitter,

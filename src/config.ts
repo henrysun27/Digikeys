@@ -134,12 +134,14 @@ export const CONFIG = {
     // (CONFIG.shadow.vote). The toolbar toggle switches it.
     mode: "hybrid" as "hybrid" | "vision" | "fused",
     // Finger frames are detected this long after the onset of the same moment. Tune it by
-    // adding the debug panel's median stop offset.
-    videoLagMs: 50,
+    // adding the debug panel's median stop offset. Measured on hardware at 30 fps: deep
+    // strikes stopped a median 53 ms before onset + 50, so about at the onset. At 50, every
+    // still-moving guess was projected past its stop (median 0.15 board units).
+    videoLagMs: 0,
     // A stop counts from stopWindowMs[0] to [1] around onset + videoLagMs. Set for
     // camera.mode.frameRate; stretched by (measured frame interval / nominal) when the
     // camera delivers fewer frames, never shrunk.
-    stopWindowMs: [-300, 150] as [number, number],
+    stopWindowMs: [-250, 200] as [number, number],
     historyMs: 200, // how long a down-stroke may take before it stops
     settleMarginMs: 40, // extra wait for late frames before resolving a tap
     // A stop later than this past onset + videoLagMs is likely the finger settling after
